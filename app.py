@@ -143,7 +143,8 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS budget_plans (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL DEFAULT 'תקציב 1'
+            name TEXT NOT NULL DEFAULT 'תקציב 1',
+            description TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS budget (
@@ -254,6 +255,12 @@ def init_db():
         """)
         conn.execute("INSERT INTO budget (id, category_id, month, planned_amount, plan_id) SELECT id, category_id, month, planned_amount, 1 FROM budget_old")
         conn.execute("DROP TABLE budget_old")
+        conn.commit()
+
+    # Migrate budget_plans: add description column if missing
+    bp_cols = [r[1] for r in conn.execute("PRAGMA table_info(budget_plans)").fetchall()]
+    if 'description' not in bp_cols:
+        conn.execute("ALTER TABLE budget_plans ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
     # Insert default categories if empty
@@ -1073,11 +1080,14 @@ def save_budget_plan():
     data = request.json
     conn = get_db()
     count = conn.execute("SELECT COUNT(*) FROM budget_plans").fetchone()[0]
+    desc = data.get('description', '')
     if data.get('id'):
-        conn.execute("UPDATE budget_plans SET name = ? WHERE id = ?", (data['name'], data['id']))
+        conn.execute("UPDATE budget_plans SET name = ?, description = ? WHERE id = ?",
+                     (data['name'], desc, data['id']))
     elif count < 3:
         new_id = count + 1
-        conn.execute("INSERT INTO budget_plans (id, name) VALUES (?, ?)", (new_id, data['name']))
+        conn.execute("INSERT INTO budget_plans (id, name, description) VALUES (?, ?, ?)",
+                     (new_id, data['name'], desc))
     else:
         conn.close()
         return jsonify({'error': 'max 3 plans'}), 400

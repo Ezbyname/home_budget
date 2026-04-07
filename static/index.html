@@ -29,6 +29,14 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.15);
         }
         .navbar-brand { font-weight: 700; font-size: 1.3rem; }
+        #navPlanSelect {
+            background: rgba(255,255,255,0.18) !important;
+            color: #fff !important;
+            border: 1px solid rgba(255,255,255,0.35);
+            font-weight: 500;
+        }
+        #navPlanSelect option { color: #333; background: #fff; }
+        #navPlanSelect:focus { box-shadow: 0 0 0 3px rgba(255,255,255,0.25); border-color: rgba(255,255,255,0.6); }
         .card {
             border: none;
             border-radius: 16px;
@@ -375,11 +383,33 @@
     <div class="container">
         <span class="navbar-brand"><i class="bi bi-wallet2 me-2"></i><span data-t="app_title">ניהול תקציב משפחתי</span></span>
         <div class="d-flex align-items-center gap-2">
+            <!-- Budget Plan Selector -->
+            <div class="d-flex align-items-center gap-2" id="navPlanSelector">
+                <select id="navPlanSelect" class="form-select form-select-sm bg-white bg-opacity-10 text-white border-light"
+                        style="width:auto;min-width:140px;border-radius:10px;font-size:.85rem;cursor:pointer;background:rgba(255,255,255,0.15)"
+                        onchange="switchBudgetPlan(parseInt(this.value))">
+                </select>
+                <button class="btn btn-sm btn-outline-light" style="border-radius:10px" onclick="editCurrentBudgetPlan()" title="">
+                    <i class="bi bi-pencil"></i>
+                </button>
+                <button id="navAddPlanBtn" class="btn btn-sm btn-outline-light" style="border-radius:10px;white-space:nowrap"
+                        onclick="addBudgetPlan()">
+                    <i class="bi bi-plus-lg"></i>
+                </button>
+            </div>
             <div class="dropdown">
-                <button class="btn btn-outline-light btn-sm" type="button" data-bs-toggle="dropdown" data-t-title="nav_settings" title="הגדרות">
+                <button class="btn btn-outline-light btn-sm" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" data-t-title="nav_settings" title="הגדרות">
                     <i class="bi bi-list fs-5"></i>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end shadow-lg" id="navDropdown" style="min-width:280px;border-radius:14px;padding:8px 0;border:1px solid #e5e7eb">
+                    <!-- Plan Settings Header -->
+                    <li class="px-3 py-2">
+                        <div class="d-flex align-items-center gap-2 text-primary fw-bold" style="font-size:.9rem">
+                            <i class="bi bi-sliders"></i>
+                            <span id="settingsPlanName"></span>
+                        </div>
+                    </li>
+                    <li><hr class="dropdown-divider my-1"></li>
                     <!-- User -->
                     <li id="navUserItem" style="display:none"><span class="dropdown-item-text fw-bold px-3 py-2 d-flex align-items-center gap-2"><i class="bi bi-person-circle"></i><span id="navUsername"></span></span></li>
                     <li id="navUserDivider" style="display:none"><hr class="dropdown-divider my-1"></li>
@@ -812,8 +842,8 @@
                     <button class="btn btn-outline-secondary" onclick="new bootstrap.Modal(document.getElementById('addCategoryModal')).show()">
                         <i class="bi bi-plus-circle me-1"></i><span data-t="add_category2">הוסף קטגוריה</span>
                     </button>
-                    <button class="btn btn-outline-danger btn-sm" id="deletePlanBtn" style="display:none" onclick="deleteBudgetPlan()">
-                        <i class="bi bi-trash me-1"></i><span data-t="bp_delete">מחק תקציב זה</span>
+                    <button class="btn btn-outline-secondary btn-sm" id="deletePlanBtn" style="display:none" onclick="editCurrentBudgetPlan()">
+                        <i class="bi bi-pencil-square me-1"></i><span data-t="bp_edit_title">עריכת תקציב</span>
                     </button>
                 </div>
             </div>
@@ -1407,6 +1437,46 @@
 </div>
 </div>
 
+<!-- Budget Plan Modal -->
+<div class="modal fade" id="budgetPlanModal" tabindex="-1">
+<div class="modal-dialog modal-sm modal-dialog-centered">
+<div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
+    <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);padding:24px 24px 20px;color:#fff">
+        <div class="d-flex align-items-center justify-content-between">
+            <h5 class="modal-title mb-0 d-flex align-items-center gap-2" style="font-weight:600">
+                <i class="bi bi-journal-plus"></i><span id="bpModalTitle" data-t="bp_new_title">תקציב חדש</span>
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+    </div>
+    <div class="modal-body px-4 py-4">
+        <input type="hidden" id="bpEditId">
+        <div class="mb-3">
+            <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                <i class="bi bi-tag text-primary"></i><span data-t="bp_name_label">שם התקציב</span>
+            </label>
+            <input type="text" class="form-control" id="bpName" maxlength="25" placeholder="" data-t-placeholder="bp_name_placeholder">
+        </div>
+        <div class="mb-3">
+            <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                <i class="bi bi-card-text text-primary"></i><span data-t="bp_desc_label">תיאור</span>
+            </label>
+            <textarea class="form-control" id="bpDesc" rows="2" maxlength="100" placeholder="" data-t-placeholder="bp_desc_placeholder" style="resize:none"></textarea>
+        </div>
+        <button class="btn btn-primary w-100" style="border-radius:12px;padding:10px" onclick="saveBudgetPlanForm()">
+            <i class="bi bi-check-lg me-1"></i><span id="bpModalSaveBtn" data-t="save">שמור</span>
+        </button>
+        <!-- Delete zone (only for editing non-default plans) -->
+        <div id="bpDeleteZone" style="display:none;border-top:1px solid #f3f4f6" class="mt-3 pt-3">
+            <button class="btn btn-outline-danger btn-sm w-100" style="border-radius:10px" onclick="deleteBudgetPlanFromModal()">
+                <i class="bi bi-trash3 me-1"></i><span data-t="bp_delete">מחק תקציב זה</span>
+            </button>
+        </div>
+    </div>
+</div>
+</div>
+</div>
+
 <!-- Add Category Modal -->
 <div class="modal fade" id="addCategoryModal" tabindex="-1" dir="rtl">
 <div class="modal-dialog modal-sm">
@@ -1554,11 +1624,17 @@ let standingOrdersData = []; // cached for sorting
 let tabExpenses = [];       // expenses tab cache
 let tabIncome = [];         // income tab cache
 let activeFilter = null;    // { type: 'category'|'frequency', value: '...' }
-let currentLang = localStorage.getItem('appLang') || 'he';
-let currentCurrency = localStorage.getItem('appCurrency') || 'ILS';
-let avgFromMonth = localStorage.getItem('avgFromMonth') || 'all';
 let currentPlanId = parseInt(localStorage.getItem('currentPlanId') || '1');
 let budgetPlans = [];
+
+// Per-plan settings helpers
+function planKey(key) { return `plan_${currentPlanId}_${key}`; }
+function getPlanSetting(key, fallback) { return localStorage.getItem(planKey(key)) || fallback; }
+function setPlanSetting(key, val) { localStorage.setItem(planKey(key), val); }
+
+let currentLang = getPlanSetting('lang', 'he');
+let currentCurrency = getPlanSetting('currency', 'ILS');
+let avgFromMonth = getPlanSetting('avgFrom', 'all');
 
 // ============================================================
 // i18n Translations
@@ -1759,6 +1835,12 @@ const I18N = {
     bp_budget: 'תקציב', bp_rename: 'שנה שם תקציב', bp_delete: 'מחק תקציב זה',
     bp_delete_confirm: 'למחוק את התקציב', bp_deleted: 'התקציב נמחק',
     bp_dblclick_rename: 'לחץ פעמיים לשינוי שם', save: 'שמור',
+    bp_new_title: 'תקציב חדש', bp_edit_title: 'עריכת תקציב',
+    bp_name_label: 'שם התקציב', bp_desc_label: 'תיאור',
+    bp_name_placeholder: 'למשל: תקציב חסכוני', bp_desc_placeholder: 'תיאור קצר של התקציב...',
+    bp_delete_warning: 'פעולה זו תמחק את כל נתוני התקציב לצמיתות ולא ניתן לשחזר אותם!',
+    bp_created: 'התקציב נוצר בהצלחה',
+    settings_for: 'הגדרות עבור',
     income_added: 'ההכנסה נוספה בהצלחה!', saved_ok: 'נשמר בהצלחה!',
     confirm_delete_product: 'למחוק מוצר זה?', product_deleted: 'המוצר נמחק',
     click_change_cat: 'לחץ לשינוי קטגוריה',
@@ -2031,6 +2113,12 @@ const I18N = {
     bp_budget: 'Budget', bp_rename: 'Rename budget', bp_delete: 'Delete this budget',
     bp_delete_confirm: 'Delete budget', bp_deleted: 'Budget deleted',
     bp_dblclick_rename: 'Double-click to rename', save: 'Save',
+    bp_new_title: 'New Budget', bp_edit_title: 'Edit Budget',
+    bp_name_label: 'Budget Name', bp_desc_label: 'Description',
+    bp_name_placeholder: 'e.g. Savings budget', bp_desc_placeholder: 'Short description...',
+    bp_delete_warning: 'This will permanently delete all budget data and cannot be undone!',
+    bp_created: 'Budget created successfully',
+    settings_for: 'Settings for',
     income_added: 'Income added successfully!', saved_ok: 'Saved successfully!',
     confirm_delete_product: 'Delete this product?', product_deleted: 'Product deleted',
     click_change_cat: 'Click to change category',
@@ -2115,7 +2203,7 @@ function t(key) { return (I18N[currentLang] || I18N.he)[key] || (I18N.he)[key] |
 
 function setLang(lang) {
     currentLang = lang;
-    localStorage.setItem('appLang', lang);
+    setPlanSetting('lang', lang);
     const isRTL = lang === 'he';
     document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
     document.documentElement.lang = lang;
@@ -2146,6 +2234,7 @@ function setLang(lang) {
     // Re-render dynamic content
     applyTranslations();
     populateAvgFromDropdown();
+    updateSettingsHeader();
     refreshAll();
 }
 
@@ -2302,7 +2391,7 @@ function fmtDecimal(n) {
 
 function setCurrency(cur) {
     currentCurrency = cur;
-    localStorage.setItem('appCurrency', cur);
+    setPlanSetting('currency', cur);
     document.querySelectorAll('.currency-btn').forEach(b => {
         const isActive = b.dataset.currency === cur;
         b.classList.toggle('active', isActive);
@@ -2314,7 +2403,7 @@ function setCurrency(cur) {
 
 function setAvgFrom(val) {
     avgFromMonth = val;
-    localStorage.setItem('avgFromMonth', val);
+    setPlanSetting('avgFrom', val);
     loadBudget();
 }
 
@@ -2359,7 +2448,7 @@ function appConfirm(msg, { type = 'danger', okText, cancelText } = {}) {
         const colors = { danger: '#ef4444', warning: '#f59e0b', info: '#3b82f6' };
         document.getElementById('confirmIcon').className = `bi ${icons[type] || icons.danger}`;
         document.getElementById('confirmIcon').style.color = colors[type] || colors.danger;
-        document.getElementById('confirmMsg').textContent = msg;
+        document.getElementById('confirmMsg').innerHTML = msg;
         const okBtn = document.getElementById('confirmOk');
         const cancelBtn = document.getElementById('confirmCancel');
         okBtn.textContent = okText || t('confirm_yes') || 'OK';
@@ -2381,7 +2470,7 @@ function appAlert(msg, type = 'info') {
         const colors = { danger: '#ef4444', warning: '#f59e0b', info: '#3b82f6', success: '#10b981' };
         document.getElementById('confirmIcon').className = `bi ${icons[type] || icons.info}`;
         document.getElementById('confirmIcon').style.color = colors[type] || colors.info;
-        document.getElementById('confirmMsg').textContent = msg;
+        document.getElementById('confirmMsg').innerHTML = msg;
         const okBtn = document.getElementById('confirmOk');
         const cancelBtn = document.getElementById('confirmCancel');
         okBtn.textContent = 'OK';
@@ -2786,6 +2875,11 @@ async function loadBudget() {
         api('/api/budget-plans')
     ]);
     budgetPlans = plans;
+    // Reset to first plan if stored plan no longer exists
+    if (plans.length && !plans.find(p => p.id === currentPlanId)) {
+        currentPlanId = plans[0].id;
+        localStorage.setItem('currentPlanId', currentPlanId);
+    }
     renderBudgetPlanSelector();
 
     const budgetMap = {};
@@ -2808,89 +2902,138 @@ async function loadBudget() {
 }
 
 function renderBudgetPlanSelector() {
+    // Budget tab buttons
     const container = document.getElementById('budgetPlanBtns');
     container.innerHTML = budgetPlans.map(p => `
         <button class="btn btn-sm ${p.id === currentPlanId ? 'btn-primary' : 'btn-outline-primary'}"
                 onclick="switchBudgetPlan(${p.id})"
-                ondblclick="renameBudgetPlan(${p.id}, '${p.name.replace(/'/g, "\\'")}')"
+                ondblclick="openBudgetPlanModal(budgetPlans.find(x=>x.id===${p.id}))"
                 title="${t('bp_dblclick_rename')}">
             ${p.name}
         </button>
     `).join('');
-    // Show/hide add button (max 3)
     document.getElementById('addPlanBtn').style.display = budgetPlans.length >= 3 ? 'none' : '';
-    // Show delete button only for non-default plans
-    document.getElementById('deletePlanBtn').style.display = currentPlanId > 1 ? '' : 'none';
+    document.getElementById('deletePlanBtn').style.display = '';
+
+    // Navbar dropdown
+    const navSelect = document.getElementById('navPlanSelect');
+    navSelect.innerHTML = budgetPlans.map(p =>
+        `<option value="${p.id}" ${p.id === currentPlanId ? 'selected' : ''}>${p.name}</option>`
+    ).join('');
+    document.getElementById('navAddPlanBtn').style.display = budgetPlans.length >= 3 ? 'none' : '';
+    updateSettingsHeader();
 }
 
 function switchBudgetPlan(planId) {
     currentPlanId = planId;
     localStorage.setItem('currentPlanId', planId);
+    // Load per-plan settings
+    loadPlanSettings();
+    // Sync navbar select
+    const navSelect = document.getElementById('navPlanSelect');
+    if (navSelect) navSelect.value = planId;
     loadBudget();
     loadDashboard();
 }
 
-async function addBudgetPlan() {
+function loadPlanSettings() {
+    const lang = getPlanSetting('lang', 'he');
+    const cur = getPlanSetting('currency', 'ILS');
+    const avg = getPlanSetting('avgFrom', 'all');
+    if (lang !== currentLang) setLang(lang);
+    if (cur !== currentCurrency) setCurrency(cur);
+    avgFromMonth = avg;
+    const avgSel = document.getElementById('avgFromMonth');
+    if (avgSel) avgSel.value = avg;
+    updateSettingsHeader();
+}
+
+function updateSettingsHeader() {
+    const el = document.getElementById('settingsPlanName');
+    if (!el) return;
+    const plan = budgetPlans.find(p => p.id === currentPlanId);
+    el.textContent = `${t('settings_for')} ${plan ? plan.name : ''}`;
+}
+
+function addBudgetPlan() {
     if (budgetPlans.length >= 3) return;
-    const name = `${t('bp_budget')} ${budgetPlans.length + 1}`;
+    openBudgetPlanModal();
+}
+
+function openBudgetPlanModal(plan) {
+    const isEdit = !!plan;
+    document.getElementById('bpEditId').value = isEdit ? plan.id : '';
+    document.getElementById('bpName').value = isEdit ? plan.name : '';
+    document.getElementById('bpDesc').value = isEdit ? (plan.description || '') : '';
+    document.getElementById('bpModalTitle').textContent = t(isEdit ? 'bp_edit_title' : 'bp_new_title');
+    document.getElementById('bpModalSaveBtn').textContent = t('save');
+    // Show delete zone only for non-default plans in edit mode
+    const deleteZone = document.getElementById('bpDeleteZone');
+    deleteZone.style.display = (isEdit && plan.id > 1) ? '' : 'none';
+    new bootstrap.Modal(document.getElementById('budgetPlanModal')).show();
+    setTimeout(() => document.getElementById('bpName').focus(), 300);
+}
+
+async function saveBudgetPlanForm() {
+    const id = document.getElementById('bpEditId').value;
+    const name = document.getElementById('bpName').value.trim();
+    const desc = document.getElementById('bpDesc').value.trim();
+    if (!name) { await appAlert(t('bp_name_label'), 'warning'); return; }
+
     await api('/api/budget-plans', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ id: id ? parseInt(id) : null, name, description: desc })
     });
-    const plans = await api('/api/budget-plans');
-    currentPlanId = plans[plans.length - 1].id;
-    localStorage.setItem('currentPlanId', currentPlanId);
-    loadBudget();
+
+    bootstrap.Modal.getInstance(document.getElementById('budgetPlanModal')).hide();
+
+    if (!id) {
+        // New plan — switch to it
+        const plans = await api('/api/budget-plans');
+        currentPlanId = plans[plans.length - 1].id;
+        localStorage.setItem('currentPlanId', currentPlanId);
+        showToast(t('bp_created'), 'success');
+    } else {
+        showToast(t('budget_saved'), 'success');
+    }
+    await loadBudget();
+    loadDashboard();
 }
 
-async function renameBudgetPlan(id, currentName) {
-    const overlay = document.getElementById('confirmOverlay');
-    return new Promise(resolve => {
-        document.getElementById('confirmIcon').className = 'bi bi-pencil-square';
-        document.getElementById('confirmIcon').style.color = '#3b82f6';
-        document.getElementById('confirmMsg').innerHTML = `
-            <div class="mb-2">${t('bp_rename')}</div>
-            <input type="text" id="renamePlanInput" class="form-control text-center" value="${currentName}" maxlength="20">
-        `;
-        const okBtn = document.getElementById('confirmOk');
-        const cancelBtn = document.getElementById('confirmCancel');
-        okBtn.textContent = t('save') || 'Save';
-        okBtn.className = 'btn btn-primary px-4';
-        okBtn.style.borderRadius = '10px';
-        cancelBtn.textContent = t('confirm_no');
-        overlay.style.display = 'block';
-        setTimeout(() => { const inp = document.getElementById('renamePlanInput'); inp.focus(); inp.select(); }, 100);
-        const cleanup = async (save) => {
-            if (save) {
-                const newName = document.getElementById('renamePlanInput').value.trim();
-                if (newName) {
-                    await api('/api/budget-plans', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ id, name: newName })
-                    });
-                    loadBudget();
-                }
-            }
-            overlay.style.display = 'none';
-            resolve();
-        };
-        okBtn.onclick = () => cleanup(true);
-        cancelBtn.onclick = () => cleanup(false);
-        overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
-    });
+async function editCurrentBudgetPlan() {
+    if (!budgetPlans.length) {
+        budgetPlans = await api('/api/budget-plans');
+    }
+    let plan = budgetPlans.find(p => p.id === currentPlanId);
+    if (!plan && budgetPlans.length) {
+        currentPlanId = budgetPlans[0].id;
+        localStorage.setItem('currentPlanId', currentPlanId);
+        plan = budgetPlans[0];
+    }
+    if (plan) openBudgetPlanModal(plan);
 }
 
-async function deleteBudgetPlan() {
-    if (currentPlanId === 1) return;
-    const plan = budgetPlans.find(p => p.id === currentPlanId);
-    if (!await appConfirm(`${t('bp_delete_confirm')} "${plan?.name}"?`)) return;
-    await api(`/api/budget-plans/${currentPlanId}`, { method: 'DELETE' });
+async function deleteBudgetPlanFromModal() {
+    const id = parseInt(document.getElementById('bpEditId').value);
+    if (!id || id === 1) return;
+    const plan = budgetPlans.find(p => p.id === id);
+
+    bootstrap.Modal.getInstance(document.getElementById('budgetPlanModal')).hide();
+
+    // Show scary warning
+    const confirmed = await appConfirm(
+        `<div class="fw-bold mb-2">${t('bp_delete_confirm')} "${plan?.name}"?</div>
+         <div class="small text-danger"><i class="bi bi-exclamation-triangle-fill me-1"></i>${t('bp_delete_warning')}</div>`,
+        { type: 'danger', okText: t('bp_delete'), cancelText: t('confirm_no') }
+    );
+    if (!confirmed) return;
+
+    await api(`/api/budget-plans/${id}`, { method: 'DELETE' });
     currentPlanId = 1;
     localStorage.setItem('currentPlanId', '1');
     showToast(t('bp_deleted'), 'warning');
-    loadBudget();
+    await loadBudget();
     loadDashboard();
 }
 
