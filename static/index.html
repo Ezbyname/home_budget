@@ -374,6 +374,162 @@
             }
             .insights-backdrop.show { display: block; }
         }
+
+        /* ── Tutorial Overlay ── */
+        .tut-overlay {
+            position: fixed; inset: 0; z-index: 10000;
+            pointer-events: none;
+            transition: opacity .3s;
+        }
+        .tut-overlay.hidden { opacity: 0; pointer-events: none !important; }
+        .tut-overlay.visible { opacity: 1; }
+        .tut-backdrop {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,.55);
+            z-index: 10001;
+            pointer-events: auto;
+            transition: opacity .3s;
+        }
+        .tut-spotlight {
+            position: absolute;
+            border-radius: 14px;
+            box-shadow: 0 0 0 9999px rgba(0,0,0,.55);
+            z-index: 10002;
+            transition: all .45s cubic-bezier(.4,0,.2,1);
+            pointer-events: none;
+        }
+        .tut-spotlight::after {
+            content: '';
+            position: absolute; inset: -4px;
+            border-radius: 18px;
+            border: 3px solid #60a5fa;
+            animation: tut-pulse 1.8s ease-in-out infinite;
+        }
+        @keyframes tut-pulse {
+            0%,100% { border-color: #60a5fa; box-shadow: 0 0 12px rgba(96,165,250,.3); }
+            50% { border-color: #a78bfa; box-shadow: 0 0 24px rgba(167,139,250,.5); }
+        }
+        .tut-card {
+            position: absolute;
+            z-index: 10003;
+            pointer-events: auto;
+            width: 360px; max-width: 92vw;
+            background: #fff;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.25), 0 0 0 1px rgba(0,0,0,.05);
+            overflow: hidden;
+            animation: tut-card-in .4s cubic-bezier(.4,0,.2,1) both;
+        }
+        @keyframes tut-card-in {
+            from { opacity: 0; transform: translateY(16px) scale(.96); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .tut-card-header {
+            padding: 20px 24px 16px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6, #a78bfa);
+            color: #fff;
+        }
+        .tut-card-header h5 {
+            margin: 0; font-weight: 700; font-size: 1.1rem;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .tut-card-header .tut-step-badge {
+            font-size: .7rem; font-weight: 600;
+            background: rgba(255,255,255,.2);
+            padding: 3px 10px; border-radius: 20px;
+            margin-inline-start: auto; white-space: nowrap;
+        }
+        .tut-card-body {
+            padding: 18px 24px 12px;
+            font-size: .92rem; color: #374151; line-height: 1.6;
+        }
+        .tut-card-footer {
+            padding: 10px 24px 18px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .tut-btn {
+            border: none; border-radius: 12px; padding: 9px 20px;
+            font-size: .85rem; font-weight: 600; cursor: pointer;
+            transition: all .15s;
+        }
+        .tut-btn-primary {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: #fff;
+        }
+        .tut-btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .tut-btn-ghost {
+            background: transparent; color: #6b7280;
+        }
+        .tut-btn-ghost:hover { background: #f3f4f6; }
+        .tut-progress {
+            height: 4px; background: #e5e7eb; border-radius: 2px;
+            margin: 0 24px 14px; overflow: hidden;
+        }
+        .tut-progress-bar {
+            height: 100%; background: linear-gradient(90deg, #6366f1, #a78bfa);
+            border-radius: 2px;
+            transition: width .4s cubic-bezier(.4,0,.2,1);
+        }
+
+        /* Welcome screen */
+        .tut-welcome {
+            position: fixed; inset: 0;
+            z-index: 10005;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,.6);
+            pointer-events: auto;
+            animation: fadeIn .3s both;
+        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .tut-welcome-card {
+            background: #fff; border-radius: 24px;
+            padding: 0; width: 400px; max-width: 92vw;
+            box-shadow: 0 24px 64px rgba(0,0,0,.3);
+            overflow: hidden;
+            animation: tut-welcome-in .5s cubic-bezier(.4,0,.2,1) both;
+        }
+        @keyframes tut-welcome-in {
+            from { opacity: 0; transform: scale(.8) translateY(30px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .tut-welcome-hero {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #c084fc 100%);
+            padding: 48px 32px 36px;
+            text-align: center; color: #fff;
+        }
+        .tut-welcome-hero .tut-icon {
+            font-size: 3.5rem;
+            animation: tut-bounce 1s ease infinite;
+        }
+        @keyframes tut-bounce {
+            0%,100% { transform: translateY(0); }
+            50% { transform: translateY(-12px); }
+        }
+        .tut-welcome-hero h3 { margin: 16px 0 8px; font-weight: 800; font-size: 1.6rem; }
+        .tut-welcome-hero p { opacity: .9; font-size: 1rem; margin: 0; }
+        .tut-welcome-body { padding: 28px 32px 32px; text-align: center; }
+        .tut-welcome-body .tut-btn { font-size: 1rem; padding: 14px 36px; border-radius: 14px; }
+        .tut-welcome-body .tut-skip-link {
+            display: block; margin-top: 14px;
+            color: #9ca3af; font-size: .85rem; cursor: pointer;
+            border: none; background: none;
+        }
+        .tut-welcome-body .tut-skip-link:hover { color: #6b7280; }
+
+        /* Confetti for done step */
+        .tut-confetti {
+            position: fixed; inset: 0; z-index: 10006; pointer-events: none;
+        }
+        .tut-confetti-piece {
+            position: absolute;
+            width: 10px; height: 10px;
+            border-radius: 2px;
+            animation: tut-confetti-fall 1.5s ease-out forwards;
+        }
+        @keyframes tut-confetti-fall {
+            0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+        }
     </style>
 </head>
 <body>
@@ -438,6 +594,7 @@
                     </li>
                     <li><hr class="dropdown-divider my-1"></li>
                     <!-- Actions -->
+                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="startTutorial();return false"><i class="bi bi-mortarboard"></i><span data-t="tut_restart">מדריך למשתמש</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openReminders();return false"><i class="bi bi-bell"></i><span data-t="nav_reminders">תזכורות</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openSmtpSettings();return false"><i class="bi bi-gear"></i><span data-t="nav_email_settings">הגדרות דוא״ל / SMS</span></a></li>
                     <li id="navLogoutItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 text-danger d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><i class="bi bi-box-arrow-left"></i><span data-t="nav_logout">יציאה</span></a></li>
@@ -1918,6 +2075,41 @@ const I18N = {
     so_no_orders: 'לא נמצאו הוראות קבע', so_total_monthly: 'סה"כ חודשי',
     so_count: 'הוראות קבע',
     currency_label: 'מטבע:',
+    // Tutorial
+    tut_welcome_title: '!ברוכים הבאים',
+    tut_welcome_body: 'בואו נכיר את האפליקציה ב-2 דקות! 🎉',
+    tut_start: 'יאללה, בואו נתחיל!',
+    tut_next: 'הבא',
+    tut_prev: 'הקודם',
+    tut_skip: 'דלג',
+    tut_done: 'סיימתי! 🎉',
+    tut_step: 'שלב',
+    tut_of: 'מתוך',
+    tut_nav_title: 'ניווט בין חודשים',
+    tut_nav_body: 'לחצו על החצים כדי לעבור בין חודשים. כל חודש מציג נתונים נפרדים.',
+    tut_tabs_title: 'הלשוניות שלכם',
+    tut_tabs_body: 'כאן תמצאו הכל: דשבורד, הוצאות, הכנסות, תקציב, ביטוח, תובנות, ניתוח חכם וייבוא.',
+    tut_dashboard_title: 'הדשבורד',
+    tut_dashboard_body: 'מבט-על על המצב הפיננסי שלכם: סיכום חודשי, גרפים, והשוואת תקציב.',
+    tut_import_title: 'ייבוא נתונים',
+    tut_import_body: 'כאן מעלים קבצים מהבנק ומויזה. פשוט גוררים את הקובץ או לוחצים על האזור.',
+    tut_import_bank: 'קובץ עו"ש (CSV)',
+    tut_import_bank_body: 'הורידו את קובץ העו"ש מהבנק (פורמט CSV) והעלו אותו כאן. המערכת תזהה הכנסות והוצאות אוטומטית.',
+    tut_import_visa: 'דוח ויזה (XLSX)',
+    tut_import_visa_body: 'הורידו את דוח החיובים מחברת האשראי (פורמט XLSX) והעלו כאן.',
+    tut_expenses_title: 'ניהול הוצאות',
+    tut_expenses_body: 'הוסיפו הוצאות ידנית, ערכו או מחקו. ניתן למיין לפי עמודות ולסנן.',
+    tut_budget_title: 'תכנון תקציב',
+    tut_budget_body: 'קבעו תקציב לכל קטגוריה ועקבו אחרי ההוצאות בפועל מול התכנון. ניתן ליצור עד 3 תקציבים!',
+    tut_plans_title: 'תקציבים מרובים',
+    tut_plans_body: 'בחרו בין תקציבים, ערכו או הוסיפו חדשים. לכל תקציב הגדרות נפרדות.',
+    tut_settings_title: 'הגדרות',
+    tut_settings_body: 'שנו שפה, מטבע, וחישוב ממוצעים. כל הגדרה נשמרת לפי התקציב הנוכחי.',
+    tut_export_title: 'ייצוא לאקסל',
+    tut_export_body: 'לחצו כאן כדי להוריד את כל הנתונים של החודש הנוכחי לקובץ Excel.',
+    tut_insights_title: 'תובנות',
+    tut_insights_body: 'גלו דפוסי הוצאות, חריגות, מגמות והישגים. הנתונים שלכם הופכים לתובנות!',
+    tut_restart: 'מדריך למשתמש',
   },
   en: {
     app_title: 'Family Budget Tracker',
@@ -2196,6 +2388,41 @@ const I18N = {
     so_no_orders: 'No standing orders found', so_total_monthly: 'Total Monthly',
     so_count: 'Standing Orders',
     currency_label: 'Currency:',
+    // Tutorial
+    tut_welcome_title: 'Welcome!',
+    tut_welcome_body: "Let's explore the app in 2 minutes! 🎉",
+    tut_start: "Let's go!",
+    tut_next: 'Next',
+    tut_prev: 'Previous',
+    tut_skip: 'Skip',
+    tut_done: 'All done! 🎉',
+    tut_step: 'Step',
+    tut_of: 'of',
+    tut_nav_title: 'Navigate Months',
+    tut_nav_body: 'Click arrows to switch between months. Each month shows separate data.',
+    tut_tabs_title: 'Your Tabs',
+    tut_tabs_body: 'Find everything here: Dashboard, Expenses, Income, Budget, Insurance, Insights, Analysis and Import.',
+    tut_dashboard_title: 'Dashboard',
+    tut_dashboard_body: 'A bird\'s-eye view of your finances: monthly summary, charts, and budget comparison.',
+    tut_import_title: 'Import Data',
+    tut_import_body: 'Upload files from your bank or credit card. Just drag the file or click the zone.',
+    tut_import_bank: 'Bank Statement (CSV)',
+    tut_import_bank_body: 'Download your bank statement (CSV format) and upload it here. The system auto-detects income and expenses.',
+    tut_import_visa: 'Visa Report (XLSX)',
+    tut_import_visa_body: 'Download your credit card charges report (XLSX format) and upload here.',
+    tut_expenses_title: 'Manage Expenses',
+    tut_expenses_body: 'Add expenses manually, edit or delete. Sort by columns and filter.',
+    tut_budget_title: 'Budget Planning',
+    tut_budget_body: 'Set a budget per category and track actual spending vs. plan. You can create up to 3 budgets!',
+    tut_plans_title: 'Multiple Budgets',
+    tut_plans_body: 'Switch between budgets, edit or add new ones. Each budget has its own settings.',
+    tut_settings_title: 'Settings',
+    tut_settings_body: 'Change language, currency, and average calculation. Each setting is saved per budget.',
+    tut_export_title: 'Export to Excel',
+    tut_export_body: 'Click here to download all current month data as an Excel file.',
+    tut_insights_title: 'Insights',
+    tut_insights_body: 'Discover spending patterns, anomalies, trends and achievements. Your data becomes insights!',
+    tut_restart: 'User Guide',
   }
 };
 
@@ -5037,6 +5264,360 @@ async function init() {
 }
 
 init();
+
+// ============================================================
+// Interactive Tutorial System
+// ============================================================
+const TUTORIAL_STEPS = [
+    {
+        target: '.month-nav',
+        titleKey: 'tut_nav_title',
+        bodyKey: 'tut_nav_body',
+        icon: 'bi-calendar3',
+        position: 'bottom',
+    },
+    {
+        target: '.nav-pills',
+        titleKey: 'tut_tabs_title',
+        bodyKey: 'tut_tabs_body',
+        icon: 'bi-layout-text-sidebar',
+        position: 'bottom',
+    },
+    {
+        target: '#dashboardTab',
+        titleKey: 'tut_dashboard_title',
+        bodyKey: 'tut_dashboard_body',
+        icon: 'bi-speedometer2',
+        position: 'top',
+        beforeShow() { document.querySelector('a[href="#dashboardTab"]').click(); },
+    },
+    {
+        target: 'a[href="#importTab"]',
+        titleKey: 'tut_import_title',
+        bodyKey: 'tut_import_body',
+        icon: 'bi-upload',
+        position: 'bottom',
+        beforeShow() { document.querySelector('a[href="#importTab"]').click(); },
+    },
+    {
+        target: '#bankUploadZone',
+        titleKey: 'tut_import_bank',
+        bodyKey: 'tut_import_bank_body',
+        icon: 'bi-bank',
+        position: 'right',
+    },
+    {
+        target: '#visaUploadZone',
+        titleKey: 'tut_import_visa',
+        bodyKey: 'tut_import_visa_body',
+        icon: 'bi-credit-card-2-front',
+        position: 'right',
+    },
+    {
+        target: 'a[href="#expensesTab"]',
+        titleKey: 'tut_expenses_title',
+        bodyKey: 'tut_expenses_body',
+        icon: 'bi-credit-card',
+        position: 'bottom',
+        beforeShow() { document.querySelector('a[href="#expensesTab"]').click(); },
+    },
+    {
+        target: 'a[href="#budgetTab"]',
+        titleKey: 'tut_budget_title',
+        bodyKey: 'tut_budget_body',
+        icon: 'bi-calculator',
+        position: 'bottom',
+        beforeShow() { document.querySelector('a[href="#budgetTab"]').click(); },
+    },
+    {
+        target: '#navPlanSelector',
+        titleKey: 'tut_plans_title',
+        bodyKey: 'tut_plans_body',
+        icon: 'bi-collection',
+        position: 'bottom',
+    },
+    {
+        target: '[data-t-title="nav_settings"]',
+        titleKey: 'tut_settings_title',
+        bodyKey: 'tut_settings_body',
+        icon: 'bi-sliders',
+        position: 'bottom',
+    },
+    {
+        target: 'button[onclick="exportExcel()"]',
+        titleKey: 'tut_export_title',
+        bodyKey: 'tut_export_body',
+        icon: 'bi-file-earmark-excel',
+        position: 'bottom',
+    },
+    {
+        target: 'a[href="#insightsTab"]',
+        titleKey: 'tut_insights_title',
+        bodyKey: 'tut_insights_body',
+        icon: 'bi-stars',
+        position: 'bottom',
+        beforeShow() { document.querySelector('a[href="#insightsTab"]').click(); },
+    },
+];
+
+let tutorialOverlay = null;
+let tutCurrentStep = -1;
+
+function createTutorialOverlay() {
+    if (tutorialOverlay) tutorialOverlay.remove();
+    const el = document.createElement('div');
+    el.className = 'tut-overlay hidden';
+    el.id = 'tutOverlay';
+    el.innerHTML = `
+        <div class="tut-spotlight" id="tutSpotlight"></div>
+        <div class="tut-card" id="tutCard">
+            <div class="tut-card-header">
+                <h5>
+                    <i class="bi" id="tutIcon"></i>
+                    <span id="tutTitle"></span>
+                    <span class="tut-step-badge" id="tutBadge"></span>
+                </h5>
+            </div>
+            <div class="tut-progress"><div class="tut-progress-bar" id="tutProgress"></div></div>
+            <div class="tut-card-body" id="tutBody"></div>
+            <div class="tut-card-footer">
+                <button class="tut-btn tut-btn-ghost" id="tutSkipBtn" onclick="endTutorial()">${t('tut_skip')}</button>
+                <div style="flex:1"></div>
+                <button class="tut-btn tut-btn-ghost" id="tutPrevBtn" onclick="tutPrev()">
+                    <i class="bi bi-chevron-left"></i> ${t('tut_prev')}
+                </button>
+                <button class="tut-btn tut-btn-primary" id="tutNextBtn" onclick="tutNext()">
+                    ${t('tut_next')} <i class="bi bi-chevron-right"></i>
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(el);
+    tutorialOverlay = el;
+
+    // Close on backdrop click (not on card or spotlight)
+    el.addEventListener('click', (e) => {
+        if (e.target === el) endTutorial();
+    });
+}
+
+function showWelcomeScreen() {
+    const existing = document.getElementById('tutWelcome');
+    if (existing) existing.remove();
+    const w = document.createElement('div');
+    w.className = 'tut-welcome';
+    w.id = 'tutWelcome';
+    w.innerHTML = `
+        <div class="tut-welcome-card">
+            <div class="tut-welcome-hero">
+                <div class="tut-icon">🎓</div>
+                <h3>${t('tut_welcome_title')}</h3>
+                <p>${t('tut_welcome_body')}</p>
+            </div>
+            <div class="tut-welcome-body">
+                <button class="tut-btn tut-btn-primary" onclick="startTutorialSteps()" style="width:100%">
+                    ${t('tut_start')}
+                </button>
+                <button class="tut-skip-link" onclick="endTutorial()">
+                    ${t('tut_skip')}
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(w);
+}
+
+function startTutorial() {
+    // Close any open dropdown
+    const dd = document.querySelector('.dropdown-menu.show');
+    if (dd) bootstrap.Dropdown.getOrCreateInstance(dd.previousElementSibling)?.hide();
+    showWelcomeScreen();
+}
+
+function startTutorialSteps() {
+    const w = document.getElementById('tutWelcome');
+    if (w) w.remove();
+    createTutorialOverlay();
+    tutorialOverlay.classList.remove('hidden');
+    tutorialOverlay.classList.add('visible');
+    tutCurrentStep = -1;
+    tutNext();
+}
+
+function tutNext() {
+    // Run afterHide on previous step
+    if (tutCurrentStep >= 0 && tutCurrentStep < TUTORIAL_STEPS.length) {
+        const prev = TUTORIAL_STEPS[tutCurrentStep];
+        if (prev.afterHide) prev.afterHide();
+    }
+
+    tutCurrentStep++;
+    if (tutCurrentStep >= TUTORIAL_STEPS.length) {
+        endTutorial(true);
+        return;
+    }
+    showTutorialStep(tutCurrentStep);
+}
+
+function tutPrev() {
+    if (tutCurrentStep <= 0) return;
+    // Run afterHide on current step
+    const cur = TUTORIAL_STEPS[tutCurrentStep];
+    if (cur.afterHide) cur.afterHide();
+
+    tutCurrentStep--;
+    showTutorialStep(tutCurrentStep);
+}
+
+function showTutorialStep(idx) {
+    const step = TUTORIAL_STEPS[idx];
+    if (step.beforeShow) step.beforeShow();
+
+    // Small delay to let DOM update after tab switch
+    setTimeout(() => {
+        const targetEl = document.querySelector(step.target);
+        if (!targetEl) { tutNext(); return; }
+
+        const rect = targetEl.getBoundingClientRect();
+        const spotlight = document.getElementById('tutSpotlight');
+        const card = document.getElementById('tutCard');
+
+        // Position spotlight
+        const pad = 8;
+        spotlight.style.top = (rect.top - pad + window.scrollY) + 'px';
+        spotlight.style.left = (rect.left - pad) + 'px';
+        spotlight.style.width = (rect.width + pad * 2) + 'px';
+        spotlight.style.height = (rect.height + pad * 2) + 'px';
+
+        // Update card content
+        document.getElementById('tutIcon').className = `bi ${step.icon}`;
+        document.getElementById('tutTitle').textContent = t(step.titleKey);
+        document.getElementById('tutBody').textContent = t(step.bodyKey);
+        document.getElementById('tutBadge').textContent = `${t('tut_step')} ${idx + 1} ${t('tut_of')} ${TUTORIAL_STEPS.length}`;
+
+        // Progress bar
+        document.getElementById('tutProgress').style.width = ((idx + 1) / TUTORIAL_STEPS.length * 100) + '%';
+
+        // Buttons
+        document.getElementById('tutPrevBtn').style.display = idx > 0 ? '' : 'none';
+        const nextBtn = document.getElementById('tutNextBtn');
+        if (idx === TUTORIAL_STEPS.length - 1) {
+            nextBtn.innerHTML = t('tut_done');
+        } else {
+            const isRTL = document.documentElement.dir === 'rtl';
+            nextBtn.innerHTML = isRTL
+                ? `<i class="bi bi-chevron-left"></i> ${t('tut_next')}`
+                : `${t('tut_next')} <i class="bi bi-chevron-right"></i>`;
+        }
+
+        // Update prev button arrows
+        const prevBtn = document.getElementById('tutPrevBtn');
+        const isRTL = document.documentElement.dir === 'rtl';
+        prevBtn.innerHTML = isRTL
+            ? `${t('tut_prev')} <i class="bi bi-chevron-right"></i>`
+            : `<i class="bi bi-chevron-left"></i> ${t('tut_prev')}`;
+
+        // Position card
+        positionTutCard(card, rect, step.position);
+
+        // Scroll target into view
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // Re-trigger card animation
+        card.style.animation = 'none';
+        card.offsetHeight; // reflow
+        card.style.animation = '';
+    }, 150);
+}
+
+function positionTutCard(card, rect, position) {
+    const gap = 16;
+    const cardW = 360;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let top, left;
+
+    switch (position) {
+        case 'bottom':
+            top = rect.bottom + gap + window.scrollY;
+            left = rect.left + rect.width / 2 - cardW / 2;
+            break;
+        case 'top':
+            top = rect.top - gap + window.scrollY;
+            left = rect.left + rect.width / 2 - cardW / 2;
+            // We'll adjust after measuring card height
+            card.style.top = '0px'; card.style.left = Math.max(8, Math.min(left, vw - cardW - 8)) + 'px';
+            const h = card.offsetHeight;
+            top = rect.top - gap - h + window.scrollY;
+            break;
+        case 'left':
+            top = rect.top + rect.height / 2 - 80 + window.scrollY;
+            left = rect.left - cardW - gap;
+            break;
+        case 'right':
+            top = rect.top + rect.height / 2 - 80 + window.scrollY;
+            left = rect.right + gap;
+            break;
+    }
+
+    // Clamp within viewport
+    left = Math.max(8, Math.min(left, vw - cardW - 8));
+    top = Math.max(8 + window.scrollY, top);
+
+    card.style.top = top + 'px';
+    card.style.left = left + 'px';
+}
+
+function endTutorial(completed) {
+    const w = document.getElementById('tutWelcome');
+    if (w) w.remove();
+
+    if (tutorialOverlay) {
+        // Run afterHide on current step
+        if (tutCurrentStep >= 0 && tutCurrentStep < TUTORIAL_STEPS.length) {
+            const cur = TUTORIAL_STEPS[tutCurrentStep];
+            if (cur.afterHide) cur.afterHide();
+        }
+        tutorialOverlay.classList.remove('visible');
+        tutorialOverlay.classList.add('hidden');
+        setTimeout(() => { tutorialOverlay?.remove(); tutorialOverlay = null; }, 300);
+    }
+
+    localStorage.setItem('tutorialSeen', '1');
+    tutCurrentStep = -1;
+
+    // Return to dashboard
+    document.querySelector('a[href="#dashboardTab"]')?.click();
+
+    if (completed) showConfetti();
+}
+
+function showConfetti() {
+    const container = document.createElement('div');
+    container.className = 'tut-confetti';
+    const colors = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#ef4444'];
+    for (let i = 0; i < 60; i++) {
+        const piece = document.createElement('div');
+        piece.className = 'tut-confetti-piece';
+        piece.style.left = Math.random() * 100 + 'vw';
+        piece.style.top = -10 + 'px';
+        piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+        piece.style.animationDelay = Math.random() * .8 + 's';
+        piece.style.animationDuration = (1 + Math.random()) + 's';
+        piece.style.width = (6 + Math.random() * 8) + 'px';
+        piece.style.height = (6 + Math.random() * 8) + 'px';
+        piece.style.borderRadius = Math.random() > 0.5 ? '50%' : '2px';
+        container.appendChild(piece);
+    }
+    document.body.appendChild(container);
+    setTimeout(() => container.remove(), 2500);
+}
+
+// Auto-show tutorial on first visit
+if (!localStorage.getItem('tutorialSeen')) {
+    setTimeout(() => startTutorial(), 1500);
+}
 </script>
 </body>
 </html>
