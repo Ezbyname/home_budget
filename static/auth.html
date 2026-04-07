@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ניהול תקציב משפחתי - כניסה</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --bg: #f0f5ff;
+            --card-bg: #fff;
+        }
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+        }
+        .auth-container {
+            width: 100%;
+            max-width: 440px;
+            padding: 20px;
+        }
+        .auth-card {
+            background: var(--card-bg);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px 35px;
+            animation: slideUp 0.4s ease;
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .auth-logo {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        .auth-logo i {
+            font-size: 3rem;
+            color: var(--primary);
+        }
+        .auth-logo h2 {
+            margin-top: 10px;
+            color: #1e293b;
+            font-weight: 700;
+        }
+        .auth-logo p {
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+        .form-floating {
+            margin-bottom: 16px;
+        }
+        .form-floating .form-control {
+            border-radius: 12px;
+            border: 2px solid #e2e8f0;
+            padding: 16px;
+            height: auto;
+        }
+        .form-floating .form-control:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+        }
+        .form-floating label {
+            padding: 16px;
+            color: #94a3b8;
+        }
+        .btn-auth {
+            width: 100%;
+            padding: 14px;
+            border-radius: 12px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            border: none;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-auth:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(37,99,235,0.35);
+            color: #fff;
+        }
+        .btn-auth:disabled {
+            opacity: 0.6;
+            transform: none;
+            cursor: not-allowed;
+        }
+        .auth-switch {
+            text-align: center;
+            margin-top: 20px;
+            color: #64748b;
+        }
+        .auth-switch a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .auth-switch a:hover {
+            text-decoration: underline;
+        }
+        .verification-method {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .method-btn {
+            flex: 1;
+            padding: 12px;
+            border-radius: 12px;
+            border: 2px solid #e2e8f0;
+            background: #fff;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+            color: #475569;
+        }
+        .method-btn:hover {
+            border-color: var(--primary);
+        }
+        .method-btn.active {
+            border-color: var(--primary);
+            background: #eff6ff;
+            color: var(--primary);
+            font-weight: 600;
+        }
+        .method-btn i {
+            display: block;
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+        .otp-inputs {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            direction: ltr;
+            margin: 20px 0;
+        }
+        .otp-inputs input {
+            width: 50px;
+            height: 58px;
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: 700;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        .otp-inputs input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+        }
+        .alert {
+            border-radius: 12px;
+            font-size: 0.9rem;
+        }
+        .settings-toggle {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: #fff;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            font-size: 1.2rem;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: all 0.2s;
+        }
+        .settings-toggle:hover {
+            background: rgba(255,255,255,0.3);
+            transform: scale(1.1);
+        }
+        .settings-panel {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .settings-panel.show { display: flex; }
+        .settings-card {
+            background: #fff;
+            border-radius: 20px;
+            padding: 30px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .settings-card h4 {
+            margin-bottom: 20px;
+            color: #1e293b;
+        }
+        .resend-link {
+            color: var(--primary);
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .resend-link:hover { text-decoration: underline; }
+        .spinner-border-sm { width: 1rem; height: 1rem; }
+    </style>
+</head>
+<body>
+    <!-- Settings button -->
+    <button class="settings-toggle" onclick="openSettings()" title="הגדרות דוא״ל / SMS">
+        <i class="bi bi-gear"></i>
+    </button>
+
+    <div class="auth-container">
+        <!-- ===== LOGIN VIEW ===== -->
+        <div id="loginView" class="auth-card">
+            <div class="auth-logo">
+                <i class="bi bi-wallet2"></i>
+                <h2>ניהול תקציב משפחתי</h2>
+                <p>התחבר כדי להמשיך</p>
+            </div>
+            <div id="loginAlert"></div>
+            <div class="form-floating">
+                <input type="text" class="form-control" id="loginUser" placeholder="שם משתמש" autocomplete="username">
+                <label>שם משתמש</label>
+            </div>
+            <div class="form-floating">
+                <input type="password" class="form-control" id="loginPass" placeholder="סיסמה" autocomplete="current-password">
+                <label>סיסמה</label>
+            </div>
+            <button class="btn btn-auth" onclick="doLogin()" id="loginBtn">
+                <i class="bi bi-box-arrow-in-left me-2"></i>כניסה
+            </button>
+            <div class="auth-switch">
+                אין לך חשבון? <a onclick="showView('signup')">הרשמה</a>
+            </div>
+        </div>
+
+        <!-- ===== SIGNUP VIEW ===== -->
+        <div id="signupView" class="auth-card" style="display:none">
+            <div class="auth-logo">
+                <i class="bi bi-person-plus"></i>
+                <h2>יצירת חשבון</h2>
+                <p>הרשמה למערכת ניהול תקציב</p>
+            </div>
+            <div id="signupAlert"></div>
+            <div class="form-floating">
+                <input type="text" class="form-control" id="signupUser" placeholder="שם משתמש" autocomplete="username">
+                <label>שם משתמש</label>
+            </div>
+            <div class="form-floating">
+                <input type="password" class="form-control" id="signupPass" placeholder="סיסמה (לפחות 6 תווים)" autocomplete="new-password">
+                <label>סיסמה (לפחות 6 תווים)</label>
+            </div>
+            <div class="form-floating">
+                <input type="password" class="form-control" id="signupPass2" placeholder="אימות סיסמה" autocomplete="new-password">
+                <label>אימות סיסמה</label>
+            </div>
+
+            <label class="form-label fw-bold mt-2 mb-2">אימות באמצעות:</label>
+            <div class="verification-method">
+                <div class="method-btn active" id="methodEmail" onclick="setMethod('email')">
+                    <i class="bi bi-envelope"></i>
+                    דוא״ל
+                </div>
+                <div class="method-btn" id="methodSms" onclick="setMethod('sms')">
+                    <i class="bi bi-phone"></i>
+                    SMS
+                </div>
+            </div>
+
+            <div id="emailField" class="form-floating">
+                <input type="email" class="form-control" id="signupEmail" placeholder="כתובת דוא״ל" dir="ltr" autocomplete="email">
+                <label>כתובת דוא״ל</label>
+            </div>
+            <div id="phoneField" class="form-floating" style="display:none">
+                <input type="tel" class="form-control" id="signupPhone" placeholder="מספר טלפון" dir="ltr" autocomplete="tel">
+                <label>מספר טלפון (עם קידומת +972)</label>
+            </div>
+
+            <button class="btn btn-auth mt-2" onclick="doSignup()" id="signupBtn">
+                <i class="bi bi-person-plus me-2"></i>הרשמה
+            </button>
+            <div class="auth-switch">
+                יש לך חשבון? <a onclick="showView('login')">כניסה</a>
+            </div>
+        </div>
+
+        <!-- ===== VERIFY VIEW ===== -->
+        <div id="verifyView" class="auth-card" style="display:none">
+            <div class="auth-logo">
+                <i class="bi bi-shield-check"></i>
+                <h2>אימות חשבון</h2>
+                <p id="verifyMsg">הזן את הקוד שנשלח אליך</p>
+            </div>
+            <div id="verifyAlert"></div>
+            <div class="otp-inputs">
+                <input type="text" maxlength="1" class="otp-digit" data-idx="0" inputmode="numeric">
+                <input type="text" maxlength="1" class="otp-digit" data-idx="1" inputmode="numeric">
+                <input type="text" maxlength="1" class="otp-digit" data-idx="2" inputmode="numeric">
+                <input type="text" maxlength="1" class="otp-digit" data-idx="3" inputmode="numeric">
+                <input type="text" maxlength="1" class="otp-digit" data-idx="4" inputmode="numeric">
+                <input type="text" maxlength="1" class="otp-digit" data-idx="5" inputmode="numeric">
+            </div>
+            <button class="btn btn-auth" onclick="doVerify()" id="verifyBtn">
+                <i class="bi bi-check-circle me-2"></i>אמת חשבון
+            </button>
+            <div class="text-center mt-3">
+                <span class="resend-link" onclick="doResend()">שלח קוד מחדש</span>
+            </div>
+            <div class="auth-switch">
+                <a onclick="showView('login')">חזרה לכניסה</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== SETTINGS PANEL ===== -->
+    <div class="settings-panel" id="settingsPanel">
+        <div class="settings-card">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4 class="mb-0"><i class="bi bi-gear me-2"></i>הגדרות דוא״ל / SMS</h4>
+                <button class="btn btn-sm btn-outline-secondary" onclick="closeSettings()">✕</button>
+            </div>
+            <p class="text-muted small">הגדר שרת SMTP לשליחת קוד אימות בדוא״ל, או פרטי Twilio ל-SMS.</p>
+
+            <h6 class="mt-3 mb-2"><i class="bi bi-envelope me-1"></i>SMTP (דוא״ל)</h6>
+            <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" id="cfgSmtpServer" placeholder="SMTP Server (e.g. smtp.gmail.com)" dir="ltr">
+            </div>
+            <div class="mb-2">
+                <input type="number" class="form-control form-control-sm" id="cfgSmtpPort" placeholder="Port (587)" dir="ltr" value="587">
+            </div>
+            <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" id="cfgSmtpUser" placeholder="SMTP User / Email" dir="ltr">
+            </div>
+            <div class="mb-2">
+                <input type="password" class="form-control form-control-sm" id="cfgSmtpPass" placeholder="SMTP Password / App Password" dir="ltr">
+            </div>
+            <div class="mb-3">
+                <input type="email" class="form-control form-control-sm" id="cfgFromEmail" placeholder="From Email" dir="ltr">
+            </div>
+
+            <h6 class="mt-3 mb-2"><i class="bi bi-phone me-1"></i>Twilio (SMS)</h6>
+            <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" id="cfgTwilioSid" placeholder="Twilio Account SID" dir="ltr">
+            </div>
+            <div class="mb-2">
+                <input type="password" class="form-control form-control-sm" id="cfgTwilioToken" placeholder="Twilio Auth Token" dir="ltr">
+            </div>
+            <div class="mb-3">
+                <input type="text" class="form-control form-control-sm" id="cfgTwilioFrom" placeholder="Twilio Phone Number (+1...)" dir="ltr">
+            </div>
+
+            <div id="settingsAlert"></div>
+            <button class="btn btn-auth btn-sm" onclick="saveSettings()">
+                <i class="bi bi-save me-1"></i>שמור הגדרות
+            </button>
+        </div>
+    </div>
+
+    <script>
+    let currentMethod = 'email';
+    let pendingUserId = null;
+
+    // === Init: check auth status ===
+    (async function() {
+        try {
+            const r = await fetch('/api/auth/status');
+            const d = await r.json();
+            if (d.logged_in) {
+                window.location.href = '/';
+                return;
+            }
+            if (!d.has_users) {
+                showView('signup');
+            } else {
+                showView('login');
+            }
+        } catch(e) {
+            showView('signup');
+        }
+    })();
+
+    function showView(name) {
+        document.getElementById('loginView').style.display = name === 'login' ? 'block' : 'none';
+        document.getElementById('signupView').style.display = name === 'signup' ? 'block' : 'none';
+        document.getElementById('verifyView').style.display = name === 'verify' ? 'block' : 'none';
+        // Clear alerts
+        document.querySelectorAll('.alert').forEach(a => a.remove());
+    }
+
+    function setMethod(m) {
+        currentMethod = m;
+        document.getElementById('methodEmail').classList.toggle('active', m === 'email');
+        document.getElementById('methodSms').classList.toggle('active', m === 'sms');
+        document.getElementById('emailField').style.display = m === 'email' ? 'block' : 'none';
+        document.getElementById('phoneField').style.display = m === 'sms' ? 'block' : 'none';
+    }
+
+    function showAlert(containerId, msg, type = 'danger') {
+        const c = document.getElementById(containerId);
+        c.innerHTML = `<div class="alert alert-${type} py-2">${msg}</div>`;
+    }
+
+    function setLoading(btnId, loading) {
+        const btn = document.getElementById(btnId);
+        if (loading) {
+            btn.disabled = true;
+            btn._orig = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>מעבד...';
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = btn._orig || btn.innerHTML;
+        }
+    }
+
+    // === Login ===
+    async function doLogin() {
+        const username = document.getElementById('loginUser').value.trim();
+        const password = document.getElementById('loginPass').value;
+        if (!username || !password) {
+            showAlert('loginAlert', 'נא למלא שם משתמש וסיסמה');
+            return;
+        }
+        setLoading('loginBtn', true);
+        try {
+            const r = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ username, password })
+            });
+            const d = await r.json();
+            if (r.ok) {
+                window.location.href = '/';
+            } else if (d.needs_verification) {
+                pendingUserId = d.user_id;
+                showView('verify');
+                showAlert('verifyAlert', 'החשבון טרם אומת. נא להזין קוד אימות.', 'warning');
+            } else {
+                showAlert('loginAlert', d.error || 'שגיאה בהתחברות');
+            }
+        } catch(e) {
+            showAlert('loginAlert', 'שגיאת תקשורת');
+        }
+        setLoading('loginBtn', false);
+    }
+
+    // === Signup ===
+    async function doSignup() {
+        const username = document.getElementById('signupUser').value.trim();
+        const password = document.getElementById('signupPass').value;
+        const password2 = document.getElementById('signupPass2').value;
+        const email = document.getElementById('signupEmail').value.trim();
+        const phone = document.getElementById('signupPhone').value.trim();
+
+        if (!username || !password) {
+            showAlert('signupAlert', 'נא למלא שם משתמש וסיסמה');
+            return;
+        }
+        if (password.length < 6) {
+            showAlert('signupAlert', 'הסיסמה חייבת להכיל לפחות 6 תווים');
+            return;
+        }
+        if (password !== password2) {
+            showAlert('signupAlert', 'הסיסמאות אינן תואמות');
+            return;
+        }
+        if (currentMethod === 'email' && !email) {
+            showAlert('signupAlert', 'נא למלא כתובת דוא״ל');
+            return;
+        }
+        if (currentMethod === 'sms' && !phone) {
+            showAlert('signupAlert', 'נא למלא מספר טלפון');
+            return;
+        }
+
+        setLoading('signupBtn', true);
+        try {
+            const r = await fetch('/api/auth/signup', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    username, password, email, phone,
+                    verification_method: currentMethod
+                })
+            });
+            const d = await r.json();
+            if (d.auto_verified) {
+                // SMTP/Twilio not configured - auto verified, go to app
+                showAlert('signupAlert', 'החשבון נוצר בהצלחה! מעביר...', 'success');
+                setTimeout(() => window.location.href = '/', 1000);
+            } else if (d.status === 'verification_sent') {
+                pendingUserId = d.user_id;
+                const dest = d.destination;
+                const methodText = d.method === 'email' ? `לדוא״ל ${dest}` : `לטלפון ****${dest}`;
+                document.getElementById('verifyMsg').textContent = `קוד אימות נשלח ${methodText}`;
+                showView('verify');
+                // Focus first OTP input
+                document.querySelector('.otp-digit[data-idx="0"]').focus();
+            } else if (d.error) {
+                showAlert('signupAlert', d.error);
+            }
+        } catch(e) {
+            showAlert('signupAlert', 'שגיאת תקשורת');
+        }
+        setLoading('signupBtn', false);
+    }
+
+    // === OTP digit inputs ===
+    document.querySelectorAll('.otp-digit').forEach(input => {
+        input.addEventListener('input', (e) => {
+            const val = e.target.value.replace(/\D/g, '');
+            e.target.value = val;
+            if (val && e.target.dataset.idx < 5) {
+                const next = document.querySelector(`.otp-digit[data-idx="${+e.target.dataset.idx + 1}"]`);
+                if (next) next.focus();
+            }
+            // Auto-submit when all 6 filled
+            const digits = [...document.querySelectorAll('.otp-digit')].map(i => i.value).join('');
+            if (digits.length === 6) doVerify();
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Backspace' && !e.target.value && e.target.dataset.idx > 0) {
+                const prev = document.querySelector(`.otp-digit[data-idx="${+e.target.dataset.idx - 1}"]`);
+                if (prev) { prev.focus(); prev.value = ''; }
+            }
+        });
+        // Handle paste
+        input.addEventListener('paste', (e) => {
+            e.preventDefault();
+            const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+            const digits = document.querySelectorAll('.otp-digit');
+            for (let i = 0; i < Math.min(text.length, 6); i++) {
+                digits[i].value = text[i];
+            }
+            if (text.length >= 6) doVerify();
+        });
+    });
+
+    // === Verify OTP ===
+    async function doVerify() {
+        const code = [...document.querySelectorAll('.otp-digit')].map(i => i.value).join('');
+        if (code.length !== 6) {
+            showAlert('verifyAlert', 'נא להזין קוד בן 6 ספרות');
+            return;
+        }
+        setLoading('verifyBtn', true);
+        try {
+            const r = await fetch('/api/auth/verify', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ user_id: pendingUserId, code })
+            });
+            const d = await r.json();
+            if (r.ok) {
+                showAlert('verifyAlert', 'אימות הצליח! מעביר...', 'success');
+                setTimeout(() => window.location.href = '/', 1000);
+            } else {
+                showAlert('verifyAlert', d.error || 'קוד שגוי');
+                // Clear inputs
+                document.querySelectorAll('.otp-digit').forEach(i => i.value = '');
+                document.querySelector('.otp-digit[data-idx="0"]').focus();
+            }
+        } catch(e) {
+            showAlert('verifyAlert', 'שגיאת תקשורת');
+        }
+        setLoading('verifyBtn', false);
+    }
+
+    // === Resend OTP ===
+    async function doResend() {
+        try {
+            const r = await fetch('/api/auth/resend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ user_id: pendingUserId })
+            });
+            const d = await r.json();
+            if (r.ok) {
+                showAlert('verifyAlert', 'קוד חדש נשלח בהצלחה', 'success');
+            } else {
+                showAlert('verifyAlert', d.error || 'שגיאה בשליחה');
+            }
+        } catch(e) {
+            showAlert('verifyAlert', 'שגיאת תקשורת');
+        }
+    }
+
+    // === Enter key support ===
+    document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    document.getElementById('loginUser').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    document.getElementById('signupPass2').addEventListener('keydown', e => { if (e.key === 'Enter') doSignup(); });
+
+    // === Settings ===
+    function openSettings() { document.getElementById('settingsPanel').classList.add('show'); loadSettings(); }
+    function closeSettings() { document.getElementById('settingsPanel').classList.remove('show'); }
+
+    async function loadSettings() {
+        try {
+            const r = await fetch('/api/auth/smtp-config');
+            const d = await r.json();
+            if (d.configured) {
+                document.getElementById('cfgSmtpServer').value = d.smtp_server || '';
+                document.getElementById('cfgFromEmail').value = d.from_email || '';
+            }
+        } catch(e) {}
+    }
+
+    async function saveSettings() {
+        const cfg = {
+            smtp_server: document.getElementById('cfgSmtpServer').value,
+            smtp_port: document.getElementById('cfgSmtpPort').value,
+            smtp_user: document.getElementById('cfgSmtpUser').value,
+            smtp_password: document.getElementById('cfgSmtpPass').value,
+            from_email: document.getElementById('cfgFromEmail').value,
+            twilio_sid: document.getElementById('cfgTwilioSid').value,
+            twilio_token: document.getElementById('cfgTwilioToken').value,
+            twilio_from: document.getElementById('cfgTwilioFrom').value,
+        };
+        try {
+            const r = await fetch('/api/auth/smtp-config', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(cfg)
+            });
+            if (r.ok) {
+                document.getElementById('settingsAlert').innerHTML =
+                    '<div class="alert alert-success py-2 mt-2">ההגדרות נשמרו בהצלחה</div>';
+                setTimeout(() => document.getElementById('settingsAlert').innerHTML = '', 3000);
+            }
+        } catch(e) {
+            document.getElementById('settingsAlert').innerHTML =
+                '<div class="alert alert-danger py-2 mt-2">שגיאה בשמירה</div>';
+        }
+    }
+
+    // Close settings on backdrop click
+    document.getElementById('settingsPanel').addEventListener('click', (e) => {
+        if (e.target === document.getElementById('settingsPanel')) closeSettings();
+    });
+    </script>
+</body>
+</html>

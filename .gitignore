@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+*.db
+.secret_key
+uploads/
+installer/
