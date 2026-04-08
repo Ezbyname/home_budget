@@ -385,7 +385,6 @@
         .tut-overlay.visible { opacity: 1; }
         .tut-backdrop {
             position: fixed; inset: 0;
-            background: rgba(0,0,0,.55);
             z-index: 10001;
             pointer-events: auto;
             transition: opacity .3s;
@@ -395,7 +394,9 @@
             border-radius: 14px;
             box-shadow: 0 0 0 9999px rgba(0,0,0,.55);
             z-index: 10002;
-            transition: all .45s cubic-bezier(.4,0,.2,1);
+            transition: top .45s cubic-bezier(.4,0,.2,1), left .45s cubic-bezier(.4,0,.2,1),
+                        width .45s cubic-bezier(.4,0,.2,1), height .45s cubic-bezier(.4,0,.2,1),
+                        opacity .3s ease;
             pointer-events: none;
         }
         .tut-spotlight::after {
@@ -597,6 +598,7 @@
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="startTutorial();return false"><i class="bi bi-mortarboard"></i><span data-t="tut_restart">מדריך למשתמש</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openReminders();return false"><i class="bi bi-bell"></i><span data-t="nav_reminders">תזכורות</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openSmtpSettings();return false"><i class="bi bi-gear"></i><span data-t="nav_email_settings">הגדרות דוא״ל / SMS</span></a></li>
+                    <li id="navAuthItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="showAuthModal('login');return false"><i class="bi bi-box-arrow-in-left text-primary"></i><span data-t="auth_login">התחבר</span></a></li>
                     <li id="navLogoutItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 text-danger d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><i class="bi bi-box-arrow-left"></i><span data-t="nav_logout">יציאה</span></a></li>
                 </ul>
             </div>
@@ -655,6 +657,11 @@
         <li class="nav-item">
             <a class="nav-link" data-bs-toggle="pill" href="#importTab">
                 <i class="bi bi-upload me-1"></i><span data-t="tab_import">ייבוא</span>
+            </a>
+        </li>
+        <li class="nav-item" id="adminTabNav" style="display:none">
+            <a class="nav-link" data-bs-toggle="pill" href="#adminTab">
+                <i class="bi bi-shield-lock me-1"></i><span data-t="tab_admin">ניהול</span>
             </a>
         </li>
     </ul>
@@ -1451,6 +1458,32 @@
                 </div>
             </div>
         </div>
+
+        <!-- ========== ADMIN TAB ========== -->
+        <div class="tab-pane fade" id="adminTab">
+            <div class="card p-4 mb-4">
+                <h5 class="d-flex align-items-center gap-2 mb-3"><i class="bi bi-shield-lock text-primary"></i><span data-t="admin_title">ניהול מערכת</span></h5>
+                <!-- Stats -->
+                <div class="row g-3 mb-4" id="adminStatsRow"></div>
+                <!-- Users -->
+                <h6 class="d-flex align-items-center gap-2 mt-3 mb-2"><i class="bi bi-people"></i><span data-t="admin_users">משתמשים</span></h6>
+                <div class="table-responsive mb-4">
+                    <table class="table table-sm table-hover">
+                        <thead><tr><th>#</th><th data-t="auth_username">שם משתמש</th><th data-t="auth_email">אימייל</th><th>Admin</th><th></th></tr></thead>
+                        <tbody id="adminUsersBody"></tbody>
+                    </table>
+                </div>
+                <!-- Categories -->
+                <h6 class="d-flex align-items-center gap-2 mb-2"><i class="bi bi-tags"></i><span data-t="admin_categories">קטגוריות</span></h6>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover">
+                        <thead><tr><th>ID</th><th data-t="cat_name">שם</th><th data-t="cat_color">צבע</th><th></th></tr></thead>
+                        <tbody id="adminCatsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
 
@@ -1568,27 +1601,93 @@
 </div>
 
 <!-- SMTP/SMS Settings Modal -->
-<div class="modal fade" id="smtpModal" tabindex="-1" dir="rtl">
-<div class="modal-dialog">
-<div class="modal-content" style="border-radius:20px">
-    <div class="modal-header border-0 pb-0">
-        <h5 class="modal-title"><i class="bi bi-gear me-2"></i><span data-t="smtp_title">הגדרות דוא״ל / SMS</span></h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+<div class="modal fade" id="smtpModal" tabindex="-1">
+<div class="modal-dialog modal-dialog-centered">
+<div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
+    <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);padding:24px 24px 20px;color:#fff">
+        <div class="d-flex align-items-center justify-content-between">
+            <h5 class="modal-title mb-0 d-flex align-items-center gap-2" style="font-weight:600">
+                <i class="bi bi-envelope-heart"></i><span data-t="smtp_title">הגדרות התראות</span>
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
     </div>
-    <div class="modal-body">
-        <p class="text-muted small" data-t="smtp_desc">הגדר שרת SMTP לשליחת תזכורות בדוא״ל, או פרטי Twilio ל-SMS.</p>
-        <h6 class="mt-2 mb-2"><i class="bi bi-envelope me-1"></i><span data-t="smtp_email_section">SMTP (דוא״ל)</span></h6>
-        <div class="mb-2"><input type="text" class="form-control form-control-sm" id="smtpServer" placeholder="SMTP Server (e.g. smtp.gmail.com)" dir="ltr"></div>
-        <div class="mb-2"><input type="number" class="form-control form-control-sm" id="smtpPort" placeholder="Port (587)" dir="ltr" value="587"></div>
-        <div class="mb-2"><input type="text" class="form-control form-control-sm" id="smtpUser" placeholder="SMTP User / Email" dir="ltr"></div>
-        <div class="mb-2"><input type="password" class="form-control form-control-sm" id="smtpPass" placeholder="SMTP Password / App Password" dir="ltr"></div>
-        <div class="mb-3"><input type="email" class="form-control form-control-sm" id="smtpFrom" placeholder="From Email" dir="ltr"></div>
-        <h6 class="mt-3 mb-2"><i class="bi bi-phone me-1"></i>Twilio (SMS)</h6>
-        <div class="mb-2"><input type="text" class="form-control form-control-sm" id="twilioSid" placeholder="Twilio Account SID" dir="ltr"></div>
-        <div class="mb-2"><input type="password" class="form-control form-control-sm" id="twilioToken" placeholder="Twilio Auth Token" dir="ltr"></div>
-        <div class="mb-3"><input type="text" class="form-control form-control-sm" id="twilioFrom" placeholder="Twilio Phone Number (+1...)" dir="ltr"></div>
+    <div class="modal-body px-4 py-4">
+        <p class="text-muted small mb-3" data-t="smtp_desc">הזינו את כתובת המייל שלכם כדי לקבל תזכורות. המערכת תזהה אוטומטית את ההגדרות.</p>
+
+        <!-- Simple Email Setup -->
+        <div class="mb-3">
+            <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                <i class="bi bi-envelope text-primary"></i><span data-t="smtp_email_label">כתובת אימייל</span>
+            </label>
+            <input type="email" class="form-control" id="smtpUser" placeholder="example@gmail.com" dir="ltr"
+                   oninput="autoDetectSmtp(this.value)">
+        </div>
+        <div class="mb-3">
+            <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                <i class="bi bi-key text-primary"></i><span data-t="smtp_pass_label">סיסמת אפליקציה</span>
+            </label>
+            <input type="password" class="form-control" id="smtpPass" placeholder="••••••••••••••••" dir="ltr">
+        </div>
+
+        <!-- Provider help -->
+        <div id="smtpProviderHelp" class="mb-3" style="display:none">
+            <div class="alert alert-info py-2 px-3 small d-flex align-items-start gap-2" style="border-radius:12px;border:none;background:#eff6ff">
+                <i class="bi bi-info-circle text-primary mt-1" style="flex-shrink:0"></i>
+                <div>
+                    <strong id="smtpProviderName"></strong>
+                    <div id="smtpProviderInstructions" class="mt-1"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auto-detected badge -->
+        <div id="smtpDetectedBadge" style="display:none" class="mb-3">
+            <span class="badge bg-success d-flex align-items-center gap-1" style="font-size:.8rem;padding:6px 12px;border-radius:8px">
+                <i class="bi bi-check-circle"></i>
+                <span data-t="smtp_auto_detected">הגדרות SMTP זוהו אוטומטית</span>
+            </span>
+        </div>
+
+        <!-- Hidden auto-filled fields -->
+        <input type="hidden" id="smtpServer" value="">
+        <input type="hidden" id="smtpPort" value="587">
+        <input type="hidden" id="smtpFrom" value="">
+
+        <!-- Advanced toggle -->
+        <div class="mb-3">
+            <button class="btn btn-sm btn-link text-muted p-0 d-flex align-items-center gap-1" type="button"
+                    onclick="document.getElementById('smtpAdvanced').classList.toggle('d-none');this.querySelector('i').classList.toggle('bi-chevron-down');this.querySelector('i').classList.toggle('bi-chevron-up')">
+                <i class="bi bi-chevron-down" style="font-size:.7rem"></i>
+                <span data-t="smtp_advanced">הגדרות מתקדמות</span>
+            </button>
+            <div id="smtpAdvanced" class="d-none mt-2">
+                <div class="card p-3" style="border-radius:12px;background:#f9fafb;border:1px solid #e5e7eb">
+                    <div class="mb-2">
+                        <label class="form-label small text-muted">SMTP Server</label>
+                        <input type="text" class="form-control form-control-sm" id="smtpServerAdv" placeholder="smtp.gmail.com" dir="ltr">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small text-muted">Port</label>
+                        <input type="number" class="form-control form-control-sm" id="smtpPortAdv" placeholder="587" dir="ltr" value="587">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small text-muted">From Email</label>
+                        <input type="email" class="form-control form-control-sm" id="smtpFromAdv" placeholder="your@email.com" dir="ltr">
+                    </div>
+                    <hr class="my-2">
+                    <h6 class="small fw-bold d-flex align-items-center gap-2 mb-2"><i class="bi bi-phone"></i>Twilio (SMS)</h6>
+                    <div class="mb-2"><input type="text" class="form-control form-control-sm" id="twilioSid" placeholder="Account SID" dir="ltr"></div>
+                    <div class="mb-2"><input type="password" class="form-control form-control-sm" id="twilioToken" placeholder="Auth Token" dir="ltr"></div>
+                    <div><input type="text" class="form-control form-control-sm" id="twilioFrom" placeholder="Phone (+1...)" dir="ltr"></div>
+                </div>
+            </div>
+        </div>
+
         <div id="smtpAlert"></div>
-        <button class="btn btn-primary btn-sm" onclick="saveSmtpSettings()"><i class="bi bi-save me-1"></i><span data-t="smtp_save">שמור הגדרות</span></button>
+        <button class="btn btn-primary w-100" style="border-radius:12px;padding:10px" onclick="saveSmtpSettings()">
+            <i class="bi bi-check-lg"></i> <span data-t="smtp_save">שמור הגדרות</span>
+        </button>
     </div>
 </div>
 </div>
@@ -1763,6 +1862,120 @@
     <div class="modal-footer border-0 pt-0">
         <button class="btn btn-primary" onclick="saveExpenseEdit()"><i class="bi bi-check-lg me-1"></i><span data-t="save">שמור</span></button>
         <button class="btn btn-outline-secondary" data-bs-dismiss="modal" data-t="cancel">ביטול</button>
+    </div>
+</div>
+</div>
+</div>
+
+<!-- Auth Login Wall -->
+<div id="authWall" style="display:none;position:fixed;inset:0;z-index:1040;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);align-items:center;justify-content:center">
+    <div style="text-align:center;max-width:400px;padding:20px">
+        <!-- Language toggle on auth wall -->
+        <div class="d-flex justify-content-center gap-2 mb-4">
+            <button class="btn btn-sm lang-btn auth-lang-btn" data-lang="he" onclick="setAuthLang('he')">עברית</button>
+            <button class="btn btn-sm lang-btn auth-lang-btn" data-lang="en" onclick="setAuthLang('en')">English</button>
+        </div>
+        <div style="font-size:4rem;margin-bottom:16px">🔒</div>
+        <h4 style="font-weight:700;color:#1e293b" data-t="auth_wall_title">יש להתחבר כדי להשתמש</h4>
+        <p class="text-muted mb-4" data-t="auth_wall_desc">כדי להשתמש במנהל התקציב, יש להתחבר או להירשם.</p>
+        <button class="btn btn-primary btn-lg" style="border-radius:14px;padding:12px 40px" onclick="showAuthModal('login')" data-t="auth_login">התחבר</button>
+        <div class="mt-3">
+            <span class="text-muted small" data-t="auth_no_account">אין לך חשבון?</span>
+            <a href="#" class="small fw-bold" onclick="showAuthModal('signup');return false" data-t="auth_signup_link">הירשם כאן</a>
+        </div>
+    </div>
+</div>
+
+<!-- Auth Modal -->
+<div class="modal fade" id="authModal" tabindex="-1" data-bs-backdrop="static">
+<div class="modal-dialog modal-dialog-centered">
+<div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
+    <div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:32px 28px 24px;color:#fff;text-align:center;position:relative">
+        <div style="position:absolute;top:12px;right:12px;left:12px;display:flex;justify-content:center;gap:6px">
+            <button class="btn btn-sm auth-lang-btn" style="color:#fff;border-color:rgba(255,255,255,.5);font-size:.75rem;padding:2px 10px" data-lang="he" onclick="setAuthLang('he')">עברית</button>
+            <button class="btn btn-sm auth-lang-btn" style="color:#fff;border-color:rgba(255,255,255,.5);font-size:.75rem;padding:2px 10px" data-lang="en" onclick="setAuthLang('en')">English</button>
+        </div>
+        <i class="bi bi-wallet2" style="font-size:2.5rem"></i>
+        <h4 style="font-weight:700;margin:12px 0 4px" id="authModalTitle" data-t="auth_login">התחבר</h4>
+        <p style="opacity:.85;font-size:.9rem;margin:0" id="authModalDesc" data-t="auth_login_desc">הזן פרטי כניסה</p>
+    </div>
+    <div class="modal-body px-4 py-4">
+        <!-- Login Form -->
+        <div id="authLoginForm">
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-person text-primary"></i><span data-t="auth_username">שם משתמש</span>
+                </label>
+                <input type="text" class="form-control" id="authLoginUser" autocomplete="username">
+            </div>
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-lock text-primary"></i><span data-t="auth_password">סיסמה</span>
+                </label>
+                <input type="password" class="form-control" id="authLoginPass" autocomplete="current-password">
+            </div>
+            <div id="authLoginAlert"></div>
+            <button id="authLoginBtn" class="btn btn-primary w-100 mb-2" style="border-radius:12px;padding:10px" onclick="doAuthLogin()">
+                <i class="bi bi-box-arrow-in-left"></i> <span data-t="auth_login">התחבר</span>
+            </button>
+            <div class="text-center">
+                <a href="#" class="small text-muted" onclick="showAuthModal('forgot');return false" data-t="auth_forgot">שכחת סיסמה?</a>
+                <span class="mx-2 text-muted">|</span>
+                <a href="#" class="small fw-bold" onclick="showAuthModal('signup');return false" data-t="auth_signup_link">הירשם כאן</a>
+            </div>
+        </div>
+        <!-- Signup Form -->
+        <div id="authSignupForm" style="display:none">
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-person-plus text-primary"></i><span data-t="auth_username">שם משתמש</span>
+                </label>
+                <input type="text" class="form-control" id="authSignupUser" autocomplete="username">
+            </div>
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-envelope text-primary"></i><span data-t="auth_email">אימייל</span>
+                </label>
+                <input type="email" class="form-control" id="authSignupEmail" dir="ltr" autocomplete="email">
+            </div>
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-lock text-primary"></i><span data-t="auth_password">סיסמה</span>
+                </label>
+                <input type="password" class="form-control" id="authSignupPass" autocomplete="new-password">
+            </div>
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-lock-fill text-primary"></i><span data-t="auth_confirm_pass">אישור סיסמה</span>
+                </label>
+                <input type="password" class="form-control" id="authSignupPassConfirm" autocomplete="new-password">
+            </div>
+            <div id="authSignupAlert"></div>
+            <button id="authSignupBtn" class="btn btn-primary w-100 mb-2" style="border-radius:12px;padding:10px" onclick="doAuthSignup()">
+                <i class="bi bi-person-plus"></i> <span data-t="auth_signup">הירשם</span>
+            </button>
+            <div class="text-center">
+                <span class="text-muted small" data-t="auth_have_account">יש לך חשבון?</span>
+                <a href="#" class="small fw-bold" onclick="showAuthModal('login');return false" data-t="auth_login">התחבר</a>
+            </div>
+        </div>
+        <!-- Forgot Password Form -->
+        <div id="authForgotForm" style="display:none">
+            <p class="text-muted small mb-3" data-t="auth_forgot_desc">הזן את האימייל שלך ונשלח לך קוד לאיפוס סיסמה.</p>
+            <div class="mb-3">
+                <label class="form-label small fw-bold d-flex align-items-center gap-2">
+                    <i class="bi bi-envelope text-primary"></i><span data-t="auth_email">אימייל</span>
+                </label>
+                <input type="email" class="form-control" id="authForgotEmail" dir="ltr">
+            </div>
+            <div id="authForgotAlert"></div>
+            <button class="btn btn-primary w-100 mb-2" style="border-radius:12px;padding:10px" onclick="doAuthForgot()">
+                <i class="bi bi-send"></i> <span data-t="auth_send_reset">שלח קוד</span>
+            </button>
+            <div class="text-center">
+                <a href="#" class="small" onclick="showAuthModal('login');return false" data-t="auth_back_to_login">חזרה להתחברות</a>
+            </div>
+        </div>
     </div>
 </div>
 </div>
@@ -1970,10 +2183,17 @@ const I18N = {
     rem_send_fail: 'לא ניתן לשלוח', rem_fill_address: 'נא להזין כתובת דוא״ל או מספר טלפון',
     rem_fill_name: 'נא להזין שם לתזכורת',
     // SMTP modal
-    smtp_title: 'הגדרות דוא״ל / SMS',
-    smtp_desc: 'הגדר שרת SMTP לשליחת תזכורות בדוא״ל, או פרטי Twilio ל-SMS.',
-    smtp_email_section: 'SMTP (דוא״ל)', smtp_save: 'שמור הגדרות',
+    smtp_title: 'הגדרות התראות',
+    smtp_desc: 'הזינו את כתובת המייל שלכם כדי לקבל תזכורות. המערכת תזהה אוטומטית את ההגדרות.',
+    smtp_email_label: 'כתובת אימייל', smtp_pass_label: 'סיסמת אפליקציה',
+    smtp_auto_detected: 'הגדרות SMTP זוהו אוטומטית',
+    smtp_advanced: 'הגדרות מתקדמות',
+    smtp_save: 'שמור הגדרות',
     smtp_saved: 'ההגדרות נשמרו בהצלחה', smtp_error: 'שגיאה בשמירה',
+    smtp_gmail_help: 'עבור Gmail: היכנסו ל-<a href="https://myaccount.google.com/apppasswords" target="_blank">סיסמאות אפליקציה</a> וצרו סיסמה חדשה.',
+    smtp_outlook_help: 'עבור Outlook: היכנסו ל-<a href="https://account.live.com/proofs/AppPassword" target="_blank">App Passwords</a> וצרו סיסמה.',
+    smtp_yahoo_help: 'עבור Yahoo: היכנסו ל-<a href="https://login.yahoo.com/account/security#other-apps" target="_blank">App Passwords</a>.',
+    smtp_generic_help: 'יש צורך בסיסמת אפליקציה (App Password). בדרך כלל ניתן ליצור אותה בהגדרות האבטחה של חשבון המייל.',
     // Category modal
     cat_new_title: 'קטגוריה חדשה', cat_id_label: 'מזהה (באנגלית)',
     cat_name_label: 'שם בעברית', cat_color_label: 'צבע',
@@ -2035,7 +2255,7 @@ const I18N = {
     challenges_to_unlock: 'אתגרים לפתוח', need_more_data: 'צריך יותר נתונים כדי לחשב הישגים. המשיכו לייבא!',
     no_products: 'אין',
     // Missing data-t keys
-    nav_settings: 'הגדרות', nav_reminders: 'תזכורות', nav_email_settings: 'הגדרות דוא״ל / SMS', nav_logout: 'יציאה',
+    nav_settings: 'הגדרות', nav_reminders: 'תזכורות', nav_email_settings: 'הגדרות התראות', nav_logout: 'יציאה',
     month_prev: 'חודש קודם', month_next: 'חודש הבא', export_excel_title: 'ייצוא Excel',
     total_expense: 'סה"כ הוצאות',
     expenses_by_category: 'הוצאות לפי קטגוריה', daily_expense_trend: 'מגמת הוצאות יומית',
@@ -2110,6 +2330,29 @@ const I18N = {
     tut_insights_title: 'תובנות',
     tut_insights_body: 'גלו דפוסי הוצאות, חריגות, מגמות והישגים. הנתונים שלכם הופכים לתובנות!',
     tut_restart: 'מדריך למשתמש',
+    // Auth
+    auth_wall_title: 'יש להתחבר כדי להשתמש',
+    auth_wall_desc: 'כדי להשתמש במנהל התקציב, יש להתחבר או להירשם.',
+    auth_login: 'התחבר', auth_signup: 'הירשם',
+    auth_login_desc: 'הזן פרטי כניסה', auth_signup_desc: 'צור חשבון חדש',
+    auth_username: 'שם משתמש או אימייל', auth_password: 'סיסמה', auth_confirm_pass: 'אישור סיסמה',
+    auth_email: 'אימייל', auth_no_account: 'אין לך חשבון?',
+    auth_signup_link: 'הירשם כאן', auth_have_account: 'יש לך חשבון?',
+    auth_forgot: 'שכחת סיסמה?', auth_forgot_desc: 'הזן את האימייל שלך ונשלח לך קוד לאיפוס.',
+    auth_send_reset: 'שלח קוד', auth_back_to_login: 'חזרה להתחברות',
+    auth_login_error: 'שם משתמש או סיסמה שגויים',
+    auth_signup_error: 'שגיאה בהרשמה', auth_pass_mismatch: 'הסיסמאות לא תואמות',
+    auth_signup_success: 'נרשמת בהצלחה!', auth_reset_sent: 'קוד נשלח למייל',
+    auth_fields_required: 'יש למלא את כל השדות',
+    auth_logging_in: 'מתחבר...', auth_signing_up: 'נרשם...',
+    auth_login_success: 'מחובר!',
+    // Admin
+    tab_admin: 'ניהול', admin_title: 'ניהול מערכת', admin_users: 'משתמשים',
+    admin_categories: 'קטגוריות', admin_stats: 'סטטיסטיקה',
+    admin_user_count: 'משתמשים', admin_expense_count: 'הוצאות',
+    admin_income_count: 'הכנסות', admin_cat_count: 'קטגוריות',
+    admin_delete_user: 'מחק משתמש', admin_cannot_delete_admin: 'לא ניתן למחוק מנהל',
+    admin_db_size: 'גודל מסד נתונים',
   },
   en: {
     app_title: 'Family Budget Tracker',
@@ -2283,10 +2526,17 @@ const I18N = {
     rem_send_fail: 'Unable to send', rem_fill_address: 'Please enter email or phone number',
     rem_fill_name: 'Please enter a reminder name',
     // SMTP modal
-    smtp_title: 'Email / SMS Settings',
-    smtp_desc: 'Configure SMTP server for email reminders, or Twilio credentials for SMS.',
-    smtp_email_section: 'SMTP (Email)', smtp_save: 'Save Settings',
+    smtp_title: 'Notification Settings',
+    smtp_desc: 'Enter your email address to receive reminders. Settings are auto-detected.',
+    smtp_email_label: 'Email Address', smtp_pass_label: 'App Password',
+    smtp_auto_detected: 'SMTP settings auto-detected',
+    smtp_advanced: 'Advanced Settings',
+    smtp_save: 'Save Settings',
     smtp_saved: 'Settings saved successfully', smtp_error: 'Error saving',
+    smtp_gmail_help: 'For Gmail: go to <a href="https://myaccount.google.com/apppasswords" target="_blank">App Passwords</a> and create a new one.',
+    smtp_outlook_help: 'For Outlook: go to <a href="https://account.live.com/proofs/AppPassword" target="_blank">App Passwords</a> and create one.',
+    smtp_yahoo_help: 'For Yahoo: go to <a href="https://login.yahoo.com/account/security#other-apps" target="_blank">App Passwords</a>.',
+    smtp_generic_help: 'You need an App Password. Usually you can create one in your email account\'s security settings.',
     // Category modal
     cat_new_title: 'New Category', cat_id_label: 'ID (English)',
     cat_name_label: 'Display Name', cat_color_label: 'Color',
@@ -2348,7 +2598,7 @@ const I18N = {
     challenges_to_unlock: 'Challenges to Unlock', need_more_data: 'Need more data to calculate achievements. Keep importing!',
     no_products: 'No',
     // Missing data-t keys
-    nav_settings: 'Settings', nav_reminders: 'Reminders', nav_email_settings: 'Email / SMS Settings', nav_logout: 'Logout',
+    nav_settings: 'Settings', nav_reminders: 'Reminders', nav_email_settings: 'Notification Settings', nav_logout: 'Logout',
     month_prev: 'Previous month', month_next: 'Next month', export_excel_title: 'Export Excel',
     total_expense: 'Total Expenses',
     expenses_by_category: 'Expenses by Category', daily_expense_trend: 'Daily Expense Trend',
@@ -2423,6 +2673,29 @@ const I18N = {
     tut_insights_title: 'Insights',
     tut_insights_body: 'Discover spending patterns, anomalies, trends and achievements. Your data becomes insights!',
     tut_restart: 'User Guide',
+    // Auth
+    auth_wall_title: 'Login required',
+    auth_wall_desc: 'You need to log in or sign up to use the budget manager.',
+    auth_login: 'Login', auth_signup: 'Sign Up',
+    auth_login_desc: 'Enter your credentials', auth_signup_desc: 'Create a new account',
+    auth_username: 'Username or Email', auth_password: 'Password', auth_confirm_pass: 'Confirm Password',
+    auth_email: 'Email', auth_no_account: "Don't have an account?",
+    auth_signup_link: 'Sign up here', auth_have_account: 'Already have an account?',
+    auth_forgot: 'Forgot password?', auth_forgot_desc: 'Enter your email and we\'ll send you a reset code.',
+    auth_send_reset: 'Send Code', auth_back_to_login: 'Back to login',
+    auth_login_error: 'Invalid username or password',
+    auth_signup_error: 'Registration error', auth_pass_mismatch: 'Passwords do not match',
+    auth_signup_success: 'Registered successfully!', auth_reset_sent: 'Code sent to email',
+    auth_fields_required: 'Please fill in all fields',
+    auth_logging_in: 'Logging in...', auth_signing_up: 'Signing up...',
+    auth_login_success: 'Logged in!',
+    // Admin
+    tab_admin: 'Admin', admin_title: 'System Admin', admin_users: 'Users',
+    admin_categories: 'Categories', admin_stats: 'Statistics',
+    admin_user_count: 'Users', admin_expense_count: 'Expenses',
+    admin_income_count: 'Income', admin_cat_count: 'Categories',
+    admin_delete_user: 'Delete User', admin_cannot_delete_admin: 'Cannot delete admin',
+    admin_db_size: 'Database Size',
   }
 };
 
@@ -2714,30 +2987,327 @@ function appAlert(msg, type = 'info') {
 async function api(url, options = {}) {
     const res = await fetch(url, options);
     if (res.status === 401) {
-        window.location.href = '/auth';
-        return {};
+        showAuthModal('login');
+        // Never resolve — prevents caller from continuing (no success toasts, no UI updates)
+        return new Promise(() => {});
     }
     return res.json();
 }
 
 // Auth: show user nav if logged in
-(async function checkAuth() {
+let isLoggedIn = false;
+let isAdmin = false;
+
+async function checkAuth() {
     try {
         const r = await fetch('/api/auth/status');
         const d = await r.json();
+        isLoggedIn = d.logged_in;
+        isAdmin = d.is_admin;
         if (d.logged_in && d.username) {
             document.getElementById('navUserItem').style.display = '';
             document.getElementById('navUserDivider').style.display = '';
             document.getElementById('navLogoutItem').style.display = '';
             document.getElementById('navUsername').textContent = d.username;
+            document.getElementById('navAuthItem').style.display = 'none';
+            // Show admin tab if admin
+            if (d.is_admin) {
+                document.getElementById('adminTabNav').style.display = '';
+            }
+        } else {
+            document.getElementById('navUserItem').style.display = 'none';
+            document.getElementById('navUserDivider').style.display = 'none';
+            document.getElementById('navLogoutItem').style.display = 'none';
+            document.getElementById('adminTabNav').style.display = 'none';
+            document.getElementById('navAuthItem').style.display = '';
         }
     } catch(e) {}
+}
+checkAuth();
+
+// Language switch on auth wall (before login, no plan context)
+function setAuthLang(lang) {
+    currentLang = lang;
+    localStorage.setItem('auth_lang', lang);
+    const isRTL = lang === 'he';
+    document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
+    document.documentElement.lang = lang;
+    const bsLink = document.getElementById('bootstrapCSS');
+    if (bsLink) bsLink.href = isRTL
+        ? 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.rtl.min.css'
+        : 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css';
+    document.querySelectorAll('[data-t]').forEach(el => el.textContent = t(el.dataset.t));
+    document.querySelectorAll('[data-t-placeholder]').forEach(el => el.placeholder = t(el.dataset.tPlaceholder));
+    document.querySelectorAll('.modal').forEach(m => m.dir = isRTL ? 'rtl' : 'ltr');
+    // Update auth lang button styles
+    document.querySelectorAll('.auth-lang-btn').forEach(b => {
+        const isActive = b.dataset.lang === lang;
+        if (b.closest('#authWall')) {
+            b.classList.toggle('btn-primary', isActive);
+            b.classList.toggle('btn-outline-primary', !isActive);
+        } else {
+            // Modal buttons — white on gradient
+            b.style.background = isActive ? 'rgba(255,255,255,.25)' : 'transparent';
+            b.style.fontWeight = isActive ? '700' : '400';
+        }
+    });
+}
+// Apply saved auth lang on load
+(function() {
+    const savedLang = localStorage.getItem('auth_lang');
+    if (savedLang && savedLang !== currentLang) {
+        setAuthLang(savedLang);
+    } else {
+        // Init button styles
+        document.querySelectorAll('.auth-lang-btn').forEach(b => {
+            const isActive = b.dataset.lang === currentLang;
+            if (b.closest('#authWall')) {
+                b.classList.toggle('btn-primary', isActive);
+                b.classList.toggle('btn-outline-primary', !isActive);
+            } else {
+                b.style.background = isActive ? 'rgba(255,255,255,.25)' : 'transparent';
+                b.style.fontWeight = isActive ? '700' : '400';
+            }
+        });
+    }
 })();
+
+function showAuthModal(mode) {
+    document.getElementById('authLoginForm').style.display = mode === 'login' ? '' : 'none';
+    document.getElementById('authSignupForm').style.display = mode === 'signup' ? '' : 'none';
+    document.getElementById('authForgotForm').style.display = mode === 'forgot' ? '' : 'none';
+    document.getElementById('authLoginAlert').innerHTML = '';
+    document.getElementById('authSignupAlert').innerHTML = '';
+    document.getElementById('authForgotAlert').innerHTML = '';
+    const title = document.getElementById('authModalTitle');
+    const desc = document.getElementById('authModalDesc');
+    if (mode === 'login') {
+        title.dataset.t = 'auth_login'; title.textContent = t('auth_login');
+        desc.dataset.t = 'auth_login_desc'; desc.textContent = t('auth_login_desc');
+    } else if (mode === 'signup') {
+        title.dataset.t = 'auth_signup'; title.textContent = t('auth_signup');
+        desc.dataset.t = 'auth_signup_desc'; desc.textContent = t('auth_signup_desc');
+    } else {
+        title.dataset.t = 'auth_forgot'; title.textContent = t('auth_forgot');
+        desc.dataset.t = 'auth_forgot_desc'; desc.textContent = t('auth_forgot_desc');
+    }
+    new bootstrap.Modal(document.getElementById('authModal')).show();
+}
+
+async function doAuthLogin() {
+    const user = document.getElementById('authLoginUser').value.trim();
+    const pass = document.getElementById('authLoginPass').value;
+    if (!user || !pass) {
+        document.getElementById('authLoginAlert').innerHTML = `<div class="alert alert-warning py-2 small" style="border-radius:10px">${t('auth_fields_required')}</div>`;
+        return;
+    }
+    const btn = document.getElementById('authLoginBtn');
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>${t('auth_logging_in')}`;
+    document.getElementById('authLoginAlert').innerHTML = '';
+    try {
+        const r = await fetch('/api/auth/login', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ username: user, password: pass })
+        });
+        const d = await r.json();
+        if (r.ok) {
+            btn.innerHTML = `<i class="bi bi-check-circle"></i> ${t('auth_login_success')}`;
+            btn.classList.replace('btn-primary', 'btn-success');
+            setTimeout(async () => {
+                bootstrap.Modal.getInstance(document.getElementById('authModal'))?.hide();
+                btn.innerHTML = origHTML; btn.disabled = false; btn.classList.replace('btn-success', 'btn-primary');
+                await checkAuth();
+                refreshAll();
+            }, 600);
+        } else {
+            btn.innerHTML = origHTML; btn.disabled = false;
+            document.getElementById('authLoginAlert').innerHTML = `<div class="alert alert-danger py-2 small" style="border-radius:10px">${d.error || t('auth_login_error')}</div>`;
+        }
+    } catch(e) {
+        btn.innerHTML = origHTML; btn.disabled = false;
+        document.getElementById('authLoginAlert').innerHTML = `<div class="alert alert-danger py-2 small" style="border-radius:10px">${t('auth_login_error')}</div>`;
+    }
+}
+
+async function doAuthSignup() {
+    const user = document.getElementById('authSignupUser').value.trim();
+    const email = document.getElementById('authSignupEmail').value.trim();
+    const pass = document.getElementById('authSignupPass').value;
+    const pass2 = document.getElementById('authSignupPassConfirm').value;
+    if (!user || !pass) {
+        document.getElementById('authSignupAlert').innerHTML = `<div class="alert alert-warning py-2 small" style="border-radius:10px">${t('auth_fields_required')}</div>`;
+        return;
+    }
+    if (pass !== pass2) {
+        document.getElementById('authSignupAlert').innerHTML = `<div class="alert alert-warning py-2 small" style="border-radius:10px">${t('auth_pass_mismatch')}</div>`;
+        return;
+    }
+    const btn = document.getElementById('authSignupBtn');
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>${t('auth_signing_up')}`;
+    document.getElementById('authSignupAlert').innerHTML = '';
+    try {
+        const r = await fetch('/api/auth/signup', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ username: user, password: pass, email: email, verification_method: 'email' })
+        });
+        const d = await r.json();
+        if (r.ok) {
+            if (d.auto_verified) {
+                btn.innerHTML = `<i class="bi bi-check-circle"></i> ${t('auth_signup_success')}`;
+                btn.classList.replace('btn-primary', 'btn-success');
+                setTimeout(async () => {
+                    bootstrap.Modal.getInstance(document.getElementById('authModal'))?.hide();
+                        btn.innerHTML = origHTML; btn.disabled = false; btn.classList.replace('btn-success', 'btn-primary');
+                    await checkAuth();
+                    refreshAll();
+                    showToast(t('auth_signup_success'), 'success');
+                }, 600);
+            } else {
+                btn.innerHTML = origHTML; btn.disabled = false;
+                document.getElementById('authSignupAlert').innerHTML = `<div class="alert alert-success py-2 small" style="border-radius:10px">${t('auth_signup_success')}</div>`;
+            }
+        } else {
+            btn.innerHTML = origHTML; btn.disabled = false;
+            document.getElementById('authSignupAlert').innerHTML = `<div class="alert alert-danger py-2 small" style="border-radius:10px">${d.error || t('auth_signup_error')}</div>`;
+        }
+    } catch(e) {
+        btn.innerHTML = origHTML; btn.disabled = false;
+        document.getElementById('authSignupAlert').innerHTML = `<div class="alert alert-danger py-2 small" style="border-radius:10px">${t('auth_signup_error')}</div>`;
+    }
+}
+
+async function doAuthForgot() {
+    const email = document.getElementById('authForgotEmail').value.trim();
+    if (!email) {
+        document.getElementById('authForgotAlert').innerHTML = `<div class="alert alert-warning py-2 small" style="border-radius:10px">${t('auth_fields_required')}</div>`;
+        return;
+    }
+    try {
+        const r = await fetch('/api/auth/resend', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ email: email })
+        });
+        document.getElementById('authForgotAlert').innerHTML = `<div class="alert alert-success py-2 small" style="border-radius:10px">${t('auth_reset_sent')}</div>`;
+    } catch(e) {
+        document.getElementById('authForgotAlert').innerHTML = `<div class="alert alert-danger py-2 small" style="border-radius:10px">${t('smtp_error')}</div>`;
+    }
+}
 
 async function doLogout() {
     await fetch('/api/auth/logout', { method: 'POST' });
-    window.location.href = '/auth';
+    isLoggedIn = false;
+    isAdmin = false;
+    document.getElementById('navUserItem').style.display = 'none';
+    document.getElementById('navUserDivider').style.display = 'none';
+    document.getElementById('navLogoutItem').style.display = 'none';
+    document.getElementById('adminTabNav').style.display = 'none';
+    document.getElementById('navAuthItem').style.display = '';
 }
+
+// Admin panel
+async function loadAdminPanel() {
+    if (!isAdmin) return;
+    try {
+        const [stats, users, cats] = await Promise.all([
+            api('/api/admin/stats'), api('/api/admin/users'), api('/api/categories')
+        ]);
+
+        // Stats cards
+        const statsRow = document.getElementById('adminStatsRow');
+        const statItems = [
+            { icon: 'bi-people', label: t('admin_user_count'), value: stats.total_users, color: '#6366f1' },
+            { icon: 'bi-receipt', label: t('admin_expense_count'), value: stats.total_expenses, color: '#f59e0b' },
+            { icon: 'bi-cash-stack', label: t('admin_income_count'), value: stats.total_income, color: '#10b981' },
+            { icon: 'bi-tags', label: t('admin_cat_count'), value: stats.total_categories, color: '#3b82f6' },
+            { icon: 'bi-database', label: t('admin_db_size'), value: (stats.db_size / 1024).toFixed(0) + ' KB', color: '#8b5cf6' },
+        ];
+        statsRow.innerHTML = statItems.map(s => `
+            <div class="col-6 col-md-4 col-lg-2">
+                <div class="card text-center p-3" style="border-radius:14px;border:none;background:${s.color}10">
+                    <i class="bi ${s.icon} mb-1" style="font-size:1.5rem;color:${s.color}"></i>
+                    <div class="fw-bold" style="font-size:1.2rem;color:${s.color}">${s.value}</div>
+                    <div class="text-muted small">${s.label}</div>
+                </div>
+            </div>
+        `).join('');
+
+        // Users table
+        document.getElementById('adminUsersBody').innerHTML = users.map(u => `
+            <tr>
+                <td>${u.id}</td>
+                <td><i class="bi bi-person-circle me-1"></i>${u.username}</td>
+                <td class="small">${u.email || '-'}</td>
+                <td>${u.is_admin ? '<span class="badge bg-primary">Admin</span>' : ''}</td>
+                <td>
+                    ${u.is_admin ? '' : `<button class="btn btn-outline-danger btn-sm" style="border-radius:8px" onclick="adminDeleteUser(${u.id})"><i class="bi bi-trash3"></i></button>`}
+                </td>
+            </tr>
+        `).join('');
+
+        // Categories table
+        document.getElementById('adminCatsBody').innerHTML = cats.map(c => `
+            <tr>
+                <td class="small text-muted">${c.id}</td>
+                <td>
+                    <input type="text" class="form-control form-control-sm" value="${c.name_he}" id="adminCatName_${c.id}" style="border-radius:8px">
+                </td>
+                <td>
+                    <input type="color" class="form-control form-control-sm form-control-color" value="${c.color}" id="adminCatColor_${c.id}" style="width:40px;height:30px;border-radius:8px">
+                </td>
+                <td>
+                    <div class="d-flex gap-1">
+                        <button class="btn btn-outline-primary btn-sm" style="border-radius:8px" onclick="adminSaveCategory('${c.id}')"><i class="bi bi-check-lg"></i></button>
+                        <button class="btn btn-outline-danger btn-sm" style="border-radius:8px" onclick="adminDeleteCategory('${c.id}')"><i class="bi bi-trash3"></i></button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    } catch(e) {}
+}
+
+async function adminDeleteUser(id) {
+    const ok = await appConfirm(t('admin_delete_user') + '?', { type: 'danger' });
+    if (!ok) return;
+    await api('/api/admin/users/' + id, { method: 'DELETE' });
+    loadAdminPanel();
+}
+
+async function adminSaveCategory(catId) {
+    const name = document.getElementById('adminCatName_' + catId).value.trim();
+    const color = document.getElementById('adminCatColor_' + catId).value;
+    await api('/api/admin/categories', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: catId, name_he: name, color: color })
+    });
+    showToast(t('saved_ok'), 'success');
+    await loadCategories();
+    refreshAll();
+}
+
+async function adminDeleteCategory(catId) {
+    const ok = await appConfirm(t('confirm_delete_product') + '?', { type: 'danger' });
+    if (!ok) return;
+    const r = await fetch('/api/admin/categories/' + catId, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) {
+        await appAlert(d.error, 'danger');
+        return;
+    }
+    showToast(t('product_deleted'), 'success');
+    loadAdminPanel();
+    await loadCategories();
+    refreshAll();
+}
+
+// Load admin panel when tab is shown
+document.addEventListener('shown.bs.tab', (e) => {
+    if (e.target.getAttribute('href') === '#adminTab') loadAdminPanel();
+});
 
 function formatDate(dateStr) {
     const d = new Date(dateStr);
@@ -5143,6 +5713,57 @@ async function testReminder(id) {
 // ============================================================
 // SMTP Settings (from main app)
 // ============================================================
+// SMTP provider auto-detection map
+const SMTP_PROVIDERS = {
+    'gmail.com':       { server: 'smtp.gmail.com',       port: 587, name: 'Gmail',   helpKey: 'smtp_gmail_help' },
+    'googlemail.com':  { server: 'smtp.gmail.com',       port: 587, name: 'Gmail',   helpKey: 'smtp_gmail_help' },
+    'outlook.com':     { server: 'smtp.office365.com',   port: 587, name: 'Outlook', helpKey: 'smtp_outlook_help' },
+    'hotmail.com':     { server: 'smtp.office365.com',   port: 587, name: 'Outlook', helpKey: 'smtp_outlook_help' },
+    'live.com':        { server: 'smtp.office365.com',   port: 587, name: 'Outlook', helpKey: 'smtp_outlook_help' },
+    'yahoo.com':       { server: 'smtp.mail.yahoo.com',  port: 587, name: 'Yahoo',   helpKey: 'smtp_yahoo_help' },
+    'yahoo.co.il':     { server: 'smtp.mail.yahoo.com',  port: 587, name: 'Yahoo',   helpKey: 'smtp_yahoo_help' },
+    'walla.co.il':     { server: 'smtp.walla.co.il',     port: 587, name: 'Walla',   helpKey: 'smtp_generic_help' },
+    'icloud.com':      { server: 'smtp.mail.me.com',     port: 587, name: 'iCloud',  helpKey: 'smtp_generic_help' },
+};
+
+function autoDetectSmtp(email) {
+    const domain = (email.split('@')[1] || '').toLowerCase();
+    const provider = SMTP_PROVIDERS[domain];
+    const helpDiv = document.getElementById('smtpProviderHelp');
+    const badge = document.getElementById('smtpDetectedBadge');
+
+    if (provider) {
+        // Auto-fill hidden fields
+        document.getElementById('smtpServer').value = provider.server;
+        document.getElementById('smtpPort').value = provider.port;
+        document.getElementById('smtpFrom').value = email;
+        // Auto-fill advanced fields too
+        document.getElementById('smtpServerAdv').value = provider.server;
+        document.getElementById('smtpPortAdv').value = provider.port;
+        document.getElementById('smtpFromAdv').value = email;
+        // Show provider help
+        document.getElementById('smtpProviderName').textContent = provider.name;
+        document.getElementById('smtpProviderInstructions').innerHTML = t(provider.helpKey);
+        helpDiv.style.display = '';
+        badge.style.display = '';
+    } else if (domain && domain.includes('.')) {
+        // Unknown provider — guess smtp.domain
+        document.getElementById('smtpServer').value = `smtp.${domain}`;
+        document.getElementById('smtpPort').value = 587;
+        document.getElementById('smtpFrom').value = email;
+        document.getElementById('smtpServerAdv').value = `smtp.${domain}`;
+        document.getElementById('smtpPortAdv').value = 587;
+        document.getElementById('smtpFromAdv').value = email;
+        document.getElementById('smtpProviderName').textContent = domain;
+        document.getElementById('smtpProviderInstructions').innerHTML = t('smtp_generic_help');
+        helpDiv.style.display = '';
+        badge.style.display = '';
+    } else {
+        helpDiv.style.display = 'none';
+        badge.style.display = 'none';
+    }
+}
+
 function openSmtpSettings() {
     loadSmtpSettings();
     new bootstrap.Modal(document.getElementById('smtpModal')).show();
@@ -5155,17 +5776,30 @@ async function loadSmtpSettings() {
         if (d.configured) {
             document.getElementById('smtpServer').value = d.smtp_server || '';
             document.getElementById('smtpFrom').value = d.from_email || '';
+            document.getElementById('smtpServerAdv').value = d.smtp_server || '';
+            document.getElementById('smtpFromAdv').value = d.from_email || '';
+            // If we have a from_email, show it in the user field
+            if (d.from_email) {
+                document.getElementById('smtpUser').value = d.from_email;
+                autoDetectSmtp(d.from_email);
+            }
         }
     } catch(e) {}
 }
 
 async function saveSmtpSettings() {
+    const email = document.getElementById('smtpUser').value;
+    // Use advanced fields if they were manually edited, otherwise use auto-detected
+    const serverAdv = document.getElementById('smtpServerAdv').value;
+    const portAdv = document.getElementById('smtpPortAdv').value;
+    const fromAdv = document.getElementById('smtpFromAdv').value;
+
     const cfg = {
-        smtp_server: document.getElementById('smtpServer').value,
-        smtp_port: document.getElementById('smtpPort').value,
-        smtp_user: document.getElementById('smtpUser').value,
+        smtp_server: serverAdv || document.getElementById('smtpServer').value,
+        smtp_port: portAdv || document.getElementById('smtpPort').value,
+        smtp_user: email,
         smtp_password: document.getElementById('smtpPass').value,
-        from_email: document.getElementById('smtpFrom').value,
+        from_email: fromAdv || document.getElementById('smtpFrom').value || email,
         twilio_sid: document.getElementById('twilioSid').value,
         twilio_token: document.getElementById('twilioToken').value,
         twilio_from: document.getElementById('twilioFrom').value,
@@ -5177,11 +5811,11 @@ async function saveSmtpSettings() {
             body: JSON.stringify(cfg)
         });
         if (r.ok) {
-            document.getElementById('smtpAlert').innerHTML = `<div class="alert alert-success py-2 mt-2">${t('smtp_saved')}</div>`;
+            document.getElementById('smtpAlert').innerHTML = `<div class="alert alert-success py-2 mt-2" style="border-radius:10px">${t('smtp_saved')}</div>`;
             setTimeout(() => document.getElementById('smtpAlert').innerHTML = '', 3000);
         }
     } catch(e) {
-        document.getElementById('smtpAlert').innerHTML = `<div class="alert alert-danger py-2 mt-2">${t('smtp_error')}</div>`;
+        document.getElementById('smtpAlert').innerHTML = `<div class="alert alert-danger py-2 mt-2" style="border-radius:10px">${t('smtp_error')}</div>`;
     }
 }
 
@@ -5438,6 +6072,11 @@ function startTutorialSteps() {
     const w = document.getElementById('tutWelcome');
     if (w) w.remove();
     createTutorialOverlay();
+    // Hide spotlight and card until first step is positioned
+    const spotlight = document.getElementById('tutSpotlight');
+    const card = document.getElementById('tutCard');
+    spotlight.style.opacity = '0';
+    card.style.opacity = '0';
     tutorialOverlay.classList.remove('hidden');
     tutorialOverlay.classList.add('visible');
     tutCurrentStep = -1;
@@ -5520,6 +6159,10 @@ function showTutorialStep(idx) {
         // Position card
         positionTutCard(card, rect, step.position);
 
+        // Reveal spotlight and card (hidden on first step to prevent jump)
+        spotlight.style.opacity = '1';
+        card.style.opacity = '1';
+
         // Scroll target into view
         targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
@@ -5527,7 +6170,7 @@ function showTutorialStep(idx) {
         card.style.animation = 'none';
         card.offsetHeight; // reflow
         card.style.animation = '';
-    }, 150);
+    }, 200);
 }
 
 function positionTutCard(card, rect, position) {

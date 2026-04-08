@@ -49,9 +49,28 @@ budget_app.app.config["TESTING"] = True
 budget_app.app.config["SECRET_KEY"] = "test-secret"
 client = budget_app.app.test_client()
 
-# Initialize DB
+# Initialize DB (disable external secrets for test)
+budget_app.ADMIN_SECRETS = {}
 with budget_app.app.app_context():
     budget_app.init_db()
+
+# Create a test user and login (endpoints require auth)
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    pw_hash = budget_app.hash_password("testpass123")
+    conn.execute("INSERT INTO users (username, password_hash, email, verified, is_admin) VALUES (?, ?, ?, 1, 1)",
+                 ("testadmin", pw_hash, "test@test.com"))
+    conn.commit()
+    conn.close()
+
+# Login to get session
+with client.session_transaction() as sess:
+    with budget_app.app.app_context():
+        conn = budget_app.get_db()
+        user = conn.execute("SELECT id FROM users WHERE username='testadmin'").fetchone()
+        conn.close()
+    sess['user_id'] = user['id']
+    sess['username'] = 'testadmin'
 
 
 def api_get(url):
@@ -506,6 +525,161 @@ for month in MONTHS:
     status, s = api_get(f"/api/summary?month={month}&plan=1")
     check(status == 200 and s.get("expense_total", 0) > 0,
           f"Summary for {month} has expenses")
+
+
+# ====================================================================
+print("\n🔹 21. Auth — Signup, Login, Logout, Status")
+# ====================================================================
+# Logout current session first
+status, res = api_post("/api/auth/logout")
+check(status == 200, "POST /api/auth/logout succeeds")
+
+# Auth status should show not logged in
+status, res = api_get("/api/auth/status")
+check(status == 200, "GET /api/auth/status returns 200")
+check(res["logged_in"] == False, "After logout, logged_in is false")
+
+# GET endpoints allow browsing without login
+status, _ = api_get("/api/expenses?month=2026-04")
+check(status == 200, "GET /api/expenses allows browsing without login")
+
+status, _ = api_get("/api/income?month=2026-04")
+check(status == 200, "GET /api/income allows browsing without login")
+
+status, _ = api_get("/api/summary?month=2026-04&plan=1")
+check(status == 200, "GET /api/summary allows browsing without login")
+
+# Write actions require auth
+status, _ = api_post("/api/expenses", {
+    "description": "Unauthorized test", "amount": 100, "date": "2026-04-01",
+    "category_id": 1, "source": "cash", "frequency": "once"
+})
+check(status == 401, "POST /api/expenses returns 401 when not logged in")
+
+status, _ = api_post("/api/income", {
+    "description": "Unauthorized test", "amount": 5000, "date": "2026-04-01",
+    "source": "cash", "person": "Test", "is_recurring": 0
+})
+check(status == 401, "POST /api/income returns 401 when not logged in")
+
+# Signup a new user (OTP sending will fail in test → auto-verified)
+status, res = api_post("/api/auth/signup", {
+    "username": "newuser",
+    "password": "securepass123",
+    "email": "newuser@example.com",
+    "verification_method": "email",
+})
+check(status == 200, "POST /api/auth/signup succeeds")
+check(res.get("auto_verified") == True or res.get("status") == "verification_sent",
+      "Signup returns valid status")
+
+# If auto-verified, we should be logged in now
+if res.get("auto_verified"):
+    status, res = api_get("/api/auth/status")
+    check(res["logged_in"] == True, "Auto-verified user is logged in")
+    check(res["username"] == "newuser", "Logged in as newuser")
+    check(res["is_admin"] == False, "New user is not admin")
+
+    # Logout the new user
+    status, _ = api_post("/api/auth/logout")
+    check(status == 200, "Logout newuser")
+
+# Signup with duplicate username should fail
+status, res = api_post("/api/auth/signup", {
+    "username": "newuser",
+    "password": "anotherpass",
+    "email": "other@example.com",
+    "verification_method": "email",
+})
+check(status == 400, "Duplicate username signup returns 400")
+check("exists" in res.get("error", "").lower(), "Error mentions username exists")
+
+# Signup with bad data
+status, _ = api_post("/api/auth/signup", {"username": "", "password": "123456", "email": "a@b.c", "verification_method": "email"})
+check(status == 400, "Signup with empty username returns 400")
+
+status, _ = api_post("/api/auth/signup", {"username": "shortpw", "password": "12345", "email": "a@b.c", "verification_method": "email"})
+check(status == 400, "Signup with short password returns 400")
+
+# Login with wrong password
+status, res = api_post("/api/auth/login", {"username": "testadmin", "password": "wrongpass"})
+check(status == 401, "Login with wrong password returns 401")
+
+# Login with non-existent user
+status, _ = api_post("/api/auth/login", {"username": "noexist", "password": "whatever"})
+check(status == 401, "Login with non-existent user returns 401")
+
+# Login with correct username
+status, res = api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+check(status == 200, "Login with correct username succeeds")
+check(res.get("username") == "testadmin", "Login returns correct username")
+
+# Logout and login with email instead
+api_post("/api/auth/logout")
+status, res = api_post("/api/auth/login", {"username": "test@test.com", "password": "testpass123"})
+check(status == 200, "Login with email succeeds")
+check(res.get("username") == "testadmin", "Email login returns correct username")
+
+# Auth status should show logged in + admin
+status, res = api_get("/api/auth/status")
+check(res["logged_in"] == True, "After login, logged_in is true")
+check(res["is_admin"] == True, "testadmin is admin")
+
+# Protected endpoints should work again
+status, _ = api_get("/api/expenses?month=2026-04")
+check(status == 200, "Protected endpoint works after login")
+
+
+# ====================================================================
+print("\n🔹 22. Admin endpoints")
+# ====================================================================
+# Admin stats
+status, stats = api_get("/api/admin/stats")
+check(status == 200, "GET /api/admin/stats returns 200")
+check(stats["total_users"] >= 2, f"Admin stats shows {stats['total_users']} users")
+check(stats["total_expenses"] > 0, "Admin stats shows expenses")
+check(stats["total_categories"] > 0, "Admin stats shows categories")
+
+# Admin get users
+status, users = api_get("/api/admin/users")
+check(status == 200, "GET /api/admin/users returns 200")
+check(len(users) >= 2, f"Admin sees {len(users)} users")
+admin_user = next((u for u in users if u["username"] == "testadmin"), None)
+check(admin_user is not None, "Admin user found in list")
+check(admin_user["is_admin"] == 1, "Admin user has is_admin=1")
+new_user = next((u for u in users if u["username"] == "newuser"), None)
+check(new_user is not None, "newuser found in list")
+
+# Cannot delete admin user
+status, res = api_delete(f"/api/admin/users/{admin_user['id']}")
+check(status == 400, "Cannot delete admin user")
+
+# Delete non-admin user
+status, _ = api_delete(f"/api/admin/users/{new_user['id']}")
+check(status == 200, "Delete non-admin user succeeds")
+
+status, users = api_get("/api/admin/users")
+check(not any(u["username"] == "newuser" for u in users), "Deleted user no longer in list")
+
+# Non-admin cannot access admin endpoints
+# Logout, login as a new regular user
+api_post("/api/auth/logout")
+api_post("/api/auth/signup", {
+    "username": "regularuser",
+    "password": "regular123",
+    "email": "regular@example.com",
+    "verification_method": "email",
+})
+# regularuser is auto-verified and logged in
+status, _ = api_get("/api/admin/stats")
+check(status in [401, 403], "Non-admin cannot access admin stats", f"got {status}")
+
+status, _ = api_get("/api/admin/users")
+check(status in [401, 403], "Non-admin cannot access admin users", f"got {status}")
+
+# Re-login as admin for any further tests
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
 
 
 # ====================================================================

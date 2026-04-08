@@ -47,6 +47,13 @@ SMTP_CONFIG_PATH = os.path.join(BASE_DIR, 'smtp_config.json')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# External secrets for admin credentials
+SECRETS_PATH = os.path.join(os.path.expanduser('~'), '.budget_tracker_secrets.json')
+ADMIN_SECRETS = {}
+if os.path.exists(SECRETS_PATH):
+    with open(SECRETS_PATH, 'r') as f:
+        ADMIN_SECRETS = json.load(f)
+
 # Hebrew category mapping from the XLS structure
 CATEGORY_MAP = {
     'דיור ואחזקת בית': 'housing',
@@ -174,6 +181,7 @@ def init_db():
             verification_method TEXT DEFAULT '',
             otp_code TEXT DEFAULT '',
             otp_expires TEXT DEFAULT '',
+            is_admin INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -263,6 +271,12 @@ def init_db():
         conn.execute("ALTER TABLE budget_plans ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
+    # Migration: add is_admin column to users
+    user_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if 'is_admin' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        conn.commit()
+
     # Insert default categories if empty
     existing = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
     if existing == 0:
@@ -301,11 +315,24 @@ def generate_otp():
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # If no users exist yet, allow access (first-time setup)
-        if not has_any_users():
-            return f(*args, **kwargs)
+        if 'user_id' not in session:
+            if request.method == 'GET':
+                return f(*args, **kwargs)
+            return jsonify({'error': 'Not authenticated'}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'Not authenticated'}), 401
+        conn = get_db()
+        user = conn.execute("SELECT is_admin FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        conn.close()
+        if not user or not user['is_admin']:
+            return jsonify({'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -315,6 +342,29 @@ def has_any_users():
     count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     conn.close()
     return count > 0
+
+
+def ensure_admin_user():
+    """Auto-create admin user from external secrets file."""
+    if not ADMIN_SECRETS.get('ADMIN_EMAIL') or not ADMIN_SECRETS.get('ADMIN_PASSWORD'):
+        return
+    admin_user = ADMIN_SECRETS.get('ADMIN_USERNAME', 'admin')
+    conn = get_db()
+    admin_exists = conn.execute("SELECT id FROM users WHERE username=?", (admin_user,)).fetchone()
+    if not admin_exists:
+        pw_hash = hash_password(ADMIN_SECRETS['ADMIN_PASSWORD'])
+        conn.execute(
+            "INSERT INTO users (username, password_hash, email, verified, is_admin) VALUES (?, ?, ?, 1, 1)",
+            (admin_user, pw_hash, ADMIN_SECRETS['ADMIN_EMAIL'])
+        )
+        conn.commit()
+    else:
+        conn.execute("UPDATE users SET is_admin=1 WHERE username=?", (admin_user,))
+        conn.commit()
+    conn.close()
+
+
+ensure_admin_user()
 
 
 def send_email_otp(to_email, otp_code):
@@ -398,10 +448,17 @@ def auth_status():
     has_users = has_any_users()
     logged_in = 'user_id' in session
     username = session.get('username', '')
+    is_admin = False
+    if logged_in:
+        conn = get_db()
+        user = conn.execute("SELECT is_admin FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        conn.close()
+        is_admin = bool(user and user['is_admin'])
     return jsonify({
         'has_users': has_users,
         'logged_in': logged_in,
         'username': username,
+        'is_admin': is_admin,
     })
 
 
@@ -535,11 +592,12 @@ def auth_resend():
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
     data = request.json
-    username = data.get('username', '').strip()
+    identifier = data.get('username', '').strip()
     password = data.get('password', '')
 
     conn = get_db()
-    user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    # Allow login by username OR email
+    user = conn.execute("SELECT * FROM users WHERE username=? OR email=?", (identifier, identifier)).fetchone()
     conn.close()
 
     if not user or not verify_password(password, user['password_hash']):
@@ -787,8 +845,6 @@ def test_reminder(rid):
 # --- Static files ---
 @app.route('/')
 def index():
-    if has_any_users() and 'user_id' not in session:
-        return redirect('/auth')
     resp = send_from_directory('static', 'index.html')
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return resp
@@ -3521,6 +3577,77 @@ def installments_delete(inst_id):
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
+
+
+# ============================================================
+# Admin Panel APIs
+# ============================================================
+
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required
+def admin_get_users():
+    conn = get_db()
+    rows = conn.execute("SELECT id, username, email, phone, verified, is_admin, created_at FROM users ORDER BY id").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_user(user_id):
+    conn = get_db()
+    user = conn.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()
+    if user and user['is_admin']:
+        conn.close()
+        return jsonify({'error': 'Cannot delete admin user'}), 400
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/admin/categories', methods=['PUT'])
+@admin_required
+def admin_update_category():
+    data = request.json
+    conn = get_db()
+    conn.execute("UPDATE categories SET name_he=?, color=? WHERE id=?",
+                 (data['name_he'], data['color'], data['id']))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/admin/categories/<cat_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_category(cat_id):
+    conn = get_db()
+    # Check if category has expenses
+    count = conn.execute("SELECT COUNT(*) FROM expenses WHERE category_id=?", (cat_id,)).fetchone()[0]
+    if count > 0:
+        conn.close()
+        return jsonify({'error': f'Category has {count} expenses, cannot delete'}), 400
+    conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+    conn.execute("DELETE FROM budget WHERE category_id=?", (cat_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/admin/stats', methods=['GET'])
+@admin_required
+def admin_stats():
+    conn = get_db()
+    stats = {
+        'total_users': conn.execute("SELECT COUNT(*) FROM users").fetchone()[0],
+        'total_expenses': conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0],
+        'total_income': conn.execute("SELECT COUNT(*) FROM income").fetchone()[0],
+        'total_categories': conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0],
+        'total_budget_plans': conn.execute("SELECT COUNT(*) FROM budget_plans").fetchone()[0],
+        'db_size': os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
+    }
+    conn.close()
+    return jsonify(stats)
 
 
 if __name__ == '__main__':
