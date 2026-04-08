@@ -17,17 +17,20 @@ A family budget management app with Hebrew and English support. Track expenses, 
 
 ## Getting Started
 
-### Windows
+### Windows (easiest)
 
-Download `expense-tracker.exe` from the [Releases](../../releases) page, or build from source:
+1. Go to the [Latest Release](https://github.com/Ezbyname/home_budget/releases/latest)
+2. Download **`expense-tracker.exe`**
+3. Double-click to run — the app opens in your browser automatically
 
-```bash
-pip install -r requirements.txt
-pip install pyinstaller
-pyinstaller --onefile --name expense-tracker --add-data "static;static" app.py
-```
+No Python or installation needed. Just download and run.
 
-Run the exe — the app opens in your browser at `http://127.0.0.1:5000`.
+> **Build from source (optional):**
+> ```bash
+> pip install -r requirements.txt
+> pip install pyinstaller
+> pyinstaller --onefile --name expense-tracker --add-data "static;static" app.py
+> ```
 
 ### Mac
 
