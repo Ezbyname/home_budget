@@ -27,12 +27,17 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-app = Flask(__name__, static_folder=STATIC_DIR)
-app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
-DB_PATH = os.path.join(BASE_DIR, 'budget.db')
+APP_VERSION = '1.0.1000007'
 
-# Session config
-SECRET_FILE = os.path.join(BASE_DIR, '.secret_key')
+app = Flask(__name__, static_folder=STATIC_DIR)
+# Store user data in a stable folder that survives exe rebuilds
+DATA_DIR = os.path.join(os.path.expanduser('~'), '.budget_tracker_data')
+os.makedirs(DATA_DIR, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'uploads')
+DB_PATH = os.path.join(DATA_DIR, 'budget.db')
+
+# Session config — store secret key in user's home dir so it survives exe rebuilds
+SECRET_FILE = os.path.join(os.path.expanduser('~'), '.budget_tracker_secret_key')
 if os.path.exists(SECRET_FILE):
     with open(SECRET_FILE, 'r') as f:
         app.secret_key = f.read().strip()
@@ -43,7 +48,7 @@ else:
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 
 # SMTP config file (created on first email setup)
-SMTP_CONFIG_PATH = os.path.join(BASE_DIR, 'smtp_config.json')
+SMTP_CONFIG_PATH = os.path.join(DATA_DIR, 'smtp_config.json')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -241,6 +246,23 @@ def init_db():
             start_date TEXT NOT NULL,
             card TEXT DEFAULT '',
             notes TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_typed TEXT NOT NULL,
+            actual_match TEXT NOT NULL,
+            times_used INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_aliases_typed ON chat_aliases(user_typed);
+
+        CREATE TABLE IF NOT EXISTS chat_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            query TEXT NOT NULL,
+            rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
     ''')
@@ -904,19 +926,41 @@ def get_standing_orders():
 def get_expenses():
     conn = get_db()
     month = request.args.get('month')  # format: YYYY-MM
-    if month:
-        rows = conn.execute(
-            """SELECT e.*, c.name_he as category_name, c.color as category_color
-               FROM expenses e JOIN categories c ON e.category_id = c.id
-               WHERE e.date LIKE ? ORDER BY e.date DESC""",
-            (month + '%',)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT e.*, c.name_he as category_name, c.color as category_color
-               FROM expenses e JOIN categories c ON e.category_id = c.id
-               ORDER BY e.date DESC LIMIT 500"""
-        ).fetchall()
+    from_date = request.args.get('from_date')  # YYYY-MM-DD
+    to_date = request.args.get('to_date')  # YYYY-MM-DD
+    cat_id = request.args.get('category_id')
+    subcat = request.args.get('subcategory')
+    cards = request.args.getlist('card')  # multi-select source/card filter
+
+    sql = """SELECT e.*, c.name_he as category_name, c.color as category_color
+             FROM expenses e JOIN categories c ON e.category_id = c.id WHERE 1=1"""
+    params = []
+
+    if from_date and to_date:
+        sql += " AND e.date >= ? AND e.date <= ?"
+        params += [from_date, to_date]
+    elif month:
+        sql += " AND e.date LIKE ?"
+        params.append(month + '%')
+
+    if cat_id:
+        sql += " AND e.category_id = ?"
+        params.append(cat_id)
+
+    if subcat:
+        sql += " AND (e.subcategory LIKE ? OR e.description LIKE ?)"
+        params += [f'%{subcat}%', f'%{subcat}%']
+
+    if cards:
+        placeholders = ','.join('?' * len(cards))
+        sql += f" AND e.card IN ({placeholders})"
+        params += cards
+
+    sql += " ORDER BY e.date DESC"
+    if not from_date and not to_date and not month:
+        sql += " LIMIT 500"
+
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -1605,6 +1649,9 @@ def parse_bank_csv(filepath):
     header = next(reader)  # skip header row
 
     conn = get_db()
+    has_visa_imports = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE source = 'visa_import'"
+    ).fetchone()[0] > 0
     imported_expenses = 0
     imported_income = 0
     skipped_visa = 0
@@ -1641,13 +1688,15 @@ def parse_bank_csv(filepath):
         if amount == 0:
             continue
 
-        # Check if should skip (Visa charges already imported)
+        # Check if should skip (Visa charges already imported via visa XLSX)
+        # Only skip if there are actual visa_import records in the DB
         should_skip = False
-        for pattern in BANK_SKIP_PATTERNS:
-            if pattern in description:
-                should_skip = True
-                skipped_visa += 1
-                break
+        if has_visa_imports:
+            for pattern in BANK_SKIP_PATTERNS:
+                if pattern in description:
+                    should_skip = True
+                    skipped_visa += 1
+                    break
 
         if should_skip:
             continue
@@ -3648,6 +3697,422 @@ def admin_stats():
     }
     conn.close()
     return jsonify(stats)
+
+
+import re as _re
+
+# --- AI Chat Agent ---
+AI_CONFIG_PATH = os.path.join(DATA_DIR, 'ai_config.json')
+
+def _get_ai_key():
+    if os.path.exists(AI_CONFIG_PATH):
+        with open(AI_CONFIG_PATH, 'r') as f:
+            return json.load(f).get('anthropic_api_key', '')
+    return ''
+
+@app.route('/api/settings/ai', methods=['GET'])
+@login_required
+def get_ai_settings():
+    key = _get_ai_key()
+    return jsonify({'has_key': bool(key), 'key_preview': key[:8] + '...' if len(key) > 8 else ''})
+
+@app.route('/api/settings/ai', methods=['POST'])
+@login_required
+def save_ai_settings():
+    data = request.json
+    key = data.get('api_key', '').strip()
+    with open(AI_CONFIG_PATH, 'w') as f:
+        json.dump({'anthropic_api_key': key}, f)
+    return jsonify({'status': 'ok'})
+
+@app.route('/api/version')
+def get_version():
+    return jsonify({'version': APP_VERSION})
+
+def _ai_chat(query, lang, conn):
+    """Use Claude API to understand the query and generate a structured SQL response."""
+    api_key = _get_ai_key()
+    if not api_key:
+        return None
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+    except Exception:
+        return None
+
+    today_str = date.today().strftime('%Y-%m-%d')
+    cats = [dict(r) for r in conn.execute("SELECT id, name_he FROM categories ORDER BY sort_order").fetchall()]
+    cats_desc = ', '.join(f'{c["id"]}={c["name_he"]}' for c in cats)
+    cards = [r[0] for r in conn.execute("SELECT DISTINCT card FROM expenses WHERE card IS NOT NULL").fetchall()]
+
+    system_prompt = f"""You are a budget assistant for a Hebrew/English family expense tracker app.
+Today's date: {today_str}
+
+DATABASE SCHEMA:
+- expenses: id, date (TEXT YYYY-MM-DD), category_id (TEXT), subcategory (TEXT), description (TEXT), amount (REAL), source, frequency, card (TEXT), created_at
+- income: id, date (TEXT YYYY-MM-DD), person (TEXT), source (TEXT), amount (REAL), description (TEXT), is_recurring, created_at
+- categories: id (TEXT PK), name_he (TEXT)
+
+CATEGORIES: {cats_desc}
+CARD/SOURCE VALUES: {', '.join(cards)}
+
+YOUR JOB: Parse the user's natural language query and return a JSON object with:
+1. "sql" - a SELECT SQL query to answer the question. Use parameterized ? placeholders. For expenses always JOIN categories: SELECT e.*, c.name_he as category_name, c.color as category_color FROM expenses e JOIN categories c ON e.category_id = c.id WHERE ...
+2. "params" - array of parameter values for the SQL
+3. "text" - a human-readable response in {"Hebrew" if lang == "he" else "English"}. Include the total amount (₪), count, and date range. If showing top items, list them.
+4. "action" - navigation action object or null:
+   - For expense queries: {{"tab": "expensesTab", "filter": {{"category_id": "...", "subcategory": "...", "from_date": "...", "to_date": "..."}}}}
+   - For income queries: {{"tab": "incomeTab"}}
+   - For navigation: {{"tab": "dashboardTab|expensesTab|incomeTab|budgetTab|financialTab|insightsTab|analysisTab|importTab"}}
+5. "type" - "expenses", "income", or "navigate"
+
+IMPORTANT RULES:
+- The description field contains business names exactly as they appear (e.g. 'מובילנד בתי קולנוע בעם', 'קצביית שור הבר בע"מ'). Search with LIKE '%term%' using the EXACT business name the user provides.
+- For date ranges: "חצי שנה" = 6 months, "שנה" = 12 months, "חודש" = 1 month, "3 חודשים" = 3 months. Calculate from today.
+- Always ORDER BY date DESC and LIMIT 50 for item queries.
+- For totals, use a separate COUNT(*) and SUM(amount) query approach — just put them in the text.
+- Keep the SQL simple and correct. No CTEs or subqueries unless necessary.
+
+Respond with ONLY valid JSON, no markdown, no explanation."""
+
+    try:
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[{"role": "user", "content": query}]
+        )
+        raw = msg.content[0].text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith('```'):
+            raw = raw.split('\n', 1)[1] if '\n' in raw else raw[3:]
+            if raw.endswith('```'):
+                raw = raw[:-3]
+        result = json.loads(raw)
+    except Exception as e:
+        app.logger.error(f"AI chat error: {e}")
+        return None
+
+    # Execute the AI-generated SQL safely
+    try:
+        sql = result.get('sql', '')
+        params = result.get('params', [])
+        if not sql:
+            return result  # Navigation or text-only response
+
+        rows = conn.execute(sql, params).fetchall()
+        items = [dict(r) for r in rows]
+
+        # Get totals
+        total = sum(it.get('amount', 0) for it in items)
+        count = len(items)
+
+        # If AI returned a count/sum query, use those results differently
+        if items and 'amount' not in items[0] and len(items) == 1:
+            # Aggregate query result
+            pass
+        else:
+            result_type = result.get('type', 'expenses')
+            response = {
+                'text': result.get('text', ''),
+                'data': {'items': items[:20], 'total': total, 'count': count, 'type': result_type},
+                'action': result.get('action')
+            }
+            return response
+
+    except Exception as e:
+        app.logger.error(f"AI SQL execution error: {e}")
+        # Return the text response even if SQL fails
+        return {
+            'text': result.get('text', 'שגיאה בביצוע השאילתה' if lang == 'he' else 'Error executing query'),
+            'data': None,
+            'action': result.get('action')
+        }
+
+    return result
+
+
+@app.route('/api/chat', methods=['POST'])
+@login_required
+def chat_assistant():
+    """Smart budget assistant — uses AI when available, falls back to keyword matching."""
+    data = request.json
+    query = data.get('query', '').strip()
+    lang = data.get('lang', 'he')
+
+    conn = get_db()
+
+    # Try AI agent first
+    ai_result = _ai_chat(query, lang, conn)
+    if ai_result:
+        conn.close()
+        return jsonify(ai_result)
+
+    # --- Fallback: keyword-based parsing ---
+    query_lower = query.lower()
+    cats = {r['id']: dict(r) for r in conn.execute("SELECT * FROM categories").fetchall()}
+    response = {'text': '', 'data': None, 'action': None}
+
+    today = date.today()
+    from_date = None
+    to_date = today.strftime('%Y-%m-%d')
+
+    m = _re.search(r'(\d+)\s*(חודש|חדש|month)', query_lower)
+    if m:
+        n = int(m.group(1))
+        from_dt = date(today.year, today.month, 1)
+        for _ in range(n - 1):
+            from_dt = date(from_dt.year - (1 if from_dt.month == 1 else 0),
+                           12 if from_dt.month == 1 else from_dt.month - 1, 1)
+        from_date = from_dt.strftime('%Y-%m-%d')
+
+    if any(w in query_lower for w in ['this month', 'החודש', 'החודש הזה']):
+        from_date = today.strftime('%Y-%m-01')
+    if any(w in query_lower for w in ['this year', 'השנה']):
+        from_date = f'{today.year}-01-01'
+    if any(w in query_lower for w in ['חצי שנה', 'half year', 'half a year']):
+        from_dt = today - timedelta(days=180)
+        from_date = from_dt.strftime('%Y-%m-%d')
+
+    if not from_date:
+        from_dt = date(today.year, today.month, 1)
+        for _ in range(2):
+            from_dt = date(from_dt.year - (1 if from_dt.month == 1 else 0),
+                           12 if from_dt.month == 1 else from_dt.month - 1, 1)
+        from_date = from_dt.strftime('%Y-%m-%d')
+
+    cat_id = None
+    cat_name = ''
+    for cid, c in cats.items():
+        if c['name_he'] and c['name_he'].lower() in query_lower:
+            cat_id = cid
+            cat_name = c['name_he']
+            break
+
+    # Simple search: remove common words, keep the rest
+    noise = {'כמה', 'הוצאתי', 'הוצאות', 'ההוצאות', 'תראה', 'תמצא', 'חפש', 'מצא',
+             'לי', 'של', 'את', 'על', 'אני', 'כל', 'עם', 'גם', 'רק', 'יש', 'אין',
+             'חודש', 'חודשים', 'אחרונים', 'אחרונות', 'האחרונה', 'האחרונים', 'האחרון',
+             'השנה', 'החודש', 'שנה', 'חצי', 'בחצי',
+             'expenses', 'show', 'find', 'me', 'the', 'last', 'my', 'how', 'much', 'spent', 'all',
+             'הכי', 'גדולה', 'יקרה', 'הכנסות', 'הכנסה',
+             cat_name.lower()} if cat_name else {'כמה', 'הוצאתי', 'הוצאות', 'ההוצאות', 'תראה', 'תמצא', 'חפש', 'מצא',
+             'לי', 'של', 'את', 'על', 'אני', 'כל', 'עם', 'גם', 'רק', 'יש', 'אין',
+             'חודש', 'חודשים', 'אחרונים', 'אחרונות', 'האחרונה', 'האחרונים', 'האחרון',
+             'השנה', 'החודש', 'שנה', 'חצי', 'בחצי',
+             'expenses', 'show', 'find', 'me', 'the', 'last', 'my', 'how', 'much', 'spent', 'all',
+             'הכי', 'גדולה', 'יקרה', 'הכנסות', 'הכנסה'}
+    words = [w for w in _re.sub(r'[\d\-/]+', ' ', query_lower).split() if len(w) >= 2 and w not in noise]
+
+    search_term = ' '.join(words).strip()
+
+    sql_where = "WHERE e.date >= ? AND e.date <= ?"
+    params = [from_date, to_date]
+    if cat_id:
+        sql_where += " AND e.category_id = ?"
+        params.append(cat_id)
+    if search_term:
+        kw_list = [w for w in search_term.split() if len(w) >= 2]
+        if kw_list:
+            kw_clauses = []
+            for kw in kw_list:
+                # Try both the word as-is AND with Hebrew prefix stripped (מ,ב,ה,ל,ש,כ)
+                variants = [f'%{kw}%']
+                if len(kw) >= 4 and kw[0] in 'מבהלשכ':
+                    variants.append(f'%{kw[1:]}%')
+                or_parts = []
+                for v in variants:
+                    or_parts.append("e.subcategory LIKE ?")
+                    or_parts.append("e.description LIKE ?")
+                    params += [v, v]
+                kw_clauses.append("(" + " OR ".join(or_parts) + ")")
+            sql_where += " AND " + " AND ".join(kw_clauses)
+
+    is_income = any(w in query_lower for w in ['income', 'הכנסה', 'הכנסות', 'salary', 'משכורת'])
+    is_navigate = (not cat_id and not search_term and
+                   any(w in query_lower for w in ['where', 'איפה', 'go to', 'take me', 'קח אותי']))
+
+    if is_income:
+        rows = conn.execute("SELECT * FROM income WHERE date >= ? AND date <= ? ORDER BY date DESC LIMIT 20",
+                            [from_date, to_date]).fetchall()
+        total = conn.execute("SELECT COALESCE(SUM(amount),0) FROM income WHERE date >= ? AND date <= ?",
+                             [from_date, to_date]).fetchone()[0]
+        items = [dict(r) for r in rows]
+        response['text'] = (f"סה״כ הכנסות מ-{from_date} עד {to_date}: ₪{total:,.0f} ({len(items)} רשומות)"
+                            if lang == 'he' else f"Total income {from_date} to {to_date}: ₪{total:,.0f} ({len(items)} entries)")
+        response['data'] = {'items': items, 'total': total, 'type': 'income'}
+        response['action'] = {'tab': 'incomeTab'}
+    elif is_navigate:
+        tab_map = {'דשבורד': 'dashboardTab', 'הוצאות': 'expensesTab', 'הכנסות': 'incomeTab',
+                   'תקציב': 'budgetTab', 'ביטוח': 'financialTab', 'תובנות': 'insightsTab',
+                   'dashboard': 'dashboardTab', 'expense': 'expensesTab', 'budget': 'budgetTab'}
+        found_tab = next((tab for kw, tab in tab_map.items() if kw in query_lower), None)
+        if found_tab:
+            response['text'] = 'מעביר אותך...' if lang == 'he' else 'Opening...'
+            response['action'] = {'tab': found_tab}
+        else:
+            response['text'] = 'הדפים: דשבורד, הוצאות, הכנסות, תקציב, ביטוח' if lang == 'he' else 'Pages: Dashboard, Expenses, Income, Budget, Insurance'
+    else:
+        rows = conn.execute(f"""
+            SELECT e.*, c.name_he as category_name, c.color as category_color
+            FROM expenses e JOIN categories c ON e.category_id = c.id
+            {sql_where} ORDER BY e.date DESC LIMIT 50
+        """, params).fetchall()
+        total = conn.execute(f"SELECT COALESCE(SUM(e.amount),0) FROM expenses e {sql_where}", params).fetchone()[0]
+        count = conn.execute(f"SELECT COUNT(*) FROM expenses e {sql_where}", params).fetchone()[0]
+        items = [dict(r) for r in rows]
+
+        # "Did you mean?" — if 0 results, retry with OR and suggest closest matches
+        suggestions = []
+        if count == 0 and search_term:
+            kw_list = [w for w in search_term.split() if len(w) >= 2]
+            if kw_list:
+                or_clauses = []
+                or_params = [from_date, to_date]
+                if cat_id:
+                    or_params.append(cat_id)
+                for kw in kw_list:
+                    variants = [f'%{kw}%']
+                    if len(kw) >= 4 and kw[0] in 'מבהלשכ':
+                        variants.append(f'%{kw[1:]}%')
+                    for v in variants:
+                        or_clauses.append("e.subcategory LIKE ?")
+                        or_clauses.append("e.description LIKE ?")
+                        or_params += [v, v]
+                or_where = "WHERE e.date >= ? AND e.date <= ?"
+                if cat_id:
+                    or_where += " AND e.category_id = ?"
+                or_where += " AND (" + " OR ".join(or_clauses) + ")"
+
+                or_rows = conn.execute(f"""
+                    SELECT e.*, c.name_he as category_name, c.color as category_color
+                    FROM expenses e JOIN categories c ON e.category_id = c.id
+                    {or_where} ORDER BY e.date DESC LIMIT 50
+                """, or_params).fetchall()
+                if or_rows:
+                    items = [dict(r) for r in or_rows]
+                    total = sum(it['amount'] for it in items)
+                    count = len(items)
+                    # Collect unique descriptions for suggestions
+                    suggestions = list(set(
+                        it.get('description', '') for it in items if it.get('description')
+                    ))[:5]
+
+        filter_desc = f' {cat_name}' if cat_name else ''
+        if search_term:
+            filter_desc += f' "{search_term}"'
+
+        if suggestions:
+            suggest_str = ', '.join(suggestions[:3])
+            if lang == 'he':
+                response['text'] = f"לא מצאתי התאמה מדויקת.\nאולי התכוונת ל: {suggest_str}?\n\nנמצאו {count} תוצאות דומות מ-{from_date} עד {to_date}\nסה״כ: ₪{total:,.0f}"
+            else:
+                response['text'] = f"No exact match found.\nDid you mean: {suggest_str}?\n\nFound {count} similar results from {from_date} to {to_date}\nTotal: ₪{total:,.0f}"
+        else:
+            response['text'] = (f"נמצאו {count} הוצאות{filter_desc} מ-{from_date} עד {to_date}\nסה״כ: ₪{total:,.0f}"
+                                if lang == 'he' else f"Found {count}{filter_desc} expenses {from_date} to {to_date}\nTotal: ₪{total:,.0f}")
+        response['data'] = {'items': items[:20], 'total': total, 'count': count, 'type': 'expenses'}
+        if suggestions:
+            response['data']['suggestions'] = suggestions
+        response['action'] = {'tab': 'expensesTab', 'filter': {
+            'category_id': cat_id or '', 'subcategory': search_term, 'from_date': from_date, 'to_date': to_date
+        }}
+
+    conn.close()
+    return jsonify(response)
+
+
+@app.route('/api/chat/confirm', methods=['POST'])
+@login_required
+def chat_confirm_alias():
+    """Learn from user confirmation: save search alias so fuzzy results become instant next time."""
+    data = request.json
+    user_typed = (data.get('user_typed') or '').strip()
+    actual_match = (data.get('actual_match') or '').strip()
+    confirmed = data.get('confirmed', False)
+
+    if not user_typed:
+        return jsonify({'ok': False, 'error': 'missing user_typed'})
+
+    conn = get_db()
+    if confirmed and actual_match:
+        # Save alias: next time user types this, go straight to the match
+        existing = conn.execute(
+            "SELECT id FROM chat_aliases WHERE user_typed = ? AND actual_match = ?",
+            [user_typed, actual_match]).fetchone()
+        if existing:
+            conn.execute("UPDATE chat_aliases SET times_used = times_used + 1 WHERE id = ?", [existing['id']])
+        else:
+            conn.execute("INSERT INTO chat_aliases (user_typed, actual_match) VALUES (?, ?)",
+                         [user_typed, actual_match])
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'saved': True})
+    else:
+        # User said "no" — don't save, just acknowledge
+        conn.close()
+        return jsonify({'ok': True, 'saved': False})
+
+
+@app.route('/api/chat/feedback', methods=['POST'])
+@login_required
+def chat_feedback():
+    """Save user satisfaction rating for a chat response."""
+    data = request.json
+    rating = data.get('rating')
+    query_text = data.get('query', '')
+
+    if not rating or rating not in [1, 2, 3, 4, 5]:
+        return jsonify({'ok': False, 'error': 'rating must be 1-5'})
+
+    user_id = session.get('user_id')
+    conn = get_db()
+    conn.execute("INSERT INTO chat_feedback (user_id, query, rating) VALUES (?, ?, ?)",
+                 [user_id, query_text, rating])
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/admin/chat-satisfaction', methods=['GET'])
+@login_required
+def admin_chat_satisfaction():
+    """Get chat satisfaction survey results for admin dashboard."""
+    conn = get_db()
+    # Check admin
+    user = conn.execute("SELECT is_admin FROM users WHERE id = ?", [session.get('user_id')]).fetchone()
+    if not user or not user['is_admin']:
+        conn.close()
+        return jsonify({'error': 'unauthorized'}), 403
+
+    stats = conn.execute("""
+        SELECT COUNT(*) as total_ratings,
+               ROUND(AVG(rating), 1) as avg_rating,
+               SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) as positive,
+               SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) as negative
+        FROM chat_feedback
+    """).fetchone()
+
+    recent = conn.execute("""
+        SELECT cf.rating, cf.query, cf.created_at, u.username
+        FROM chat_feedback cf LEFT JOIN users u ON cf.user_id = u.id
+        ORDER BY cf.created_at DESC LIMIT 20
+    """).fetchall()
+
+    distribution = conn.execute("""
+        SELECT rating, COUNT(*) as cnt FROM chat_feedback GROUP BY rating ORDER BY rating
+    """).fetchall()
+
+    conn.close()
+    return jsonify({
+        'total': stats['total_ratings'],
+        'avg_rating': stats['avg_rating'] or 0,
+        'positive': stats['positive'] or 0,
+        'negative': stats['negative'] or 0,
+        'recent': [dict(r) for r in recent],
+        'distribution': [dict(r) for r in distribution]
+    })
 
 
 if __name__ == '__main__':

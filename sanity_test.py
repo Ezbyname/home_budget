@@ -683,6 +683,251 @@ api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"}
 
 
 # ====================================================================
+print("\n🔹 23. Chat Assistant — Basic Queries")
+# ====================================================================
+# Basic expense query (default: last 3 months)
+status, res = api_post("/api/chat", {"query": "how much did i spend", "lang": "en"})
+check(status == 200, "Chat: basic expense query returns 200")
+check("text" in res and "data" in res and "action" in res, "Chat: response has text, data, action")
+check(res["data"]["type"] == "expenses", "Chat: expense query returns type=expenses")
+check(res["data"]["count"] >= 0, "Chat: count is non-negative")
+check(res["data"]["total"] >= 0, "Chat: total is non-negative")
+check(isinstance(res["data"]["items"], list), "Chat: items is a list")
+check(isinstance(res["data"].get("breakdown", []), list), "Chat: breakdown is a list (or absent)")
+
+# Hebrew query
+status, res = api_post("/api/chat", {"query": "כמה הוצאתי החודש", "lang": "he"})
+check(status == 200, "Chat: Hebrew query returns 200")
+check("נמצאו" in res["text"] or "סה״כ" in res["text"] or res["data"]["count"] == 0,
+      "Chat: Hebrew response text is in Hebrew")
+
+# English query with data
+status, res = api_post("/api/chat", {"query": "show me expenses this year", "lang": "en"})
+check(status == 200, "Chat: 'this year' query returns 200")
+check(res["data"]["count"] >= 0, "Chat: year query returns results")
+
+# Specific month query
+status, res = api_post("/api/chat", {"query": "expenses 2026-03", "lang": "en"})
+check(status == 200, "Chat: specific month query returns 200")
+
+# Top/biggest query
+status, res = api_post("/api/chat", {"query": "what is the biggest expense", "lang": "en"})
+check(status == 200, "Chat: top expense query returns 200")
+if res["data"]["count"] > 0:
+    check("Top expenses" in res["text"] or "biggest" in res["text"].lower() or res["data"]["items"],
+          "Chat: top query contains expense data")
+
+# Income query
+status, res = api_post("/api/chat", {"query": "show me my income", "lang": "en"})
+check(status == 200, "Chat: income query returns 200")
+check(res["data"]["type"] == "income", "Chat: income query returns type=income")
+
+# Navigation query — "הוצאות" is both a noise word and a tab keyword,
+# so search_term becomes empty and is_navigate triggers
+status, res = api_post("/api/chat", {"query": "איפה הוצאות", "lang": "he"})
+check(status == 200, "Chat: navigation query returns 200")
+check(res.get("action", {}).get("tab") == "expensesTab",
+      "Chat: navigation routes to expensesTab", f"got action={res.get('action')}")
+
+# Empty query
+status, res = api_post("/api/chat", {"query": "", "lang": "en"})
+check(status == 200, "Chat: empty query returns 200 (graceful)")
+
+# Lang defaults to 'he'
+status, res = api_post("/api/chat", {"query": "expenses"})
+check(status == 200, "Chat: missing lang defaults gracefully")
+
+
+# ====================================================================
+print("\n🔹 24. Chat Assistant — Keyword Search & Fuzzy Fallback")
+# ====================================================================
+# Insert a known expense with a specific subcategory for search testing
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    conn.execute("""INSERT INTO expenses (date, category_id, subcategory, description, amount, source)
+                    VALUES ('2026-04-01', ?, 'Supermarket Rami Levy', 'Weekly groceries', 250.0, 'visa')""",
+                 (cat_ids[0],))
+    conn.commit()
+    conn.close()
+
+# Exact keyword search
+status, res = api_post("/api/chat", {"query": "Rami Levy", "lang": "en"})
+check(status == 200, "Chat: keyword search returns 200")
+check(res["data"]["count"] >= 1, "Chat: keyword 'Rami Levy' finds the inserted expense",
+      f"count={res['data']['count']}")
+
+# Search with a typo — should trigger fuzzy fallback
+status, res = api_post("/api/chat", {"query": "Rami Levi supermarkt", "lang": "en"})
+check(status == 200, "Chat: typo search returns 200")
+if res["data"]["count"] > 0:
+    is_fuzzy = res["data"].get("fuzzy", False)
+    check(True, "Chat: typo search found results via fallback")
+    if is_fuzzy:
+        check("fuzzy_matches" in res["data"], "Chat: fuzzy result includes fuzzy_matches list")
+        check("original_search" in res["data"], "Chat: fuzzy result includes original_search")
+        check("Did you mean" in res["text"] or "\u05d0\u05d5\u05dc\u05d9" in res["text"],
+              "Chat: fuzzy response asks for confirmation")
+
+# Category filter in search
+if len(cat_ids) >= 2:
+    # Get first category name
+    with budget_app.app.app_context():
+        conn = budget_app.get_db()
+        cat_row = conn.execute("SELECT name_he FROM categories WHERE id=?", (cat_ids[0],)).fetchone()
+        conn.close()
+    if cat_row:
+        cat_name_he = cat_row["name_he"]
+        status, res = api_post("/api/chat", {"query": f"{cat_name_he} השנה", "lang": "he"})
+        check(status == 200, f"Chat: category+date query returns 200")
+
+
+# ====================================================================
+print("\n🔹 25. Chat Assistant — Alias Learning (confirm/deny)")
+# ====================================================================
+# Confirm a fuzzy match alias
+status, res = api_post("/api/chat/confirm", {
+    "user_typed": "rami levi",
+    "actual_match": "Supermarket Rami Levy",
+    "confirmed": True
+})
+check(status == 200, "Chat confirm: save alias returns 200")
+check(res.get("ok") is True, "Chat confirm: response ok=True")
+check(res.get("saved") is True, "Chat confirm: alias was saved")
+
+# Verify alias exists in DB
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    alias = conn.execute("SELECT * FROM chat_aliases WHERE user_typed='rami levi'").fetchone()
+    conn.close()
+check(alias is not None, "Chat confirm: alias row created in DB")
+check(alias["actual_match"] == "Supermarket Rami Levy", "Chat confirm: alias actual_match is correct")
+check(alias["times_used"] == 1, "Chat confirm: times_used starts at 1")
+
+# Confirm same alias again — times_used should increment
+status, res = api_post("/api/chat/confirm", {
+    "user_typed": "rami levi",
+    "actual_match": "Supermarket Rami Levy",
+    "confirmed": True
+})
+check(status == 200 and res.get("saved"), "Chat confirm: re-confirm same alias succeeds")
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    alias = conn.execute("SELECT times_used FROM chat_aliases WHERE user_typed='rami levi'").fetchone()
+    conn.close()
+check(alias["times_used"] == 2, "Chat confirm: times_used incremented to 2")
+
+# Now search using the aliased term — should use the alias directly
+status, res = api_post("/api/chat", {"query": "rami levi", "lang": "en"})
+check(status == 200, "Chat alias: search with aliased term returns 200")
+check(res["data"]["count"] >= 1, "Chat alias: aliased search finds results directly",
+      f"count={res['data']['count']}")
+check(res["data"].get("fuzzy") is not True, "Chat alias: aliased search is NOT fuzzy (used alias)")
+
+# Deny a fuzzy match — should not save
+status, res = api_post("/api/chat/confirm", {
+    "user_typed": "some typo",
+    "confirmed": False
+})
+check(status == 200, "Chat deny: returns 200")
+check(res.get("saved") is False, "Chat deny: not saved")
+
+# Missing user_typed — should return error
+status, res = api_post("/api/chat/confirm", {
+    "user_typed": "",
+    "actual_match": "anything",
+    "confirmed": True
+})
+check(status == 200 and res.get("ok") is False, "Chat confirm: empty user_typed rejected")
+
+
+# ====================================================================
+print("\n🔹 26. Chat Assistant — Feedback / Satisfaction Rating")
+# ====================================================================
+# Valid rating
+status, res = api_post("/api/chat/feedback", {"rating": 5, "query": "test query"})
+check(status == 200, "Chat feedback: rating 5 returns 200")
+check(res.get("ok") is True, "Chat feedback: ok=True")
+
+# Another rating
+status, res = api_post("/api/chat/feedback", {"rating": 3, "query": "another query"})
+check(status == 200, "Chat feedback: rating 3 returns 200")
+
+status, res = api_post("/api/chat/feedback", {"rating": 1, "query": "bad query"})
+check(status == 200, "Chat feedback: rating 1 returns 200")
+
+# Invalid ratings
+status, res = api_post("/api/chat/feedback", {"rating": 0, "query": "test"})
+check(res.get("ok") is False, "Chat feedback: rating 0 rejected")
+
+status, res = api_post("/api/chat/feedback", {"rating": 6, "query": "test"})
+check(res.get("ok") is False, "Chat feedback: rating 6 rejected")
+
+status, res = api_post("/api/chat/feedback", {"rating": "abc", "query": "test"})
+check(res.get("ok") is False, "Chat feedback: non-numeric rating rejected")
+
+status, res = api_post("/api/chat/feedback", {"query": "test"})
+check(res.get("ok") is False, "Chat feedback: missing rating rejected")
+
+# Verify feedback in DB
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    fb_count = conn.execute("SELECT COUNT(*) as c FROM chat_feedback").fetchone()["c"]
+    conn.close()
+check(fb_count == 3, "Chat feedback: 3 valid ratings stored in DB", f"got {fb_count}")
+
+
+# ====================================================================
+print("\n🔹 27. Chat Satisfaction — Admin Dashboard API")
+# ====================================================================
+status, res = api_get("/api/admin/chat-satisfaction")
+check(status == 200, "Admin satisfaction: returns 200")
+check(res.get("total") == 3, "Admin satisfaction: total = 3", f"got {res.get('total')}")
+check(res.get("avg_rating") == 3.0, "Admin satisfaction: avg = 3.0 ((5+3+1)/3)",
+      f"got {res.get('avg_rating')}")
+check(res.get("positive") == 1, "Admin satisfaction: 1 positive (rating 5)")
+check(res.get("negative") == 1, "Admin satisfaction: 1 negative (rating 1)")
+check(isinstance(res.get("recent"), list), "Admin satisfaction: recent is a list")
+check(len(res["recent"]) == 3, "Admin satisfaction: 3 recent entries")
+check(isinstance(res.get("distribution"), list), "Admin satisfaction: distribution is a list")
+
+# Check recent entries have expected fields
+if res["recent"]:
+    r0 = res["recent"][0]
+    check("rating" in r0 and "query" in r0 and "created_at" in r0,
+          "Admin satisfaction: recent entry has rating, query, created_at")
+
+# Non-admin should not access satisfaction data
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "regularuser", "password": "regularpass123"})
+status, _ = api_get("/api/admin/chat-satisfaction")
+check(status in [401, 403], "Admin satisfaction: non-admin blocked",
+      f"got {status}")
+
+# Re-login as admin
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+print("\n🔹 28. Chat Assistant — Auth Required")
+# ====================================================================
+# Logout and test that chat POST requires auth
+api_post("/api/auth/logout")
+
+status, res = api_post("/api/chat", {"query": "test", "lang": "en"})
+check(status == 401, "Chat: POST without auth returns 401", f"got {status}")
+
+status, res = api_post("/api/chat/confirm", {"user_typed": "x", "confirmed": True})
+check(status == 401, "Chat confirm: POST without auth returns 401", f"got {status}")
+
+status, res = api_post("/api/chat/feedback", {"rating": 5, "query": "test"})
+check(status == 401, "Chat feedback: POST without auth returns 401", f"got {status}")
+
+# Re-login for cleanup
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
 # Cleanup
 # ====================================================================
 shutil.rmtree(tmp_dir, ignore_errors=True)

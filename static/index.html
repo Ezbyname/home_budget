@@ -9,11 +9,16 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
         :root {
-            --primary: #2563eb;
-            --success: #16a34a;
-            --danger: #dc2626;
+            --primary: #6366f1;
+            --primary-light: #818cf8;
+            --primary-dark: #4f46e5;
+            --success: #10b981;
+            --success-light: #34d399;
+            --danger: #f43f5e;
+            --danger-light: #fb7185;
             --warning: #f59e0b;
-            --bg: #f8fafc;
+            --accent: #8b5cf6;
+            --bg: #f0f2f8;
             --card-bg: #ffffff;
             --text: #1e293b;
             --text-muted: #64748b;
@@ -24,48 +29,147 @@
             color: var(--text);
             font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
         }
+        /* ── Navbar ── */
         .navbar {
-            background: linear-gradient(135deg, #1e40af, #3b82f6);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #a855f7 100%);
+            box-shadow: 0 4px 20px rgba(79, 70, 229, 0.3);
+            padding-top: 0.85rem;
+            padding-bottom: 0.85rem;
         }
-        .navbar-brand { font-weight: 700; font-size: 1.3rem; }
-        #navPlanSelect {
-            background: rgba(255,255,255,0.18) !important;
-            color: #fff !important;
-            border: 1px solid rgba(255,255,255,0.35);
-            font-weight: 500;
+        .navbar-brand { font-weight: 700; font-size: 1.3rem; letter-spacing: -0.3px; }
+        /* ── Navbar Control Group ── */
+        .nav-controls {
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 12px;
+            padding: 3px;
+            gap: 0;
         }
-        #navPlanSelect option { color: #333; background: #fff; }
-        #navPlanSelect:focus { box-shadow: 0 0 0 3px rgba(255,255,255,0.25); border-color: rgba(255,255,255,0.6); }
+        .nav-control-select {
+            background: transparent;
+            color: #fff;
+            border: none;
+            font-size: .85rem;
+            font-weight: 600;
+            padding: 6px 12px;
+            cursor: pointer;
+            outline: none;
+            min-width: 120px;
+            -webkit-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='white' viewBox='0 0 16 16'%3E%3Cpath d='M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: left 8px center;
+            padding-inline-start: 10px;
+            padding-inline-end: 24px;
+        }
+        .nav-control-select option { color: #333; background: #fff; }
+        .nav-control-select:focus { background-color: rgba(255,255,255,0.08); }
+        .nav-control-divider {
+            width: 1px;
+            height: 20px;
+            background: rgba(255,255,255,0.25);
+            flex-shrink: 0;
+        }
+        .nav-control-btn {
+            background: transparent;
+            border: none;
+            color: rgba(255,255,255,0.85);
+            padding: 6px 10px;
+            cursor: pointer;
+            border-radius: 8px;
+            font-size: .9rem;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+        }
+        .nav-control-btn:hover {
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+        }
+        .nav-settings-btn {
+            background: rgba(255,255,255,0.15);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 12px;
+            color: #fff;
+            padding: 8px 10px;
+            cursor: pointer;
+            font-size: 1.15rem;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .nav-settings-btn:hover {
+            background: rgba(255,255,255,0.28);
+            transform: rotate(30deg);
+        }
+        /* ── Cards ── */
         .card {
             border: none;
-            border-radius: 16px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            transition: box-shadow 0.2s;
+            border-radius: 18px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.02);
+            transition: box-shadow 0.25s, transform 0.25s;
+            background: #fff;
         }
-        .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+        .card:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.1); transform: translateY(-2px); }
+        /* ── Stat Cards ── */
         .stat-card {
-            padding: 1.25rem;
-            border-radius: 16px;
+            padding: 1.5rem 1.25rem;
+            border-radius: 18px;
             color: white;
             text-align: center;
+            position: relative;
+            overflow: hidden;
         }
-        .stat-card h3 { font-size: 1.8rem; font-weight: 700; margin: 0.5rem 0; }
-        .stat-card small { opacity: 0.85; font-size: 0.85rem; }
-        .stat-income { background: linear-gradient(135deg, #16a34a, #22c55e); }
-        .stat-expense { background: linear-gradient(135deg, #dc2626, #ef4444); }
-        .stat-balance-positive { background: linear-gradient(135deg, #2563eb, #3b82f6); }
-        .stat-balance-negative { background: linear-gradient(135deg, #dc2626, #f97316); }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: -30%;
+            right: -20%;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.12);
+        }
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            bottom: -20%;
+            left: -10%;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.08);
+        }
+        .stat-card h3 { font-size: 1.9rem; font-weight: 800; margin: 0.5rem 0; position: relative; z-index: 1; }
+        .stat-card small { opacity: 0.9; font-size: 0.88rem; font-weight: 500; position: relative; z-index: 1; }
+        .stat-card i { position: relative; z-index: 1; }
+        .stat-income { background: linear-gradient(135deg, #059669, #10b981, #34d399); box-shadow: 0 4px 16px rgba(16, 185, 129, 0.35); }
+        .stat-expense { background: linear-gradient(135deg, #e11d48, #f43f5e, #fb7185); box-shadow: 0 4px 16px rgba(244, 63, 94, 0.35); }
+        .stat-balance-positive { background: linear-gradient(135deg, #4f46e5, #6366f1, #818cf8); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35); }
+        .stat-balance-negative { background: linear-gradient(135deg, #e11d48, #f97316); box-shadow: 0 4px 16px rgba(249, 115, 22, 0.35); }
+        /* ── Tab Navigation ── */
         .nav-pills .nav-link {
             color: var(--text);
             border-radius: 12px;
             padding: 0.6rem 1.2rem;
             font-weight: 500;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .nav-pills .nav-link:hover {
+            background: rgba(99, 102, 241, 0.08);
+            color: var(--primary);
         }
         .nav-pills .nav-link.active {
-            background: var(--primary);
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
             color: white;
+            box-shadow: 0 3px 12px rgba(99, 102, 241, 0.35);
         }
+        /* ── Month Navigation ── */
         .month-nav {
             display: flex;
             align-items: center;
@@ -76,40 +180,54 @@
         .month-nav button {
             background: white;
             border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 0.4rem 0.8rem;
+            border-radius: 12px;
+            padding: 0.5rem 0.9rem;
             cursor: pointer;
             font-size: 1.1rem;
+            transition: all 0.2s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
-        .month-nav button:hover { background: #f1f5f9; }
-        .month-nav h4 { margin: 0; font-weight: 600; min-width: 160px; text-align: center; }
+        .month-nav button:hover { background: var(--primary); color: white; border-color: var(--primary); box-shadow: 0 3px 10px rgba(99,102,241,0.3); }
+        .month-nav h4 { margin: 0; font-weight: 700; min-width: 160px; text-align: center; color: var(--text); }
+        /* ── Forms ── */
         .form-control, .form-select {
             border-radius: 10px;
             border: 1px solid var(--border);
             padding: 0.6rem 0.9rem;
+            transition: all 0.2s;
         }
         .form-control:focus, .form-select:focus {
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
         }
+        /* ── Buttons ── */
         .btn-primary {
-            background: var(--primary);
+            background: linear-gradient(135deg, #4f46e5, #6366f1);
             border: none;
             border-radius: 10px;
             padding: 0.6rem 1.5rem;
             font-weight: 500;
+            box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+            transition: all 0.2s;
         }
-        .btn-primary:hover { background: #1d4ed8; }
+        .btn-primary:hover { background: linear-gradient(135deg, #4338ca, #4f46e5); box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4); transform: translateY(-1px); }
+        .btn-outline-primary { border-color: var(--primary); color: var(--primary); border-radius: 10px; transition: all 0.2s; }
+        .btn-outline-primary:hover { background: var(--primary); border-color: var(--primary); box-shadow: 0 3px 10px rgba(99,102,241,0.3); }
         .btn-outline-danger { border-radius: 8px; }
+        .pwd-toggle { border-radius: 0 10px 10px 0 !important; border-color: var(--border); padding: 0.4rem 0.7rem; }
+        .pwd-toggle:hover { background: #f1f5f9; color: var(--primary); }
+        /* ── Tables ── */
         .expense-table { font-size: 0.9rem; }
         .expense-table th {
-            background: #f1f5f9;
+            background: linear-gradient(180deg, #f8fafc, #f1f5f9);
             font-weight: 600;
             border-bottom: 2px solid var(--border);
         }
         .expense-table td { vertical-align: middle; }
+        .expense-table tbody tr { transition: background 0.15s; }
+        .expense-table tbody tr:hover { background: rgba(99, 102, 241, 0.04); }
         th[data-sort] { cursor: pointer; user-select: none; }
-        th[data-sort]:hover { background: rgba(0,0,0,0.05); }
+        th[data-sort]:hover { background: rgba(99, 102, 241, 0.08); }
         .sort-icon { margin-inline-start: 4px; }
         .category-badge {
             display: inline-block;
@@ -121,42 +239,69 @@
         }
         #categoryPieChart, #frequencyChart { cursor: pointer; }
         .upload-zone {
-            border: 2px dashed var(--border);
-            border-radius: 16px;
-            padding: 2rem;
+            border: 2px dashed #c7d2fe;
+            border-radius: 18px;
+            padding: 2.5rem;
             text-align: center;
             cursor: pointer;
-            transition: all 0.2s;
-            background: #fafbfc;
+            transition: all 0.25s;
+            background: #fafbff;
         }
         .upload-zone:hover, .upload-zone.dragover {
             border-color: var(--primary);
-            background: #eff6ff;
+            background: #eef2ff;
+            transform: scale(1.01);
         }
         .upload-zone i { font-size: 2.5rem; color: var(--primary); }
         .chart-container { position: relative; height: 300px; }
         .toast-container { z-index: 9999; }
         .section-title {
-            font-weight: 600;
+            font-weight: 700;
             font-size: 1.1rem;
             margin-bottom: 1rem;
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            color: var(--text);
         }
+        .section-title i { color: var(--primary); }
         .amount { font-family: 'Segoe UI', monospace; font-weight: 600; }
         .amount-negative { color: var(--danger); }
         .amount-positive { color: var(--success); }
+        /* ── Dropdown Menu ── */
+        #navDropdown {
+            backdrop-filter: blur(12px);
+            background: rgba(255,255,255,0.97);
+            border: 1px solid rgba(0,0,0,0.06) !important;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.04) !important;
+        }
+        #navDropdown .dropdown-item {
+            border-radius: 10px;
+            margin: 2px 8px;
+            padding: 0.55rem 0.75rem !important;
+            transition: all 0.15s;
+            font-weight: 500;
+        }
+        #navDropdown .dropdown-item:hover {
+            background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.08));
+            color: var(--primary);
+        }
+        #navDropdown .dropdown-item i { width: 20px; text-align: center; font-size: 1rem; }
+        #navDropdown .btn-group .btn { font-size: 0.82rem; font-weight: 600; border-radius: 10px !important; }
+        #navDropdown .btn-group .btn.active, #navDropdown .btn-group .btn:checked + .btn {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            border-color: transparent;
+        }
         .tip-card {
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 1rem 1.25rem;
             margin-bottom: 0.75rem;
             border-right: 4px solid;
             background: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-            transition: all 0.2s;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            transition: all 0.25s;
         }
-        .tip-card:hover { box-shadow: 0 3px 8px rgba(0,0,0,0.1); }
+        .tip-card:hover { box-shadow: 0 6px 18px rgba(0,0,0,0.1); transform: translateY(-1px); }
         .tip-header {
             display: flex;
             align-items: center;
@@ -204,28 +349,30 @@
         .tip-detail.show { display: block; }
         .tip-priority-high { border-right-color: #dc2626; }
         .tip-priority-medium { border-right-color: #f59e0b; }
-        .tip-priority-low { border-right-color: #3b82f6; }
+        .tip-priority-low { border-right-color: #6366f1; }
         .tip-dismissed { opacity: 0.4; transform: scale(0.98); }
         #analysisResults .card { border: none; }
         .daily-chart-card {
-            background: #1a1f36 !important;
+            background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #3730a3 100%) !important;
             color: #e2e8f0;
+            box-shadow: 0 4px 20px rgba(30, 27, 75, 0.3);
         }
         .daily-chart-card .section-title {
-            color: #e2e8f0;
+            color: #c7d2fe;
         }
+        .daily-chart-card .section-title i { color: #a5b4fc; }
         /* Financial products */
         .product-card {
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 1rem;
             background: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            border-right: 4px solid #2563eb;
-            transition: all 0.2s;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            border-right: 4px solid #6366f1;
+            transition: all 0.25s;
         }
-        .product-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+        .product-card:hover { box-shadow: 0 6px 18px rgba(0,0,0,0.1); transform: translateY(-1px); }
         .product-card.insurance { border-right-color: #8b5cf6; }
-        .product-card.pension { border-right-color: #16a34a; }
+        .product-card.pension { border-right-color: #10b981; }
         .product-card.fund { border-right-color: #f59e0b; }
         .detect-item {
             border: 2px dashed #e2e8f0;
@@ -233,7 +380,7 @@
             padding: 1rem;
             transition: all 0.2s;
         }
-        .detect-item.selected { border-color: #2563eb; background: #eff6ff; }
+        .detect-item.selected { border-color: #6366f1; background: #eef2ff; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
         .detect-item:hover { border-color: #94a3b8; }
         .gap-badge {
             background: #fef2f2;
@@ -276,8 +423,9 @@
         }
         .insights-sidebar .nav-link:hover { background: #f1f5f9; }
         .insights-sidebar .nav-link.active {
-            background: linear-gradient(135deg, #2563eb, #3b82f6);
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
             color: white;
+            box-shadow: 0 3px 10px rgba(99,102,241,0.3);
         }
         .insights-sidebar .nav-link i { font-size: 1.1rem; width: 20px; text-align: center; }
         .insights-main { flex: 1; min-width: 0; }
@@ -304,16 +452,16 @@
         .gauge-label { font-size: 2rem; font-weight: 800; text-align: center; }
         /* Achievement cards */
         .achievement-card {
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 1rem;
             display: flex;
             align-items: center;
             gap: 1rem;
             background: white;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            transition: all 0.2s;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            transition: all 0.25s;
         }
-        .achievement-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+        .achievement-card:hover { box-shadow: 0 6px 18px rgba(0,0,0,0.1); transform: translateY(-1px); }
         .achievement-card.locked { opacity: 0.5; filter: grayscale(0.5); }
         .achievement-icon {
             width: 48px; height: 48px;
@@ -536,33 +684,36 @@
 <body>
 
 <!-- Navbar -->
-<nav class="navbar navbar-dark py-3 mb-4">
+<nav class="navbar navbar-dark mb-4">
     <div class="container">
-        <span class="navbar-brand"><i class="bi bi-wallet2 me-2"></i><span data-t="app_title">ניהול תקציב משפחתי</span></span>
         <div class="d-flex align-items-center gap-2">
+            <span class="navbar-brand mb-0"><i class="bi bi-wallet2 me-2"></i><span data-t="app_title">ניהול תקציב משפחתי</span></span>
+            <span id="appVersion" class="text-white-50" style="font-size:.65rem;opacity:.5">v1.0.1000007</span>
+        </div>
+        <div class="d-flex align-items-center gap-3">
             <!-- Budget Plan Selector -->
-            <div class="d-flex align-items-center gap-2" id="navPlanSelector">
-                <select id="navPlanSelect" class="form-select form-select-sm bg-white bg-opacity-10 text-white border-light"
-                        style="width:auto;min-width:140px;border-radius:10px;font-size:.85rem;cursor:pointer;background:rgba(255,255,255,0.15)"
+            <div class="nav-controls d-flex align-items-center" id="navPlanSelector">
+                <select id="navPlanSelect" class="nav-control-select"
                         onchange="switchBudgetPlan(parseInt(this.value))">
                 </select>
-                <button class="btn btn-sm btn-outline-light" style="border-radius:10px" onclick="editCurrentBudgetPlan()" title="">
-                    <i class="bi bi-pencil"></i>
+                <div class="nav-control-divider"></div>
+                <button class="nav-control-btn" onclick="editCurrentBudgetPlan()" title="">
+                    <i class="bi bi-pencil-square"></i>
                 </button>
-                <button id="navAddPlanBtn" class="btn btn-sm btn-outline-light" style="border-radius:10px;white-space:nowrap"
-                        onclick="addBudgetPlan()">
-                    <i class="bi bi-plus-lg"></i>
+                <div class="nav-control-divider"></div>
+                <button class="nav-control-btn" id="navAddPlanBtn" onclick="addBudgetPlan()">
+                    <i class="bi bi-plus-circle"></i>
                 </button>
             </div>
             <div class="dropdown">
-                <button class="btn btn-outline-light btn-sm" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" data-t-title="nav_settings" title="הגדרות">
-                    <i class="bi bi-list fs-5"></i>
+                <button class="nav-settings-btn" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" data-t-title="nav_settings" title="הגדרות">
+                    <i class="bi bi-gear-wide-connected"></i>
                 </button>
-                <ul class="dropdown-menu dropdown-menu-end shadow-lg" id="navDropdown" style="min-width:280px;border-radius:14px;padding:8px 0;border:1px solid #e5e7eb">
+                <ul class="dropdown-menu dropdown-menu-end" id="navDropdown" style="min-width:290px;border-radius:16px;padding:10px 0">
                     <!-- Plan Settings Header -->
                     <li class="px-3 py-2">
-                        <div class="d-flex align-items-center gap-2 text-primary fw-bold" style="font-size:.9rem">
-                            <i class="bi bi-sliders"></i>
+                        <div class="d-flex align-items-center gap-2 fw-bold" style="font-size:.9rem;color:#4f46e5">
+                            <span class="d-flex align-items-center justify-content-center" style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;font-size:.8rem"><i class="bi bi-sliders"></i></span>
                             <span id="settingsPlanName"></span>
                         </div>
                     </li>
@@ -595,11 +746,12 @@
                     </li>
                     <li><hr class="dropdown-divider my-1"></li>
                     <!-- Actions -->
-                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="startTutorial();return false"><i class="bi bi-mortarboard"></i><span data-t="tut_restart">מדריך למשתמש</span></a></li>
-                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openReminders();return false"><i class="bi bi-bell"></i><span data-t="nav_reminders">תזכורות</span></a></li>
-                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openSmtpSettings();return false"><i class="bi bi-gear"></i><span data-t="nav_email_settings">הגדרות דוא״ל / SMS</span></a></li>
-                    <li id="navAuthItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="showAuthModal('login');return false"><i class="bi bi-box-arrow-in-left text-primary"></i><span data-t="auth_login">התחבר</span></a></li>
-                    <li id="navLogoutItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 text-danger d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><i class="bi bi-box-arrow-left"></i><span data-t="nav_logout">יציאה</span></a></li>
+                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="startTutorial();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#eef2ff;color:#6366f1;font-size:.9rem"><i class="bi bi-mortarboard"></i></span><span data-t="tut_restart">מדריך למשתמש</span></a></li>
+                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openReminders();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef3c7;color:#d97706;font-size:.9rem"><i class="bi bi-bell"></i></span><span data-t="nav_reminders">תזכורות</span></a></li>
+                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openSmtpSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f0fdf4;color:#16a34a;font-size:.9rem"><i class="bi bi-gear"></i></span><span data-t="nav_email_settings">הגדרות דוא״ל / SMS</span></a></li>
+                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openAiSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f5f3ff;color:#8b5cf6;font-size:.9rem"><i class="bi bi-robot"></i></span><span data-t="nav_ai_settings">הגדרות AI</span></a></li>
+                    <li id="navAuthItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="showAuthModal('login');return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#eef2ff;color:#4f46e5;font-size:.9rem"><i class="bi bi-box-arrow-in-left"></i></span><span data-t="auth_login">התחבר</span></a></li>
+                    <li id="navLogoutItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-box-arrow-left"></i></span><span data-t="nav_logout">יציאה</span></a></li>
                 </ul>
             </div>
         </div>
@@ -612,7 +764,7 @@
         <button onclick="changeMonth(-1)" id="btnPrevMonth" data-t-title="month_prev" title="חודש קודם"><i class="bi bi-chevron-right"></i></button>
         <h4 id="currentMonthDisplay"></h4>
         <button onclick="changeMonth(1)" id="btnNextMonth" data-t-title="month_next" title="חודש הבא"><i class="bi bi-chevron-left"></i></button>
-        <button onclick="exportExcel()" class="btn btn-sm btn-outline-primary ms-3" data-t-title="export_excel_title" title="ייצוא לאקסל">
+        <button onclick="exportExcel()" class="btn btn-sm btn-outline-primary ms-3" style="border-radius:10px;font-weight:500" data-t-title="export_excel_title" title="ייצוא לאקסל">
             <i class="bi bi-file-earmark-excel me-1"></i><span data-t="export_excel">ייצוא Excel</span>
         </button>
     </div>
@@ -675,20 +827,23 @@
             <div class="row g-3 mb-4">
                 <div class="col-md-4">
                     <div class="stat-card stat-income">
-                        <small><i class="bi bi-arrow-down-circle me-1"></i><span data-t="total_income">סה"כ הכנסות</span></small>
+                        <div style="position:relative;z-index:1"><i class="bi bi-arrow-down-circle" style="font-size:1.6rem;opacity:.9"></i></div>
                         <h3 id="totalIncome">0</h3>
+                        <small><span data-t="total_income">סה"כ הכנסות</span></small>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <div class="stat-card stat-expense">
-                        <small><i class="bi bi-arrow-up-circle me-1"></i><span data-t="total_expense">סה"כ הוצאות</span></small>
+                        <div style="position:relative;z-index:1"><i class="bi bi-arrow-up-circle" style="font-size:1.6rem;opacity:.9"></i></div>
                         <h3 id="totalExpense">0</h3>
+                        <small><span data-t="total_expense">סה"כ הוצאות</span></small>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <div class="stat-card" id="balanceCard">
-                        <small><i class="bi bi-piggy-bank me-1"></i><span data-t="balance">יתרה</span></small>
+                        <div style="position:relative;z-index:1"><i class="bi bi-piggy-bank" style="font-size:1.6rem;opacity:.9"></i></div>
                         <h3 id="totalBalance">0</h3>
+                        <small><span data-t="balance">יתרה</span></small>
                     </div>
                 </div>
             </div>
@@ -883,6 +1038,41 @@
                     </div>
                 </div>
                 <div class="col-lg-8">
+                    <!-- Expense Filter -->
+                    <div class="card p-3 mb-3">
+                        <div class="d-flex align-items-center gap-2 mb-2">
+                            <i class="bi bi-funnel text-primary"></i>
+                            <span class="fw-bold" data-t="filter_expenses">סינון הוצאות</span>
+                            <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="clearExpenseFilter()" data-t="filter_clear">נקה סינון</button>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-md-3">
+                                <label class="form-label small" data-t="th_category">קטגוריה</label>
+                                <select class="form-select form-select-sm" id="filterCategory" onchange="applyExpenseFilter()">
+                                    <option value="" data-t="filter_all_categories">כל הקטגוריות</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small" data-t="filter_search">חיפוש חופשי</label>
+                                <input type="text" class="form-control form-control-sm" id="filterSubcategory" data-t-placeholder="filter_search_placeholder" placeholder="דלק, סופר..." oninput="applyExpenseFilter()">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small" data-t="filter_from_date">מתאריך</label>
+                                <input type="date" class="form-control form-control-sm" id="filterFromDate" onchange="applyExpenseFilter()">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small" data-t="filter_to_date">עד תאריך</label>
+                                <input type="date" class="form-control form-control-sm" id="filterToDate" onchange="applyExpenseFilter()">
+                            </div>
+                        </div>
+                        <div id="filterSourceChips" class="mt-2 d-flex flex-wrap gap-2" style="display:none"></div>
+                        <div id="filterSummary" class="mt-2" style="display:none">
+                            <div class="d-flex flex-wrap gap-3 align-items-center p-2 rounded" style="background:#f0f5ff">
+                                <span class="fw-bold text-primary" id="filterResultCount"></span>
+                                <span class="fw-bold" id="filterResultTotal"></span>
+                            </div>
+                        </div>
+                    </div>
                     <div class="card p-4">
                         <div class="section-title"><i class="bi bi-table"></i><span data-t="expense_list">רשימת הוצאות</span></div>
                         <div class="table-responsive">
@@ -1305,7 +1495,7 @@
                                         </div>
                                         <div class="text-center mb-3">
                                             <div class="text-muted small" data-t="ins_whatif_yearly_save">חיסכון שנתי</div>
-                                            <div id="whatifYearly" class="fs-4 fw-bold" style="color:#2563eb">0</div>
+                                            <div id="whatifYearly" class="fs-4 fw-bold" style="color:#6366f1">0</div>
                                         </div>
                                         <div class="text-center">
                                             <div class="text-muted small" data-t="ins_whatif_new_balance">יתרה חודשית חדשה</div>
@@ -1481,6 +1671,17 @@
                         <tbody id="adminCatsBody"></tbody>
                     </table>
                 </div>
+                <!-- Chat Satisfaction Survey -->
+                <h6 class="d-flex align-items-center gap-2 mt-4 mb-2"><i class="bi bi-chat-heart"></i><span>סקר שביעות רצון - צ'אט</span></h6>
+                <div id="adminSatisfactionSection">
+                    <div class="row g-3 mb-3" id="satisfactionStats"></div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead><tr><th>תאריך</th><th>משתמש</th><th>שאילתה</th><th>דירוג</th></tr></thead>
+                            <tbody id="satisfactionBody"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1604,7 +1805,7 @@
 <div class="modal fade" id="smtpModal" tabindex="-1">
 <div class="modal-dialog modal-dialog-centered">
 <div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
-    <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);padding:24px 24px 20px;color:#fff">
+    <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 24px 20px;color:#fff">
         <div class="d-flex align-items-center justify-content-between">
             <h5 class="modal-title mb-0 d-flex align-items-center gap-2" style="font-weight:600">
                 <i class="bi bi-envelope-heart"></i><span data-t="smtp_title">הגדרות התראות</span>
@@ -1632,7 +1833,7 @@
 
         <!-- Provider help -->
         <div id="smtpProviderHelp" class="mb-3" style="display:none">
-            <div class="alert alert-info py-2 px-3 small d-flex align-items-start gap-2" style="border-radius:12px;border:none;background:#eff6ff">
+            <div class="alert alert-info py-2 px-3 small d-flex align-items-start gap-2" style="border-radius:12px;border:none;background:#eef2ff">
                 <i class="bi bi-info-circle text-primary mt-1" style="flex-shrink:0"></i>
                 <div>
                     <strong id="smtpProviderName"></strong>
@@ -1693,11 +1894,41 @@
 </div>
 </div>
 
+<!-- AI Settings Modal -->
+<div class="modal fade" id="aiModal" tabindex="-1">
+<div class="modal-dialog modal-sm modal-dialog-centered">
+<div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
+    <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 24px 20px;color:#fff">
+        <div class="d-flex align-items-center justify-content-between">
+            <h5 class="modal-title mb-0 d-flex align-items-center gap-2" style="font-weight:600">
+                <i class="bi bi-robot"></i><span data-t="ai_settings_title">הגדרות עוזר AI</span>
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+    </div>
+    <div class="modal-body p-4">
+        <p class="text-muted small mb-3" data-t="ai_settings_desc">הזינו מפתח API של Anthropic כדי להפעיל את העוזר החכם. ניתן ליצור מפתח בכתובת console.anthropic.com</p>
+        <div class="mb-3">
+            <label class="form-label fw-bold small" data-t="ai_api_key_label">Anthropic API Key</label>
+            <input type="password" class="form-control" id="aiApiKey" placeholder="sk-ant-..." dir="ltr">
+        </div>
+        <div id="aiStatus" class="mb-3" style="display:none">
+            <span class="badge rounded-pill"></span>
+        </div>
+        <div id="aiAlert"></div>
+        <button class="btn btn-primary w-100" style="border-radius:12px;padding:10px" onclick="saveAiSettings()">
+            <i class="bi bi-check-lg"></i> <span data-t="ai_save">שמור</span>
+        </button>
+    </div>
+</div>
+</div>
+</div>
+
 <!-- Budget Plan Modal -->
 <div class="modal fade" id="budgetPlanModal" tabindex="-1">
 <div class="modal-dialog modal-sm modal-dialog-centered">
 <div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
-    <div style="background:linear-gradient(135deg,#1e40af,#3b82f6);padding:24px 24px 20px;color:#fff">
+    <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);padding:24px 24px 20px;color:#fff">
         <div class="d-flex align-items-center justify-content-between">
             <h5 class="modal-title mb-0 d-flex align-items-center gap-2" style="font-weight:600">
                 <i class="bi bi-journal-plus"></i><span id="bpModalTitle" data-t="bp_new_title">תקציב חדש</span>
@@ -1890,7 +2121,7 @@
 <div class="modal fade" id="authModal" tabindex="-1" data-bs-backdrop="static">
 <div class="modal-dialog modal-dialog-centered">
 <div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
-    <div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:32px 28px 24px;color:#fff;text-align:center;position:relative">
+    <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed,#a855f7);padding:32px 28px 24px;color:#fff;text-align:center;position:relative">
         <div style="position:absolute;top:12px;right:12px;left:12px;display:flex;justify-content:center;gap:6px">
             <button class="btn btn-sm auth-lang-btn" style="color:#fff;border-color:rgba(255,255,255,.5);font-size:.75rem;padding:2px 10px" data-lang="he" onclick="setAuthLang('he')">עברית</button>
             <button class="btn btn-sm auth-lang-btn" style="color:#fff;border-color:rgba(255,255,255,.5);font-size:.75rem;padding:2px 10px" data-lang="en" onclick="setAuthLang('en')">English</button>
@@ -1912,7 +2143,10 @@
                 <label class="form-label small fw-bold d-flex align-items-center gap-2">
                     <i class="bi bi-lock text-primary"></i><span data-t="auth_password">סיסמה</span>
                 </label>
-                <input type="password" class="form-control" id="authLoginPass" autocomplete="current-password">
+                <div class="input-group">
+                    <input type="password" class="form-control" id="authLoginPass" autocomplete="current-password">
+                    <button class="btn btn-outline-secondary pwd-toggle" type="button" tabindex="-1" onclick="togglePwd(this)"><i class="bi bi-eye"></i></button>
+                </div>
             </div>
             <div id="authLoginAlert"></div>
             <button id="authLoginBtn" class="btn btn-primary w-100 mb-2" style="border-radius:12px;padding:10px" onclick="doAuthLogin()">
@@ -1942,13 +2176,19 @@
                 <label class="form-label small fw-bold d-flex align-items-center gap-2">
                     <i class="bi bi-lock text-primary"></i><span data-t="auth_password">סיסמה</span>
                 </label>
-                <input type="password" class="form-control" id="authSignupPass" autocomplete="new-password">
+                <div class="input-group">
+                    <input type="password" class="form-control" id="authSignupPass" autocomplete="new-password">
+                    <button class="btn btn-outline-secondary pwd-toggle" type="button" tabindex="-1" onclick="togglePwd(this)"><i class="bi bi-eye"></i></button>
+                </div>
             </div>
             <div class="mb-3">
                 <label class="form-label small fw-bold d-flex align-items-center gap-2">
                     <i class="bi bi-lock-fill text-primary"></i><span data-t="auth_confirm_pass">אישור סיסמה</span>
                 </label>
-                <input type="password" class="form-control" id="authSignupPassConfirm" autocomplete="new-password">
+                <div class="input-group">
+                    <input type="password" class="form-control" id="authSignupPassConfirm" autocomplete="new-password">
+                    <button class="btn btn-outline-secondary pwd-toggle" type="button" tabindex="-1" onclick="togglePwd(this)"><i class="bi bi-eye"></i></button>
+                </div>
             </div>
             <div id="authSignupAlert"></div>
             <button id="authSignupBtn" class="btn btn-primary w-100 mb-2" style="border-radius:12px;padding:10px" onclick="doAuthSignup()">
@@ -1979,6 +2219,45 @@
     </div>
 </div>
 </div>
+</div>
+
+<!-- Chat Assistant -->
+<style>
+#chatFab{position:fixed;bottom:24px;right:24px;z-index:900;width:58px;height:58px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border:none;box-shadow:0 6px 20px rgba(99,102,241,.45);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .25s}
+#chatFab:hover{transform:scale(1.1);box-shadow:0 8px 28px rgba(99,102,241,.55)}
+#chatPanel{position:fixed;bottom:90px;right:24px;z-index:900;width:380px;max-height:520px;border-radius:20px;background:#fff;box-shadow:0 12px 40px rgba(0,0,0,.18);display:none;flex-direction:column;overflow:hidden;border:1px solid rgba(0,0,0,.04)}
+#chatHeader{background:linear-gradient(135deg,#4f46e5,#7c3aed,#a855f7);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:10px}
+#chatMessages{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:280px;max-height:360px}
+.chat-msg{max-width:85%;padding:10px 14px;border-radius:14px;font-size:.88rem;line-height:1.45;white-space:pre-line}
+.chat-msg.bot{background:#eef2ff;color:#1e293b;align-self:flex-start;border-bottom-left-radius:4px}
+.chat-msg.user{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
+.chat-msg .chat-action{display:inline-block;margin-top:6px;padding:3px 10px;border-radius:8px;background:rgba(99,102,241,.12);color:#4f46e5;font-size:.8rem;cursor:pointer;border:none}
+.chat-msg .chat-action:hover{background:rgba(99,102,241,.22)}
+#chatInput{border:none;border-top:1px solid #eee;padding:12px 16px;font-size:.9rem;outline:none;width:100%}
+#chatSuggestions{padding:4px 14px 8px;display:flex;flex-wrap:wrap;gap:6px}
+.chat-suggest{padding:4px 10px;border-radius:10px;background:#eef2ff;color:#4f46e5;border:1px solid #c7d2fe;font-size:.78rem;cursor:pointer;white-space:nowrap;transition:all .15s}
+.chat-suggest:hover{background:#c7d2fe;border-color:#a5b4fc}
+.source-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:.82rem;font-weight:500;cursor:pointer;border:2px solid;transition:all .15s}
+.source-chip .chip-x{font-size:.7rem;opacity:.6;margin-inline-start:2px;cursor:pointer}
+.source-chip .chip-x:hover{opacity:1}
+</style>
+
+<button id="chatFab" onclick="toggleChat()" title="Budget Assistant">
+    <i class="bi bi-chat-dots-fill" style="font-size:1.4rem"></i>
+</button>
+
+<div id="chatPanel">
+    <div id="chatHeader">
+        <i class="bi bi-robot" style="font-size:1.3rem"></i>
+        <div style="flex:1">
+            <div class="fw-bold" style="font-size:.95rem" data-t="chat_title">עוזר תקציב</div>
+            <div style="opacity:.8;font-size:.75rem" data-t="chat_subtitle">שאל אותי על ההוצאות שלך</div>
+        </div>
+        <button style="background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer" onclick="toggleChat()"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div id="chatMessages"></div>
+    <div id="chatSuggestions"></div>
+    <input id="chatInput" data-t-placeholder="chat_placeholder" placeholder="שאל משהו..." onkeydown="if(event.key==='Enter')sendChat()">
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -2065,6 +2344,7 @@ const I18N = {
     scan_detect_desc: 'המערכת תסרוק את ההוצאות שלכם ותזהה ביטוחים, פנסיה וקרנות',
     scan_btn: 'סרוק וזהה',
     no_tips: 'אין טיפים חדשים - נראה שאתם בכיוון הנכון!',
+    tips_login_required: 'כדי לקבל טיפים חכמים - הירשמו או התחברו לאפליקציה',
     // Insights
     ins_heatmap: 'מפת חום', ins_burnrate: 'קצב שריפה', ins_latte: 'גורם הלאטה',
     ins_anomalies: 'חריגות', ins_recurring: 'הוצאות קבועות', ins_whatif: 'מה אם',
@@ -2190,6 +2470,10 @@ const I18N = {
     smtp_advanced: 'הגדרות מתקדמות',
     smtp_save: 'שמור הגדרות',
     smtp_saved: 'ההגדרות נשמרו בהצלחה', smtp_error: 'שגיאה בשמירה',
+    nav_ai_settings: 'הגדרות AI', ai_settings_title: 'הגדרות עוזר AI',
+    ai_settings_desc: 'הזינו מפתח API של Anthropic כדי להפעיל את העוזר החכם. ניתן ליצור מפתח בכתובת console.anthropic.com',
+    ai_api_key_label: 'Anthropic API Key', ai_save: 'שמור',
+    ai_active: 'AI פעיל', ai_inactive: 'AI לא פעיל (מצב בסיסי)', ai_saved: 'הגדרות AI נשמרו',
     smtp_gmail_help: 'עבור Gmail: היכנסו ל-<a href="https://myaccount.google.com/apppasswords" target="_blank">סיסמאות אפליקציה</a> וצרו סיסמה חדשה.',
     smtp_outlook_help: 'עבור Outlook: היכנסו ל-<a href="https://account.live.com/proofs/AppPassword" target="_blank">App Passwords</a> וצרו סיסמה.',
     smtp_yahoo_help: 'עבור Yahoo: היכנסו ל-<a href="https://login.yahoo.com/account/security#other-apps" target="_blank">App Passwords</a>.',
@@ -2267,6 +2551,17 @@ const I18N = {
     label_subcategory: 'תת-קטגוריה', label_amount_ils: 'סכום (₪)',
     freq_random: 'לא קבוע', freq_monthly: 'חודשי', freq_bimonthly: 'דו-חודשי',
     btn_add_expense: 'הוסף הוצאה', expense_list: 'רשימת הוצאות',
+    filter_expenses: 'סינון הוצאות', filter_clear: 'נקה סינון', filter_sources: 'מקורות:',
+    filter_all_categories: 'כל הקטגוריות', filter_search: 'חיפוש חופשי',
+    filter_search_placeholder: 'דלק, סופר, חשמל...',
+    filter_from_date: 'מתאריך', filter_to_date: 'עד תאריך',
+    filter_results: 'נמצאו {count} הוצאות', filter_total: 'סה״כ: {total}',
+    chat_title: 'עוזר תקציב', chat_subtitle: 'שאל אותי על ההוצאות שלך',
+    chat_placeholder: 'שאל משהו... (לדוגמה: כמה הוצאתי על דלק?)',
+    chat_welcome: 'היי! אני העוזר החכם שלך. אפשר לשאול אותי:\n• כמה הוצאתי על דלק ב-2 חודשים אחרונים?\n• מה ההוצאה הכי גדולה החודש?\n• תראה לי הכנסות מהשנה\n• איפה אני יכול לראות את התקציב?',
+    chat_thinking: 'חושב...',
+    chat_go_to: 'עבור לדף',
+    chat_apply_filter: 'החל סינון',
     label_spouse: 'בן/בת זוג', person_husband: 'בעל', person_wife: 'אישה', person_family: 'משפחה', person_other: 'אחר',
     label_income_source: 'מקור הכנסה',
     income_salary: 'משכורת', income_bonus: 'בונוס', income_freelance: 'פרילנס',
@@ -2409,6 +2704,7 @@ const I18N = {
     scan_detect_desc: 'The system will scan your expenses to detect insurance, pension and funds',
     scan_btn: 'Scan & Detect',
     no_tips: 'No new tips - looks like you\'re on the right track!',
+    tips_login_required: 'To get smart tips - register or log in to the application',
     ins_heatmap: 'Heatmap', ins_burnrate: 'Burn Rate', ins_latte: 'Latte Factor',
     ins_anomalies: 'Anomalies', ins_recurring: 'Recurring', ins_whatif: 'What If',
     ins_pulse: 'Weekly Pulse', ins_projection: 'Year Projection', ins_comparison: 'National Comparison',
@@ -2533,6 +2829,10 @@ const I18N = {
     smtp_advanced: 'Advanced Settings',
     smtp_save: 'Save Settings',
     smtp_saved: 'Settings saved successfully', smtp_error: 'Error saving',
+    nav_ai_settings: 'AI Settings', ai_settings_title: 'AI Assistant Settings',
+    ai_settings_desc: 'Enter your Anthropic API key to enable the smart assistant. Get a key at console.anthropic.com',
+    ai_api_key_label: 'Anthropic API Key', ai_save: 'Save',
+    ai_active: 'AI Active', ai_inactive: 'AI Inactive (basic mode)', ai_saved: 'AI settings saved',
     smtp_gmail_help: 'For Gmail: go to <a href="https://myaccount.google.com/apppasswords" target="_blank">App Passwords</a> and create a new one.',
     smtp_outlook_help: 'For Outlook: go to <a href="https://account.live.com/proofs/AppPassword" target="_blank">App Passwords</a> and create one.',
     smtp_yahoo_help: 'For Yahoo: go to <a href="https://login.yahoo.com/account/security#other-apps" target="_blank">App Passwords</a>.',
@@ -2610,6 +2910,17 @@ const I18N = {
     label_subcategory: 'Subcategory', label_amount_ils: 'Amount (₪)',
     freq_random: 'Irregular', freq_monthly: 'Monthly', freq_bimonthly: 'Bimonthly',
     btn_add_expense: 'Add Expense', expense_list: 'Expense List',
+    filter_expenses: 'Filter Expenses', filter_clear: 'Clear Filter', filter_sources: 'Sources:',
+    filter_all_categories: 'All Categories', filter_search: 'Free Search',
+    filter_search_placeholder: 'Fuel, groceries, electric...',
+    filter_from_date: 'From Date', filter_to_date: 'To Date',
+    filter_results: '{count} expenses found', filter_total: 'Total: {total}',
+    chat_title: 'Budget Assistant', chat_subtitle: 'Ask me about your expenses',
+    chat_placeholder: 'Ask something... (e.g. how much did I spend on fuel?)',
+    chat_welcome: "Hi! I'm your budget assistant. You can ask me:\n• How much did I spend on fuel in the last 2 months?\n• What's my biggest expense this month?\n• Show me income this year\n• Where can I see the budget?",
+    chat_thinking: 'Thinking...',
+    chat_go_to: 'Go to page',
+    chat_apply_filter: 'Apply filter',
     label_spouse: 'Spouse', person_husband: 'Husband', person_wife: 'Wife', person_family: 'Family', person_other: 'Other',
     label_income_source: 'Income Source',
     income_salary: 'Salary', income_bonus: 'Bonus', income_freelance: 'Freelance',
@@ -2735,6 +3046,12 @@ function setLang(lang) {
     applyTranslations();
     populateAvgFromDropdown();
     updateSettingsHeader();
+    // Reset chat so welcome message re-renders in new language
+    chatInited = false;
+    const chatMsgs = document.getElementById('chatMessages');
+    if (chatMsgs) chatMsgs.innerHTML = '';
+    if (chatOpen) { chatInited = true; addChatMsg('bot', t('chat_welcome')); }
+    showChatSuggestions();
     refreshAll();
 }
 
@@ -2793,9 +3110,9 @@ function getIL() { return INCOME_SOURCE_LABELS_I18N[currentLang] || INCOME_SOURC
 const SOURCE_LABELS = SOURCE_LABELS_I18N.he;
 const FREQUENCY_LABELS = FREQUENCY_LABELS_I18N.he;
 const FREQUENCY_COLORS = {
-    'monthly': '#2563eb',
+    'monthly': '#6366f1',
     'bimonthly': '#f59e0b',
-    'random': '#ef4444',
+    'random': '#f43f5e',
 };
 const PERSON_LABELS = PERSON_LABELS_I18N.he;
 const INCOME_SOURCE_LABELS = INCOME_SOURCE_LABELS_I18N.he;
@@ -2920,7 +3237,7 @@ const TOAST_STYLES = {
     success: { bg: 'linear-gradient(135deg,#10b981,#059669)', color: '#fff', icon: 'bi-check-circle-fill' },
     warning: { bg: 'linear-gradient(135deg,#f59e0b,#d97706)', color: '#fff', icon: 'bi-exclamation-triangle-fill' },
     danger:  { bg: 'linear-gradient(135deg,#ef4444,#dc2626)', color: '#fff', icon: 'bi-x-circle-fill' },
-    info:    { bg: 'linear-gradient(135deg,#3b82f6,#2563eb)', color: '#fff', icon: 'bi-info-circle-fill' },
+    info:    { bg: 'linear-gradient(135deg,#6366f1,#4f46e5)', color: '#fff', icon: 'bi-info-circle-fill' },
 };
 function showToast(msg, type = 'success') {
     const el = document.getElementById('appToast');
@@ -2945,7 +3262,7 @@ function appConfirm(msg, { type = 'danger', okText, cancelText } = {}) {
     return new Promise(resolve => {
         const overlay = document.getElementById('confirmOverlay');
         const icons = { danger: 'bi-trash3', warning: 'bi-exclamation-triangle-fill', info: 'bi-question-circle-fill' };
-        const colors = { danger: '#ef4444', warning: '#f59e0b', info: '#3b82f6' };
+        const colors = { danger: '#ef4444', warning: '#f59e0b', info: '#6366f1' };
         document.getElementById('confirmIcon').className = `bi ${icons[type] || icons.danger}`;
         document.getElementById('confirmIcon').style.color = colors[type] || colors.danger;
         document.getElementById('confirmMsg').innerHTML = msg;
@@ -2967,7 +3284,7 @@ function appAlert(msg, type = 'info') {
     return new Promise(resolve => {
         const overlay = document.getElementById('confirmOverlay');
         const icons = { danger: 'bi-x-circle-fill', warning: 'bi-exclamation-triangle-fill', info: 'bi-info-circle-fill', success: 'bi-check-circle-fill' };
-        const colors = { danger: '#ef4444', warning: '#f59e0b', info: '#3b82f6', success: '#10b981' };
+        const colors = { danger: '#ef4444', warning: '#f59e0b', info: '#6366f1', success: '#10b981' };
         document.getElementById('confirmIcon').className = `bi ${icons[type] || icons.info}`;
         document.getElementById('confirmIcon').style.color = colors[type] || colors.info;
         document.getElementById('confirmMsg').innerHTML = msg;
@@ -3072,6 +3389,33 @@ function setAuthLang(lang) {
     }
 })();
 
+function togglePwd(btn) {
+    const input = btn.parentElement.querySelector('input');
+    const icon = btn.querySelector('i');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'bi bi-eye-slash';
+    } else {
+        input.type = 'password';
+        icon.className = 'bi bi-eye';
+    }
+}
+
+let _authModalInstance = null;
+function getAuthModal() {
+    const el = document.getElementById('authModal');
+    if (!_authModalInstance) {
+        _authModalInstance = new bootstrap.Modal(el);
+        // Ensure backdrop is always cleaned up on hide
+        el.addEventListener('hidden.bs.modal', () => {
+            document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+            document.body.classList.remove('modal-open');
+            document.body.style.removeProperty('overflow');
+            document.body.style.removeProperty('padding-right');
+        });
+    }
+    return _authModalInstance;
+}
 function showAuthModal(mode) {
     document.getElementById('authLoginForm').style.display = mode === 'login' ? '' : 'none';
     document.getElementById('authSignupForm').style.display = mode === 'signup' ? '' : 'none';
@@ -3091,7 +3435,7 @@ function showAuthModal(mode) {
         title.dataset.t = 'auth_forgot'; title.textContent = t('auth_forgot');
         desc.dataset.t = 'auth_forgot_desc'; desc.textContent = t('auth_forgot_desc');
     }
-    new bootstrap.Modal(document.getElementById('authModal')).show();
+    getAuthModal().show();
 }
 
 async function doAuthLogin() {
@@ -3116,7 +3460,7 @@ async function doAuthLogin() {
             btn.innerHTML = `<i class="bi bi-check-circle"></i> ${t('auth_login_success')}`;
             btn.classList.replace('btn-primary', 'btn-success');
             setTimeout(async () => {
-                bootstrap.Modal.getInstance(document.getElementById('authModal'))?.hide();
+                getAuthModal().hide();
                 btn.innerHTML = origHTML; btn.disabled = false; btn.classList.replace('btn-success', 'btn-primary');
                 await checkAuth();
                 refreshAll();
@@ -3160,7 +3504,7 @@ async function doAuthSignup() {
                 btn.innerHTML = `<i class="bi bi-check-circle"></i> ${t('auth_signup_success')}`;
                 btn.classList.replace('btn-primary', 'btn-success');
                 setTimeout(async () => {
-                    bootstrap.Modal.getInstance(document.getElementById('authModal'))?.hide();
+                    getAuthModal().hide();
                         btn.innerHTML = origHTML; btn.disabled = false; btn.classList.replace('btn-success', 'btn-primary');
                     await checkAuth();
                     refreshAll();
@@ -3206,6 +3550,198 @@ async function doLogout() {
     document.getElementById('navLogoutItem').style.display = 'none';
     document.getElementById('adminTabNav').style.display = 'none';
     document.getElementById('navAuthItem').style.display = '';
+}
+
+// Chat assistant
+let chatOpen = false;
+let chatInited = false;
+let chatMsgCount = 0;  // track responses to show rating prompt every few messages
+
+function toggleChat() {
+    chatOpen = !chatOpen;
+    document.getElementById('chatPanel').style.display = chatOpen ? 'flex' : 'none';
+    if (chatOpen && !chatInited) {
+        chatInited = true;
+        const msgs = document.getElementById('chatMessages');
+        msgs.innerHTML = '';
+        addChatMsg('bot', t('chat_welcome'));
+        showChatSuggestions();
+    }
+    if (chatOpen) document.getElementById('chatInput').focus();
+}
+
+function addChatMsg(role, text, actions) {
+    const msgs = document.getElementById('chatMessages');
+    const div = document.createElement('div');
+    div.className = `chat-msg ${role}`;
+    div.textContent = text;
+    if (actions) {
+        actions.forEach(a => {
+            const btn = document.createElement('button');
+            btn.className = 'chat-action';
+            btn.textContent = a.label;
+            btn.onclick = a.onclick;
+            div.appendChild(document.createElement('br'));
+            div.appendChild(btn);
+        });
+    }
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    return div;
+}
+
+function showChatSuggestions() {
+    const box = document.getElementById('chatSuggestions');
+    const suggestions = currentLang === 'he'
+        ? ['כמה הוצאתי החודש?', 'הוצאות דלק 3 חודשים', 'ההוצאה הכי גדולה', 'הכנסות השנה', 'איפה התקציב?']
+        : ['How much this month?', 'Fuel expenses 3 months', 'Biggest expense', 'Income this year', 'Where is budget?'];
+    box.innerHTML = suggestions.map(s =>
+        `<button class="chat-suggest" onclick="document.getElementById('chatInput').value='${s}';sendChat()">${s}</button>`
+    ).join('');
+}
+
+async function sendChat() {
+    const input = document.getElementById('chatInput');
+    const query = input.value.trim();
+    if (!query) return;
+    input.value = '';
+
+    addChatMsg('user', query);
+    const thinkMsg = addChatMsg('bot', t('chat_thinking'));
+
+    try {
+        const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, lang: currentLang })
+        });
+        if (res.status === 401) {
+            thinkMsg.textContent = currentLang === 'he' ? 'יש להתחבר כדי לשאול שאלות' : 'Please log in to ask questions';
+            showAuthModal('login');
+            return;
+        }
+        const data = await res.json();
+        thinkMsg.textContent = data.text;
+
+        // "Did you mean?" suggestion buttons
+        if (data.data?.suggestions?.length) {
+            const sugDiv = document.createElement('div');
+            sugDiv.style.cssText = 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap';
+            data.data.suggestions.slice(0, 3).forEach(s => {
+                const btn = document.createElement('button');
+                btn.className = 'chat-suggest';
+                btn.textContent = s;
+                btn.onclick = () => {
+                    document.getElementById('chatInput').value = s;
+                    sendChat();
+                };
+                sugDiv.appendChild(btn);
+            });
+            thinkMsg.appendChild(sugDiv);
+        }
+
+        // If fuzzy match — show confirmation buttons
+        if (data.data && data.data.fuzzy && data.data.fuzzy_matches && data.data.fuzzy_matches.length > 0) {
+            const confirmDiv = document.createElement('div');
+            confirmDiv.style.cssText = 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap';
+            const origSearch = data.data.original_search;
+            // Create a Yes button for each distinct match
+            data.data.fuzzy_matches.slice(0, 3).forEach(match => {
+                const yesBtn = document.createElement('button');
+                yesBtn.className = 'chat-action';
+                yesBtn.style.cssText = 'background:#10b981;color:#fff;border:none;padding:4px 12px;border-radius:8px;cursor:pointer;font-size:0.82rem';
+                yesBtn.textContent = (currentLang === 'he' ? '\u2705 כן, ' : '\u2705 Yes, ') + match;
+                yesBtn.onclick = async () => {
+                    await fetch('/api/chat/confirm', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({user_typed: origSearch, actual_match: match, confirmed: true})
+                    });
+                    confirmDiv.innerHTML = currentLang === 'he'
+                        ? '<span style="color:#10b981;font-size:0.82rem">\u2705 נשמר! בפעם הבאה אמצא את זה ישר.</span>'
+                        : '<span style="color:#10b981;font-size:0.82rem">\u2705 Saved! Next time I\'ll find it right away.</span>';
+                };
+                confirmDiv.appendChild(yesBtn);
+            });
+            const noBtn = document.createElement('button');
+            noBtn.className = 'chat-action';
+            noBtn.style.cssText = 'background:#ef4444;color:#fff;border:none;padding:4px 12px;border-radius:8px;cursor:pointer;font-size:0.82rem';
+            noBtn.textContent = currentLang === 'he' ? '\u274c לא, זה לא מה שחיפשתי' : '\u274c No, not what I meant';
+            noBtn.onclick = async () => {
+                await fetch('/api/chat/confirm', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_typed: origSearch, confirmed: false})
+                });
+                confirmDiv.innerHTML = currentLang === 'he'
+                    ? '<span style="color:#888;font-size:0.82rem">נסה לנסח מחדש את החיפוש</span>'
+                    : '<span style="color:#888;font-size:0.82rem">Try rephrasing your search</span>';
+            };
+            confirmDiv.appendChild(noBtn);
+            thinkMsg.appendChild(confirmDiv);
+        }
+
+        // Auto-navigate and apply filters (chat stays open)
+        if (data.action) {
+            const act = data.action;
+            if (act.filter) {
+                const tabEl = document.querySelector('[data-bs-target="#expensesTab"]');
+                if (tabEl) new bootstrap.Tab(tabEl).show();
+                setTimeout(() => {
+                    const f = act.filter;
+                    if (f.category_id) document.getElementById('filterCategory').value = f.category_id;
+                    if (f.subcategory) document.getElementById('filterSubcategory').value = f.subcategory;
+                    if (f.from_date) document.getElementById('filterFromDate').value = f.from_date;
+                    if (f.to_date) document.getElementById('filterToDate').value = f.to_date;
+                    applyExpenseFilter();
+                }, 150);
+            } else if (act.tab) {
+                const tabEl = document.querySelector(`[data-bs-target="#${act.tab}"]`);
+                if (tabEl) new bootstrap.Tab(tabEl).show();
+            }
+        }
+        // Show rating prompt every 3rd successful response
+        chatMsgCount++;
+        if (chatMsgCount % 3 === 0) {
+            setTimeout(() => showChatRating(query), 500);
+        }
+    } catch(e) {
+        thinkMsg.textContent = currentLang === 'he' ? 'שגיאה, נסה שוב' : 'Error, please try again';
+    }
+    showChatSuggestions();
+}
+
+function showChatRating(queryText) {
+    const msgs = document.getElementById('chatMessages');
+    const ratingDiv = document.createElement('div');
+    ratingDiv.className = 'chat-msg bot';
+    ratingDiv.style.cssText = 'background:#fef9c3;text-align:center;padding:10px';
+    const label = currentLang === 'he' ? 'איך הייתה התשובה? דרג 1-5:' : 'How was this answer? Rate 1-5:';
+    ratingDiv.textContent = label;
+    const starsDiv = document.createElement('div');
+    starsDiv.style.cssText = 'margin-top:6px;display:flex;justify-content:center;gap:4px';
+    for (let i = 1; i <= 5; i++) {
+        const star = document.createElement('button');
+        star.style.cssText = 'background:none;border:none;font-size:1.5rem;cursor:pointer;padding:2px 4px;transition:transform 0.15s';
+        star.textContent = '\u2b50';
+        star.title = i + '/5';
+        star.onmouseenter = () => { star.style.transform = 'scale(1.3)'; };
+        star.onmouseleave = () => { star.style.transform = 'scale(1)'; };
+        star.onclick = async () => {
+            await fetch('/api/chat/feedback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({rating: i, query: queryText})
+            });
+            ratingDiv.innerHTML = currentLang === 'he'
+                ? '<span style="color:#10b981">\u2705 \u05ea\u05d5\u05d3\u05d4! \u05d3\u05d9\u05e8\u05d2\u05ea ' + i + '/5</span>'
+                : '<span style="color:#10b981">\u2705 Thanks! Rated ' + i + '/5</span>';
+        };
+        starsDiv.appendChild(star);
+    }
+    ratingDiv.appendChild(starsDiv);
+    msgs.appendChild(ratingDiv);
+    msgs.scrollTop = msgs.scrollHeight;
 }
 
 // Admin panel
@@ -3264,6 +3800,61 @@ async function loadAdminPanel() {
                         <button class="btn btn-outline-danger btn-sm" style="border-radius:8px" onclick="adminDeleteCategory('${c.id}')"><i class="bi bi-trash3"></i></button>
                     </div>
                 </td>
+            </tr>
+        `).join('');
+
+        // Chat satisfaction survey
+        loadSatisfactionData();
+    } catch(e) {}
+}
+
+async function loadSatisfactionData() {
+    try {
+        const res = await fetch('/api/admin/chat-satisfaction');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const starsFor = (avg) => {
+            let s = '';
+            for (let i = 1; i <= 5; i++) s += i <= Math.round(avg) ? '\u2b50' : '\u2606';
+            return s;
+        };
+
+        document.getElementById('satisfactionStats').innerHTML = `
+            <div class="col-6 col-md-3">
+                <div class="card text-center p-3" style="border-radius:14px;border:none;background:#fef9c310">
+                    <div class="fw-bold" style="font-size:1.3rem;color:#f59e0b">${data.avg_rating}/5</div>
+                    <div style="font-size:1.1rem">${starsFor(data.avg_rating)}</div>
+                    <div class="text-muted small">ממוצע דירוג</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card text-center p-3" style="border-radius:14px;border:none;background:#10b98110">
+                    <div class="fw-bold" style="font-size:1.3rem;color:#10b981">${data.total}</div>
+                    <div class="text-muted small">סה"כ דירוגים</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card text-center p-3" style="border-radius:14px;border:none;background:#10b98110">
+                    <div class="fw-bold" style="font-size:1.3rem;color:#10b981">${data.positive}</div>
+                    <div class="text-muted small">חיובי (4-5)</div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card text-center p-3" style="border-radius:14px;border:none;background:#ef444410">
+                    <div class="fw-bold" style="font-size:1.3rem;color:#ef4444">${data.negative}</div>
+                    <div class="text-muted small">שלילי (1-2)</div>
+                </div>
+            </div>
+        `;
+
+        const starsStr = (n) => { let s=''; for(let i=0;i<n;i++) s+='\u2b50'; return s; };
+        document.getElementById('satisfactionBody').innerHTML = data.recent.map(r => `
+            <tr>
+                <td class="small">${r.created_at ? r.created_at.substring(0,16) : '-'}</td>
+                <td>${r.username || '-'}</td>
+                <td class="small" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(r.query||'').replace(/"/g,'&quot;')}">${r.query || '-'}</td>
+                <td>${starsStr(r.rating)}</td>
             </tr>
         `).join('');
     } catch(e) {}
@@ -3453,12 +4044,12 @@ function renderRecentExpenses() {
         if (activeFilter.type === 'category') {
             filtered = dashboardExpenses.filter(e => e.category_name === activeFilter.value);
             badgeText.textContent = `${t('filter')}: ${activeFilter.value}`;
-            badgeText.style.background = activeFilter.color || '#2563eb';
+            badgeText.style.background = activeFilter.color || '#6366f1';
             badgeText.style.color = '#fff';
         } else if (activeFilter.type === 'frequency') {
             filtered = dashboardExpenses.filter(e => e.frequency === activeFilter.value);
             badgeText.textContent = `${t('filter')}: ${getFL()[activeFilter.value] || activeFilter.value}`;
-            badgeText.style.background = FREQUENCY_COLORS[activeFilter.value] || '#2563eb';
+            badgeText.style.background = FREQUENCY_COLORS[activeFilter.value] || '#6366f1';
             badgeText.style.color = '#fff';
         }
         badge.style.display = '';
@@ -3526,7 +4117,7 @@ function quickChangeCategory(expId, currentCatId) {
     categories.forEach(c => {
         const btn = document.createElement('button');
         btn.className = 'btn btn-sm w-100 text-end mb-1 d-flex align-items-center justify-content-between';
-        btn.style.cssText = c.id === currentCatId ? 'background:#eff6ff;border:2px solid #2563eb;border-radius:10px' : 'border:1px solid #e2e8f0;border-radius:10px';
+        btn.style.cssText = c.id === currentCatId ? 'background:#eef2ff;border:2px solid #6366f1;border-radius:10px' : 'border:1px solid #e2e8f0;border-radius:10px';
         btn.innerHTML = `<span class="category-badge" style="background:${c.color};font-size:0.75rem">${c.name_he}</span>${c.id === currentCatId ? '<i class="bi bi-check-lg text-primary"></i>' : ''}`;
         btn.onclick = async () => {
             if (c.id === currentCatId) { div.remove(); return; }
@@ -3597,7 +4188,7 @@ function renderExpenseTableRows(expenses) {
             <td>${e.description || e.subcategory || '-'}</td>
             <td class="amount">${fmtDecimal(e.amount)}</td>
             <td><span class="badge" style="background:${FREQUENCY_COLORS[e.frequency] || '#888'}">${getFL()[e.frequency] || e.frequency || '-'}</span></td>
-            <td><small class="text-muted">${formatSource(e)}</small></td>
+            <td><small class="text-muted" style="cursor:pointer;text-decoration:underline dotted" onclick="event.stopPropagation();toggleSourceFilter('${(e.card||'').replace(/'/g, "\\'")}')" title="${t('filter_sources')}">${formatSource(e)}</small></td>
             <td class="text-nowrap">
                 <button class="btn btn-sm btn-outline-primary me-1" onclick="event.stopPropagation();openEditExpense(${e.id})" title="${t('edit')}">
                     <i class="bi bi-pencil"></i>
@@ -3621,6 +4212,110 @@ async function loadExpenses() {
     tabExpenses = await api(`/api/expenses?month=${currentMonth}`);
     sortState['expenseListBody'] = { column: null, direction: null };
     renderExpenseTableRows(tabExpenses);
+    populateFilterCategories();
+}
+
+function populateFilterCategories() {
+    const sel = document.getElementById('filterCategory');
+    const current = sel.value;
+    sel.innerHTML = `<option value="" data-t="filter_all_categories">${t('filter_all_categories')}</option>`;
+    (categories || []).forEach(c => {
+        sel.innerHTML += `<option value="${c.id}">${currentLang === 'en' ? (c.name_en || c.name_he) : c.name_he}</option>`;
+    });
+    sel.value = current;
+}
+
+let filterDebounce = null;
+let selectedSources = []; // multi-select source/card filter
+
+function applyExpenseFilter() {
+    clearTimeout(filterDebounce);
+    filterDebounce = setTimeout(doApplyExpenseFilter, 200);
+}
+
+function toggleSourceFilter(cardName) {
+    const idx = selectedSources.indexOf(cardName);
+    if (idx >= 0) {
+        selectedSources.splice(idx, 1);
+    } else {
+        selectedSources.push(cardName);
+    }
+    renderSourceChips();
+    // Navigate to expenses tab
+    const tabEl = document.querySelector('[data-bs-target="#expensesTab"]');
+    if (tabEl) new bootstrap.Tab(tabEl).show();
+    applyExpenseFilter();
+}
+
+function removeSourceFilter(cardName) {
+    const idx = selectedSources.indexOf(cardName);
+    if (idx >= 0) selectedSources.splice(idx, 1);
+    renderSourceChips();
+    applyExpenseFilter();
+}
+
+const SOURCE_CHIP_COLORS = ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#9c755f'];
+function renderSourceChips() {
+    const box = document.getElementById('filterSourceChips');
+    if (!selectedSources.length) { box.style.display = 'none'; return; }
+    box.style.display = 'flex';
+    box.innerHTML = `<span class="small fw-bold d-flex align-items-center">${t('filter_sources')}</span>` +
+        selectedSources.map((s, i) => {
+            const color = SOURCE_CHIP_COLORS[i % SOURCE_CHIP_COLORS.length];
+            return `<span class="source-chip" style="background:${color}15;border-color:${color};color:${color}" ondblclick="removeSourceFilter('${s.replace(/'/g, "\\'")}')">${s}<span class="chip-x" onclick="event.stopPropagation();removeSourceFilter('${s.replace(/'/g, "\\'")}')">&times;</span></span>`;
+        }).join('');
+}
+
+async function doApplyExpenseFilter() {
+    const catId = document.getElementById('filterCategory').value;
+    const search = document.getElementById('filterSubcategory').value.trim();
+    const fromDate = document.getElementById('filterFromDate').value;
+    const toDate = document.getElementById('filterToDate').value;
+
+    const hasFilter = catId || search || fromDate || toDate || selectedSources.length;
+
+    // Build API URL
+    let url;
+    if (fromDate && toDate) {
+        url = `/api/expenses?from_date=${fromDate}&to_date=${toDate}`;
+    } else if (fromDate) {
+        url = `/api/expenses?from_date=${fromDate}&to_date=2099-12-31`;
+    } else if (toDate) {
+        url = `/api/expenses?from_date=2000-01-01&to_date=${toDate}`;
+    } else {
+        url = `/api/expenses?month=${currentMonth}`;
+    }
+    if (catId) url += `&category_id=${catId}`;
+    if (search) url += `&subcategory=${encodeURIComponent(search)}`;
+    selectedSources.forEach(s => url += `&card=${encodeURIComponent(s)}`);
+
+    const data = await api(url);
+    if (!data) return;
+    tabExpenses = data;
+    sortState['expenseListBody'] = { column: null, direction: null };
+    renderExpenseTableRows(tabExpenses);
+
+    // Show filter summary
+    const summary = document.getElementById('filterSummary');
+    if (hasFilter) {
+        const total = tabExpenses.reduce((s, e) => s + e.amount, 0);
+        document.getElementById('filterResultCount').textContent = t('filter_results').replace('{count}', tabExpenses.length);
+        document.getElementById('filterResultTotal').textContent = t('filter_total').replace('{total}', fmt(total));
+        summary.style.display = '';
+    } else {
+        summary.style.display = 'none';
+    }
+}
+
+function clearExpenseFilter() {
+    document.getElementById('filterCategory').value = '';
+    document.getElementById('filterSubcategory').value = '';
+    document.getElementById('filterFromDate').value = '';
+    document.getElementById('filterToDate').value = '';
+    document.getElementById('filterSummary').style.display = 'none';
+    selectedSources = [];
+    renderSourceChips();
+    loadExpenses();
 }
 
 function renderIncomeTableRows(income) {
@@ -3983,7 +4678,7 @@ function renderBudgetChart(data) {
                     label: t('planned'),
                     data: data.map(d => d.planned),
                     backgroundColor: 'rgba(37, 99, 235, 0.3)',
-                    borderColor: '#2563eb',
+                    borderColor: '#6366f1',
                     borderWidth: 1,
                     borderRadius: 4,
                 },
@@ -4029,12 +4724,12 @@ function renderTrendChart(data) {
             datasets: [{
                 label: t('total_expenses_chart'),
                 data: data.map(d => d.total),
-                borderColor: '#2563eb',
+                borderColor: '#6366f1',
                 backgroundColor: 'rgba(37, 99, 235, 0.1)',
                 fill: true,
                 tension: 0.3,
                 pointRadius: 5,
-                pointBackgroundColor: '#2563eb',
+                pointBackgroundColor: '#6366f1',
             }]
         },
         options: {
@@ -4077,8 +4772,20 @@ function renderCardChart(data) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            onClick: (evt, elements) => {
+                if (!elements.length) return;
+                const cardName = data[elements[0].index].card_name;
+                toggleSourceFilter(cardName);
+            },
             plugins: {
-                legend: { position: 'right', rtl: true, labels: { font: { size: 12 }, padding: 12 } },
+                legend: {
+                    position: 'right', rtl: true,
+                    labels: { font: { size: 12 }, padding: 12 },
+                    onClick: (evt, legendItem, legend) => {
+                        const cardName = data[legendItem.index].card_name;
+                        toggleSourceFilter(cardName);
+                    }
+                },
                 tooltip: {
                     rtl: true,
                     callbacks: {
@@ -4167,7 +4874,11 @@ async function loadTips() {
     const container = document.getElementById('tipsContainer');
 
     if (!tips.length) {
-        container.innerHTML = `<div class="text-center text-muted py-3"><i class="bi bi-check-circle me-2"></i>${t('no_tips')}</div>`;
+        if (!isLoggedIn) {
+            container.innerHTML = `<div class="text-center text-muted py-3"><i class="bi bi-person-lock me-2"></i>${t('tips_login_required')}<br><a href="#" class="mt-2 d-inline-block" onclick="showAuthModal('login');return false"><b>${t('auth_login')}</b></a></div>`;
+        } else {
+            container.innerHTML = `<div class="text-center text-muted py-3"><i class="bi bi-check-circle me-2"></i>${t('no_tips')}</div>`;
+        }
         return;
     }
 
@@ -4307,7 +5018,7 @@ async function runAnalysis() {
             labels: [t('fixed_expenses'), t('variable_expenses')],
             datasets: [{
                 data: [data.fixed_monthly, data.variable_monthly],
-                backgroundColor: ['#2563eb', '#f59e0b'],
+                backgroundColor: ['#6366f1', '#f59e0b'],
                 borderWidth: 2,
                 borderColor: '#fff',
             }]
@@ -4327,7 +5038,7 @@ async function runAnalysis() {
         const rec = data.recommended;
         document.getElementById('recommendedBudget').innerHTML = `
             <div class="col-md-4">
-                <div class="p-3 rounded" style="background:#eff6ff; border:2px solid #2563eb20">
+                <div class="p-3 rounded" style="background:#eef2ff; border:2px solid #6366f120">
                     <div class="fw-bold text-primary mb-1"><i class="bi bi-house me-1"></i>${t('needs_50')}</div>
                     <div class="fs-4 fw-bold">${fmt(rec.needs)}</div>
                     <div class="small text-muted mt-1">${rec.needs_categories.join(', ')}</div>
@@ -4734,7 +5445,7 @@ async function loadFinancial() {
             </div>
         </div>
         <div class="col-md-3">
-            <div class="stat-card" style="background:linear-gradient(135deg,#1e40af,#2563eb)">
+            <div class="stat-card" style="background:linear-gradient(135deg,#4f46e5,#6366f1)">
                 <small><i class="bi bi-wallet2 me-1"></i>${t('fin_total_monthly')}</small>
                 <h3>${fmt(summary.total_monthly)}</h3>
                 <small>${t('fin_total_accumulated')}: ${fmt(summary.total_balance)}</small>
@@ -4747,7 +5458,7 @@ async function loadFinancial() {
         document.getElementById('finProjections').style.display = 'block';
         document.getElementById('finProjectionCards').innerHTML = `
             <div class="col-md-4">
-                <div class="p-3 rounded text-center" style="background:#eff6ff;border:1px solid #2563eb20">
+                <div class="p-3 rounded text-center" style="background:#eef2ff;border:1px solid #6366f120">
                     <div class="small text-muted">${t('fin_years_10')}</div>
                     <div class="fs-4 fw-bold text-primary">${fmt(summary.projections[10])}</div>
                 </div>
@@ -4839,7 +5550,7 @@ function renderFinProducts(products, containerId, type) {
                     ${type === 'insurance' && p.coverage_amount ? `<div class="p-1 px-2 rounded" style="background:#f0fdf4">
                         <i class="bi bi-shield me-1"></i>${t('fin_coverage_label')}: ${fmt(p.coverage_amount)}
                     </div>` : ''}
-                    ${(type === 'pension' || type === 'fund') && p.balance ? `<div class="p-1 px-2 rounded" style="background:#eff6ff">
+                    ${(type === 'pension' || type === 'fund') && p.balance ? `<div class="p-1 px-2 rounded" style="background:#eef2ff">
                         <i class="bi bi-bank me-1"></i>${t('fin_accumulated')}: ${fmt(p.balance)}
                     </div>` : ''}
                 </div>
@@ -5119,7 +5830,7 @@ async function loadBurnRate() {
             </div>
         </div>
         <div class="col-sm-6">
-            <div class="p-3 rounded" style="background:#eff6ff;border:1px solid #2563eb20">
+            <div class="p-3 rounded" style="background:#eef2ff;border:1px solid #6366f120">
                 <div class="small text-muted">${t('income_this_month')}</div>
                 <div class="fs-5 fw-bold text-primary">${fmt(data.income)}</div>
             </div>
@@ -5168,7 +5879,7 @@ async function loadLatte() {
                 </div>
             </div>
             <div class="d-flex gap-3 small">
-                <div class="text-center p-2 rounded flex-fill" style="background:#eff6ff">
+                <div class="text-center p-2 rounded flex-fill" style="background:#eef2ff">
                     <div class="text-muted">${t('years_5')}</div>
                     <div class="fw-bold text-primary">${fmt(item.invested_5y)}</div>
                 </div>
@@ -5241,7 +5952,7 @@ async function loadAnomalies() {
 async function loadRecurring() {
     const data = await api('/api/insights/recurring');
     const patternLabels = { monthly: t('pattern_monthly'), bimonthly: t('pattern_bimonthly'), irregular: t('pattern_irregular'), unknown: t('pattern_unknown') };
-    const patternColors = { monthly: '#2563eb', bimonthly: '#f59e0b', irregular: '#ef4444', unknown: '#94a3b8' };
+    const patternColors = { monthly: '#6366f1', bimonthly: '#f59e0b', irregular: '#ef4444', unknown: '#94a3b8' };
 
     document.getElementById('recurringSummary').innerHTML = `
         <div class="col-auto"><div class="badge bg-primary bg-opacity-10 text-primary p-2 fs-6">${data.count} ${t('recurring_count')}</div></div>
@@ -5339,7 +6050,7 @@ function updateWhatIf() {
 // -- 7. Weekly Pulse --
 async function loadPulse() {
     const data = await api('/api/insights/weekly-pulse');
-    const dayColors = ['#dc2626','#f59e0b','#16a34a','#2563eb','#8b5cf6','#ec4899','#06b6d4'];
+    const dayColors = ['#dc2626','#f59e0b','#16a34a','#6366f1','#8b5cf6','#ec4899','#06b6d4'];
 
     document.getElementById('pulseSummary').innerHTML = `
         <div class="row g-3">
@@ -5402,7 +6113,7 @@ async function loadProjection() {
             <div class="fs-5 fw-bold"><i class="bi ${trendIcon} me-1"></i>${trendText}</div>
             <div class="small text-muted">${fmt(Math.abs(data.monthly_trend))}${t('per_month_trend')}</div>
         </div></div>
-        <div class="col-md-3"><div class="p-3 rounded text-center" style="background:#eff6ff;border:1px solid #2563eb20">
+        <div class="col-md-3"><div class="p-3 rounded text-center" style="background:#eef2ff;border:1px solid #6366f120">
             <div class="small text-muted">${t('avg_income_label')}</div>
             <div class="fs-5 fw-bold text-primary">${fmt(data.avg_income)}</div>
         </div></div>
@@ -5447,7 +6158,7 @@ async function loadProjection() {
                 {
                     label: t('income_label'),
                     data: [...histIncome, ...new Array(data.projection.length).fill(data.avg_income)],
-                    borderColor: '#2563eb',
+                    borderColor: '#6366f1',
                     borderDash: [4, 2],
                     fill: false, tension: 0, pointRadius: 0,
                 },
@@ -5820,6 +6531,53 @@ async function saveSmtpSettings() {
 }
 
 // ============================================================
+// AI Settings
+// ============================================================
+async function openAiSettings() {
+    const status = document.getElementById('aiStatus');
+    try {
+        const r = await fetch('/api/settings/ai');
+        const d = await r.json();
+        if (d.has_key) {
+            document.getElementById('aiApiKey').placeholder = d.key_preview;
+            status.style.display = '';
+            status.querySelector('.badge').className = 'badge rounded-pill bg-success';
+            status.querySelector('.badge').textContent = t('ai_active');
+        } else {
+            document.getElementById('aiApiKey').placeholder = 'sk-ant-...';
+            status.style.display = '';
+            status.querySelector('.badge').className = 'badge rounded-pill bg-secondary';
+            status.querySelector('.badge').textContent = t('ai_inactive');
+        }
+    } catch(e) {}
+    document.getElementById('aiAlert').innerHTML = '';
+    new bootstrap.Modal(document.getElementById('aiModal')).show();
+}
+
+async function saveAiSettings() {
+    const key = document.getElementById('aiApiKey').value.trim();
+    try {
+        const r = await fetch('/api/settings/ai', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ api_key: key })
+        });
+        if (r.ok) {
+            document.getElementById('aiAlert').innerHTML = `<div class="alert alert-success py-2 mt-2" style="border-radius:10px">${t('ai_saved')}</div>`;
+            const status = document.getElementById('aiStatus');
+            if (key) {
+                status.style.display = '';
+                status.querySelector('.badge').className = 'badge rounded-pill bg-success';
+                status.querySelector('.badge').textContent = t('ai_active');
+            }
+            setTimeout(() => { document.getElementById('aiAlert').innerHTML = ''; }, 3000);
+        }
+    } catch(e) {
+        document.getElementById('aiAlert').innerHTML = `<div class="alert alert-danger py-2 mt-2" style="border-radius:10px">${t('smtp_error')}</div>`;
+    }
+}
+
+// ============================================================
 // Add Category
 // ============================================================
 async function addNewCategory() {
@@ -5895,6 +6653,13 @@ async function init() {
     await loadCategories();
     populateAvgFromDropdown();
     await refreshAll();
+
+    // Fetch and display version
+    try {
+        const vData = await fetch('/api/version').then(r => r.json());
+        const vEl = document.getElementById('appVersion');
+        if (vEl && vData.version) vEl.textContent = 'v' + vData.version;
+    } catch(e) {}
 }
 
 init();
