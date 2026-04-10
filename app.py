@@ -27,7 +27,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.0.1000016'
+APP_VERSION = '1.0.1000017'
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 # Store user data in a stable folder that survives exe rebuilds
@@ -276,6 +276,18 @@ def init_db():
             rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS bank_balances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            account_name TEXT NOT NULL DEFAULT 'main',
+            month TEXT NOT NULL,
+            closing_balance REAL NOT NULL,
+            last_transaction_date TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, account_name, month)
+        );
+        CREATE INDEX IF NOT EXISTS idx_bank_balances_user ON bank_balances(user_id, month);
     ''')
 
     # Migrate budget table: add plan_id column and fix unique constraint
@@ -1365,12 +1377,60 @@ def get_summary():
 
     expense_total = sum(r['total'] for r in cat_expenses)
 
+    # Bank closing balance (separate metric from cashflow)
+    bank_bal_row = conn.execute(
+        "SELECT closing_balance, last_transaction_date FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, month)
+    ).fetchone()
+    bank_balance = bank_bal_row['closing_balance'] if bank_bal_row else None
+    bank_balance_date = bank_bal_row['last_transaction_date'] if bank_bal_row else None
+
+    # Bank balance trend (last 6 months, only months with actual data)
+    bank_balance_trend = conn.execute(
+        "SELECT month, closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' ORDER BY month DESC LIMIT 6",
+        (uid,)
+    ).fetchall()
+
+    # Trust signals: last import timestamp, salary day, upcoming fixed total
+    last_import_row = conn.execute(
+        "SELECT created_at FROM bank_balances WHERE user_id=? AND account_name='main' ORDER BY created_at DESC LIMIT 1",
+        (uid,)
+    ).fetchone()
+    last_bank_import = last_import_row['created_at'] if last_import_row else None
+
+    # Quick salary detection (typical day from income records)
+    salary_rows = conn.execute(
+        "SELECT date FROM income WHERE user_id=? AND source='salary' ORDER BY date DESC LIMIT 6",
+        (uid,)
+    ).fetchall()
+    salary_day = None
+    if len(salary_rows) >= 2:
+        sal_days = []
+        for r in salary_rows:
+            parts = r['date'].split('-')
+            if len(parts) == 3:
+                sal_days.append(int(parts[2]))
+        if sal_days:
+            sorted_d = sorted(sal_days)
+            salary_day = sorted_d[len(sorted_d) // 2]
+
+    # Upcoming fixed expenses (monthly standing orders total)
+    fixed_total = conn.execute(
+        """SELECT COALESCE(SUM(amount), 0) FROM (
+            SELECT amount FROM expenses WHERE user_id=? AND frequency='monthly'
+            GROUP BY description)""",
+        (uid,)
+    ).fetchone()[0]
+
     conn.close()
     return jsonify({
         'month': month,
         'expense_total': expense_total,
         'income_total': income_total,
         'balance': income_total - expense_total,
+        'bank_balance': bank_balance,
+        'bank_balance_date': bank_balance_date,
+        'bank_balance_trend': [dict(r) for r in reversed(list(bank_balance_trend))],
         'by_category': [dict(r) for r in cat_expenses if r['total'] > 0],
         'daily': [dict(r) for r in daily],
         'income_by_person': [dict(r) for r in income_by_person],
@@ -1378,6 +1438,276 @@ def get_summary():
         'monthly_trend': [dict(r) for r in reversed(list(monthly_trend))],
         'by_card': [dict(r) for r in by_card],
         'by_frequency': [dict(r) for r in by_frequency],
+        'last_bank_import': last_bank_import,
+        'salary_day': salary_day,
+        'fixed_monthly_total': round(fixed_total, 0),
+    })
+
+
+# --- Safe to Spend ---
+@app.route('/api/safe-to-spend', methods=['GET'])
+@login_required
+def safe_to_spend():
+    """Available after safety buffer: bank balance minus a conservative buffer.
+    Simple and honest — the balance already reflects past debits, so we don't
+    subtract expenses again (that would double-count)."""
+    conn = get_db()
+    uid = get_uid()
+    month = request.args.get('month', date.today().strftime('%Y-%m'))
+
+    # Current bank balance
+    bal = conn.execute(
+        "SELECT closing_balance, last_transaction_date FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, month)
+    ).fetchone()
+    if not bal:
+        conn.close()
+        return jsonify({'available': False, 'reason': 'no_balance_data'})
+    bank_balance = bal['closing_balance']
+    balance_date = bal['last_transaction_date']
+
+    # Safety buffer: fixed 500 NIS (or equivalent baseline)
+    buffer = 500
+
+    available = bank_balance - buffer
+
+    # Detect salary timing for smarter daily budget
+    today = date.today()
+    days_left = None
+    daily_available = None
+    days_until_salary = None
+    salary_detected = False
+
+    if month == today.strftime('%Y-%m'):
+        import calendar
+        days_left = calendar.monthrange(today.year, today.month)[1] - today.day
+
+        # Check for salary pattern to use as budget horizon
+        salary_rows = conn.execute(
+            "SELECT date FROM income WHERE user_id=? AND source='salary' ORDER BY date",
+            (uid,)
+        ).fetchall()
+        if len(salary_rows) >= 2:
+            sal_days = []
+            for r in salary_rows:
+                parts = r['date'].split('-')
+                if len(parts) == 3:
+                    sal_days.append(int(parts[2]))
+            if sal_days:
+                sorted_d = sorted(sal_days)
+                typical_day = sorted_d[len(sorted_d) // 2]
+                salary_detected = True
+                if today.day <= typical_day:
+                    days_until_salary = typical_day - today.day
+                else:
+                    if today.month == 12:
+                        next_m_days = calendar.monthrange(today.year + 1, 1)[1]
+                    else:
+                        next_m_days = calendar.monthrange(today.year, today.month + 1)[1]
+                    days_until_salary = (calendar.monthrange(today.year, today.month)[1] - today.day) + min(typical_day, next_m_days)
+
+        # Use days until salary if detected, otherwise days until end of month
+        horizon = days_until_salary if days_until_salary is not None else days_left
+        daily_available = round(available / max(horizon, 1), 0) if available > 0 else 0
+
+    # "Why" inputs for frontend explainability
+    why_inputs = {
+        'balance': round(bank_balance, 0),
+        'buffer': round(buffer, 0),
+        'result': round(available, 0),
+    }
+    if daily_available is not None:
+        horizon = days_until_salary if days_until_salary is not None else days_left
+        why_inputs['daily_result'] = round(daily_available, 0)
+        why_inputs['horizon'] = horizon
+
+    conn.close()
+    return jsonify({
+        'available': True,
+        'bank_balance': round(bank_balance, 0),
+        'buffer': round(buffer, 0),
+        'safe_to_spend': round(available, 0),
+        'daily_budget': daily_available,
+        'days_remaining': days_left,
+        'days_until_salary': days_until_salary,
+        'salary_detected': salary_detected,
+        'balance_date': balance_date,
+        'why_inputs': why_inputs,
+    })
+
+
+# --- Salary Detection ---
+@app.route('/api/salary-info', methods=['GET'])
+@login_required
+def salary_info():
+    """Detect salary pattern from income records: typical day, amount, person."""
+    conn = get_db()
+    uid = get_uid()
+
+    # Find all salary-tagged income entries (source='salary')
+    rows = conn.execute(
+        "SELECT date, amount, person FROM income WHERE user_id=? AND source='salary' ORDER BY date",
+        (uid,)
+    ).fetchall()
+
+    if len(rows) < 2:
+        conn.close()
+        return jsonify({'detected': False, 'reason': 'not_enough_data'})
+
+    # Group by person to detect multiple salaries (husband/wife)
+    from collections import defaultdict
+    by_person = defaultdict(list)
+    for r in rows:
+        by_person[r['person']].append({'date': r['date'], 'amount': r['amount']})
+
+    salaries = []
+    for person, entries in by_person.items():
+        if len(entries) < 2:
+            continue
+        days = []
+        amounts = []
+        for e in entries:
+            parts = e['date'].split('-')
+            if len(parts) == 3:
+                days.append(int(parts[2]))
+                amounts.append(e['amount'])
+
+        if not days:
+            continue
+
+        # Typical day: median (robust to occasional shifts)
+        sorted_days = sorted(days)
+        typical_day = sorted_days[len(sorted_days) // 2]
+        avg_amount = round(sum(amounts) / len(amounts), 0)
+        latest_amount = amounts[-1]
+
+        # Days until next salary
+        today = date.today()
+        if today.day <= typical_day:
+            next_salary = today.replace(day=typical_day)
+        else:
+            # Next month
+            if today.month == 12:
+                next_salary = today.replace(year=today.year + 1, month=1, day=typical_day)
+            else:
+                import calendar
+                next_month = today.month + 1
+                max_day = calendar.monthrange(today.year, next_month)[1]
+                next_salary = today.replace(month=next_month, day=min(typical_day, max_day))
+        days_until = (next_salary - today).days
+
+        salaries.append({
+            'person': person,
+            'typical_day': typical_day,
+            'avg_amount': avg_amount,
+            'latest_amount': round(latest_amount, 0),
+            'occurrences': len(entries),
+            'days_until_next': days_until,
+            'next_date': next_salary.strftime('%Y-%m-%d'),
+        })
+
+    conn.close()
+
+    if not salaries:
+        return jsonify({'detected': False, 'reason': 'not_enough_data'})
+
+    # Sort by amount descending (primary salary first)
+    salaries.sort(key=lambda s: s['avg_amount'], reverse=True)
+    total_monthly = sum(s['avg_amount'] for s in salaries)
+    nearest_salary_days = min(s['days_until_next'] for s in salaries)
+
+    return jsonify({
+        'detected': True,
+        'salaries': salaries,
+        'total_monthly_salary': total_monthly,
+        'days_until_nearest': nearest_salary_days,
+    })
+
+
+# --- Monthly Financial Summary ---
+@app.route('/api/monthly-summary', methods=['GET'])
+@login_required
+def monthly_financial_summary():
+    """Concise end-of-month financial snapshot."""
+    conn = get_db()
+    uid = get_uid()
+    month = request.args.get('month', date.today().strftime('%Y-%m'))
+
+    income = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=? AND date LIKE ?",
+        (uid, month + '%')
+    ).fetchone()[0]
+    expenses = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND date LIKE ?",
+        (uid, month + '%')
+    ).fetchone()[0]
+    net_cashflow = income - expenses
+
+    # Bank balance this month
+    bal = conn.execute(
+        "SELECT closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, month)
+    ).fetchone()
+    bank_balance = bal['closing_balance'] if bal else None
+
+    # Previous month balance
+    y, m = int(month[:4]), int(month[5:7])
+    pm = f"{y if m > 1 else y - 1}-{m - 1 if m > 1 else 12:02d}"
+    prev_bal = conn.execute(
+        "SELECT closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, pm)
+    ).fetchone()
+    prev_bank_balance = prev_bal['closing_balance'] if prev_bal else None
+    balance_change = round(bank_balance - prev_bank_balance, 0) if bank_balance is not None and prev_bank_balance is not None else None
+
+    # Emergency buffer: months of expenses covered (use whichever is higher: total avg or fixed avg)
+    avg_total_expenses = conn.execute(
+        """SELECT COALESCE(AVG(monthly_total), 0) FROM
+           (SELECT substr(date,1,7) as m, SUM(amount) as monthly_total
+            FROM expenses WHERE user_id=? GROUP BY m)""",
+        (uid,)
+    ).fetchone()[0]
+    avg_fixed_expenses = conn.execute(
+        """SELECT COALESCE(AVG(monthly_total), 0) FROM
+           (SELECT substr(date,1,7) as m, SUM(amount) as monthly_total
+            FROM expenses WHERE user_id=? AND frequency='monthly' GROUP BY m)""",
+        (uid,)
+    ).fetchone()[0]
+    essential_monthly = max(avg_total_expenses, avg_fixed_expenses)
+    emergency_months = round(bank_balance / essential_monthly, 1) if bank_balance and bank_balance > 0 and essential_monthly > 0 else None
+
+    # "Why" inputs for frontend explainability
+    why_inputs = {
+        'cashflow': {
+            'income': round(income, 0),
+            'expenses': round(expenses, 0),
+            'result': round(net_cashflow, 0),
+        },
+    }
+    if emergency_months is not None:
+        why_inputs['emergency_buffer'] = {
+            'balance': round(bank_balance, 0),
+            'essential_monthly': round(essential_monthly, 0),
+            'result': emergency_months,
+        }
+    if balance_change is not None:
+        why_inputs['balance_change'] = {
+            'current': round(bank_balance, 0),
+            'previous': round(prev_bank_balance, 0),
+            'change': round(balance_change, 0),
+        }
+
+    conn.close()
+    return jsonify({
+        'month': month,
+        'income': round(income, 0),
+        'expenses': round(expenses, 0),
+        'net_cashflow': round(net_cashflow, 0),
+        'bank_balance': bank_balance,
+        'prev_bank_balance': prev_bank_balance,
+        'balance_change': balance_change,
+        'emergency_buffer_months': emergency_months,
+        'why_inputs': why_inputs,
     })
 
 
@@ -1761,6 +2091,7 @@ def parse_bank_csv(filepath, user_id=None):
     skipped_visa = 0
     skipped_dup = 0
     skipped_other = 0
+    month_balances = {}  # {month_str: (balance_float, date_str)}
 
     for row in reader:
         if len(row) < 5:
@@ -1788,6 +2119,18 @@ def parse_bank_csv(filepath, user_id=None):
             amount = float(amount_str)
         except ValueError:
             continue
+
+        # Track balance from column 4 (running account balance)
+        balance_str = row[4].strip().strip('"').replace(',', '') if len(row) > 4 else ''
+        if balance_str:
+            try:
+                row_balance = float(balance_str)
+                row_month = f"{year}-{month_num:02d}"
+                # Keep the balance from the LATEST date in each month
+                if row_month not in month_balances or expense_date >= month_balances[row_month][1]:
+                    month_balances[row_month] = (row_balance, expense_date)
+            except ValueError:
+                pass
 
         # Skip zero amounts
         if amount == 0:
@@ -1873,6 +2216,14 @@ def parse_bank_csv(filepath, user_id=None):
             )
             imported_expenses += 1
 
+    # Store monthly closing balances
+    balances_saved = 0
+    for month_str, (balance, last_date) in month_balances.items():
+        conn.execute("""INSERT OR REPLACE INTO bank_balances
+            (user_id, account_name, month, closing_balance, last_transaction_date)
+            VALUES (?, 'main', ?, ?, ?)""", (user_id, month_str, balance, last_date))
+        balances_saved += 1
+
     conn.commit()
     conn.close()
     return {
@@ -1881,6 +2232,7 @@ def parse_bank_csv(filepath, user_id=None):
         'imported_income': imported_income,
         'skipped_visa': skipped_visa,
         'skipped_duplicates': skipped_dup,
+        'balances_saved': balances_saved,
         'source': 'bank_csv'
     }
 
@@ -1982,13 +2334,7 @@ def get_tips():
             'id': 'overdraft',
             'icon': 'bi-exclamation-triangle-fill',
             'color': '#dc2626',
-            'title': 'ריבית מינוס - כסף שנזרק לפח',
-            'summary': f'שילמתם {overdraft:,.0f} ש"ח ריבית על מינוס. זה כ-{yearly_est:,.0f} ש"ח בשנה!',
-            'detail': 'ריבית מינוס היא הוצאה שאפשר לבטל לחלוטין. כמה אפשרויות:\n\n'
-                      '1. **הלוואה אישית** - ריבית נמוכה בהרבה ממינוס (4-6% במקום 12-18%)\n'
-                      '2. **העברת חלק מהחיסכון** - אם יש כסף בקרנות/חסכונות, שחרור חלק יחסוך את הריבית\n'
-                      '3. **תזמון הוצאות** - לדחות הוצאות גדולות לאחרי קבלת משכורת\n'
-                      f'4. **חיסכון שנתי פוטנציאלי: {yearly_est:,.0f} ש"ח**',
+            'params': {'total': f'{overdraft:,.0f}', 'yearly': f'{yearly_est:,.0f}'},
             'savings': yearly_est,
             'priority': 'high',
         })
@@ -2003,13 +2349,7 @@ def get_tips():
             'id': 'cash',
             'icon': 'bi-cash',
             'color': '#f59e0b',
-            'title': 'הוצאות מזומן - הכסף "נעלם"',
-            'summary': f'משכתם {cash:,.0f} ש"ח מזומן ({monthly_cash:,.0f} ש"ח/חודש). אי אפשר לעקוב לאן הכסף הולך.',
-            'detail': 'מזומן הוא האויב של תקציב מסודר - אי אפשר לעקוב אחריו.\n\n'
-                      '1. **עברו לתשלום בכרטיס/ביט** - כל הוצאה תתועד אוטומטית\n'
-                      '2. **הגדירו תקרת מזומן** - לא יותר מ-500 ש"ח בחודש\n'
-                      '3. **רשמו הוצאות מזומן** - תפתחו הערה בנייד ותרשמו מיד\n'
-                      f'4. **חיסכון פוטנציאלי: {monthly_cash*0.3:,.0f} ש"ח/חודש** (30% מהמזומן בד"כ הולך על דברים לא הכרחיים)',
+            'params': {'total': f'{cash:,.0f}', 'monthly': f'{monthly_cash:,.0f}', 'monthly_savings': f'{monthly_cash*0.3:,.0f}'},
             'savings': monthly_cash * 0.3 * 12,
             'priority': 'medium',
         })
@@ -2026,13 +2366,7 @@ def get_tips():
             'id': 'cards',
             'icon': 'bi-credit-card-2-back',
             'color': '#8b5cf6',
-            'title': 'יותר מדי כרטיסי אשראי',
-            'summary': f'יש לכם ויזה, ישראכרט ({isracard:,.0f} ש"ח) ודיינרס ({diners:,.0f} ש"ח). ריכוז יחסוך כסף.',
-            'detail': 'ריבוי כרטיסים = דמי כרטיס כפולים + קושי לעקוב אחרי הוצאות.\n\n'
-                      '1. **בטלו כרטיסים מיותרים** - דיינרס וישראכרט עולים 10-20 ש"ח/חודש כל אחד\n'
-                      '2. **רכזו הכל בויזה אחת** - קל יותר לעקוב, יותר נקודות/הטבות\n'
-                      '3. **בדקו הטבות** - לפעמים כרטיס אחד נותן cashback טוב יותר\n'
-                      '4. **חיסכון: 240-480 ש"ח/שנה** בדמי כרטיס + שליטה טובה יותר',
+            'params': {'isracard': f'{isracard:,.0f}', 'diners': f'{diners:,.0f}'},
             'savings': 480,
             'priority': 'medium',
         })
@@ -2051,14 +2385,7 @@ def get_tips():
             'id': 'food',
             'icon': 'bi-cart4',
             'color': '#f28e2b',
-            'title': 'הוצאות מזון - יש מקום לחסוך',
-            'summary': f'ממוצע חודשי על מזון: {food_monthly:,.0f} ש"ח. מתוכם {rest_pct:.0f}% על מסעדות/מזון מהיר.',
-            'detail': 'מזון הוא תחום שקל לחסוך בו בלי לוותר על איכות חיים:\n\n'
-                      '1. **תכננו תפריט שבועי** - מונע קניות אימפולסיביות ובזבוז אוכל\n'
-                      '2. **קנו במבצעים** - השוו מחירים בין סופרים, קנו מותג פרטי\n'
-                      '3. **בישול ביתי** - ארוחה ביתית עולה 15-30 ש"ח, במסעדה 60-120 ש"ח\n'
-                      '4. **הפחיתו מסעדות ב-50%** - תאכלו בחוץ פעם בשבוע במקום 2-3\n'
-                      f'5. **חיסכון פוטנציאלי: {food_monthly*0.2:,.0f} ש"ח/חודש** (20% מהוצאות מזון)',
+            'params': {'monthly': f'{food_monthly:,.0f}', 'rest_pct': f'{rest_pct:.0f}', 'monthly_savings': f'{food_monthly*0.2:,.0f}'},
             'savings': food_monthly * 0.2 * 12,
             'priority': 'medium',
         })
@@ -2073,14 +2400,7 @@ def get_tips():
             'id': 'entertainment',
             'icon': 'bi-film',
             'color': '#9c755f',
-            'title': 'בילויים ופנאי - ליהנות בחכמה',
-            'summary': f'ממוצע חודשי: {ent_monthly:,.0f} ש"ח על בילויים ופנאי.',
-            'detail': 'בילויים חשובים לאיכות חיים, אבל אפשר ליהנות בפחות:\n\n'
-                      '1. **הגדירו תקציב בילויים** - 1,000-1,500 ש"ח/חודש למשפחה\n'
-                      '2. **חפשו חלופות חינמיות** - פארקים, חופים, טיולים בטבע, אירועי עירייה\n'
-                      '3. **השתמשו בהנחות** - כרטיסים מוזלים, גרופון, מבצעי שעות מוקדמות\n'
-                      '4. **תכננו מראש** - הזמנה מוקדמת תמיד זולה יותר\n'
-                      f'5. **חיסכון פוטנציאלי: {max(ent_monthly-1200, 0):,.0f} ש"ח/חודש**',
+            'params': {'monthly': f'{ent_monthly:,.0f}', 'potential_savings': f'{max(ent_monthly-1200, 0):,.0f}'},
             'savings': max(ent_monthly - 1200, 0) * 12,
             'priority': 'low',
         })
@@ -2095,14 +2415,7 @@ def get_tips():
             'id': 'insurance',
             'icon': 'bi-shield-check',
             'color': '#ff9da7',
-            'title': 'ביטוחים - בדקו כפילויות',
-            'summary': f'משלמים כ-{ins_monthly:,.0f} ש"ח/חודש על ביטוחים. ייתכן שיש כפילויות!',
-            'detail': 'ביטוחים הם תחום שרוב המשפחות משלמות עליו יותר מדי:\n\n'
-                      '1. **בדקו כפילויות** - ביטוח חיים דרך העבודה + פרטי = כפול\n'
-                      '2. **השוו מחירים** - סוכן ביטוח עצמאי יכול לחסוך 20-30%\n'
-                      '3. **בטלו ביטוחים מיותרים** - ביטוח מכשיר סלולרי, ביטוח נסיעות שנתי\n'
-                      '4. **העלו השתתפות עצמית** - מוריד פרמיה משמעותית\n'
-                      f'5. **חיסכון פוטנציאלי: {ins_monthly*0.2:,.0f} ש"ח/חודש** (20% מהביטוחים)',
+            'params': {'monthly': f'{ins_monthly:,.0f}', 'monthly_savings': f'{ins_monthly*0.2:,.0f}'},
             'savings': ins_monthly * 0.2 * 12,
             'priority': 'medium',
         })
@@ -2118,17 +2431,7 @@ def get_tips():
             'id': 'savings',
             'icon': 'bi-piggy-bank',
             'color': '#4dc9f6',
-            'title': 'שיעור חיסכון - תכננו לעתיד',
-            'summary': f'שיעור החיסכון שלכם (פנסיה+קרנות+השתלמות): {savings_rate:.1f}% מההכנסה.',
-            'detail': 'מומלץ לחסוך 20% מההכנסה ברוטו. הנה תוכנית:\n\n'
-                      '1. **פנסיה** - ודאו שאתם מפרישים את המקסימום (עד 7% עובד + 7.5% מעביד)\n'
-                      '2. **קרן השתלמות** - הכלי הכי טוב בישראל! פטור ממס אחרי 6 שנים\n'
-                      '3. **חיסכון חירום** - 3-6 חודשי הוצאות נזילים (כ-100,000-200,000 ש"ח)\n'
-                      '4. **השקעות** - אחרי שיש חיסכון חירום:\n'
-                      '   - **קרן מחקה S&P500** - תשואה ממוצעת 10% בשנה\n'
-                      '   - **תיק השקעות מנוהל** - בנק/בית השקעות, מ-50,000 ש"ח\n'
-                      '   - **קופת גמל להשקעה** - הטבת מס, נזילות אחרי 15 שנה\n'
-                      '5. **כלל 50/30/20** - 50% צרכים, 30% רצונות, 20% חיסכון',
+            'params': {'rate': f'{savings_rate:.1f}'},
             'savings': 0,
             'priority': 'high',
         })
@@ -2142,13 +2445,7 @@ def get_tips():
             'id': 'transfers',
             'icon': 'bi-phone',
             'color': '#59a14f',
-            'title': 'העברות BIT/PAYBOX - לאן הכסף הולך?',
-            'summary': f'העברתם {bit_total:,.0f} ש"ח דרך BIT/PAYBOX. ההוצאות האלה לא מסווגות.',
-            'detail': 'העברות דיגיטליות קשות לעקוב כי אין להן קטגוריה:\n\n'
-                      '1. **רשמו הערה** - כשמעבירים ב-BIT, כתבו למה (מטפלת, חוג, חלוקת חשבון)\n'
-                      '2. **הוסיפו ידנית** - את ההוצאות הגדולות הוסיפו ידנית לקטגוריה הנכונה\n'
-                      '3. **הגדירו תקרה** - לא יותר מ-1,000 ש"ח/חודש בהעברות\n'
-                      '4. **בדקו חיובים חוזרים** - אולי יש מנוי שמשולם ב-BIT שאפשר לבטל',
+            'params': {'total': f'{bit_total:,.0f}'},
             'savings': bit_total * 0.15,
             'priority': 'low',
         })
@@ -2171,20 +2468,77 @@ def get_tips():
             'id': 'deficit',
             'icon': 'bi-graph-down-arrow',
             'color': '#dc2626',
-            'title': f'גרעון תקציבי - {neg_months} חודשים במינוס',
-            'summary': f'ב-{neg_months} מתוך {num_months} חודשים הוצאתם יותר ממה שהרווחתם.',
-            'detail': 'גרעון חודשי חוזר הוא הגורם העיקרי לחוב ולריבית מינוס:\n\n'
-                      '1. **הגדירו תקציב חודשי מחייב** - לא רק לעקוב, אלא להגביל\n'
-                      '2. **שיטת המעטפות** - חלקו את הכסף לקטגוריות בתחילת החודש\n'
-                      '3. **חוק 24 שעות** - לפני קנייה מעל 200 ש"ח, חכו יום\n'
-                      '4. **הפחיתו הוצאות קבועות** - הן הכי משפיעות כי חוזרות כל חודש\n'
-                      '5. **הגדילו הכנסה** - עבודה נוספת, פרילנס, מכירת דברים מיותרים',
+            'params': {'neg_months': str(neg_months), 'num_months': str(num_months)},
             'savings': 0,
             'priority': 'high',
         })
 
+    # ---- Bank balance tips (priority-tiered) ----
+    bal_rows = conn.execute(
+        "SELECT month, closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' ORDER BY month DESC LIMIT 4",
+        (uid,)
+    ).fetchall()
+
+    if bal_rows:
+        latest_balance = bal_rows[0]['closing_balance']
+
+        # CRITICAL: Negative balance / overdraft risk
+        if latest_balance < 0:
+            tips.append({
+                'id': 'negative_balance',
+                'icon': 'bi-exclamation-octagon-fill',
+                'color': '#dc2626',
+                'params': {'balance': f'{latest_balance:,.0f}'},
+                'savings': abs(latest_balance) * 0.15,
+                'priority': 'critical',
+            })
+
+        # WARNING: Overall decline (3+ months, >5% per month on average)
+        if len(bal_rows) >= 3:
+            balances = [r['closing_balance'] for r in reversed(bal_rows)]
+            # First-vs-last comparison: catches real declines even with noise in between
+            if balances[0] > 0 and balances[-1] < balances[0]:
+                drop = balances[0] - balances[-1]
+                pct_drop = drop / balances[0]
+                if pct_drop > 0.05 * (len(balances) - 1):
+                    monthly_drop = drop / (len(balances) - 1)
+                    tips.append({
+                        'id': 'balance_decline',
+                        'icon': 'bi-graph-down-arrow',
+                        'color': '#f59e0b',
+                        'params': {'drop': f'{drop:,.0f}', 'months': str(len(balances) - 1), 'monthly_drop': f'{monthly_drop:,.0f}'},
+                        'savings': 0,
+                        'priority': 'warning',
+                    })
+
+        # INFO: Low emergency buffer (<2 months of expenses)
+        avg_total_exp = conn.execute(
+            """SELECT COALESCE(AVG(monthly_total), 0) FROM
+               (SELECT substr(date,1,7) as m, SUM(amount) as monthly_total
+                FROM expenses WHERE user_id=? GROUP BY m)""",
+            (uid,)
+        ).fetchone()[0]
+        avg_fixed_exp = conn.execute(
+            """SELECT COALESCE(AVG(monthly_total), 0) FROM
+               (SELECT substr(date,1,7) as m, SUM(amount) as monthly_total
+                FROM expenses WHERE user_id=? AND frequency='monthly' GROUP BY m)""",
+            (uid,)
+        ).fetchone()[0]
+        essential_monthly_avg = max(avg_total_exp, avg_fixed_exp)
+        if essential_monthly_avg > 0 and latest_balance > 0:
+            emergency_months = latest_balance / essential_monthly_avg
+            if emergency_months < 2:
+                tips.append({
+                    'id': 'low_buffer',
+                    'icon': 'bi-shield-exclamation',
+                    'color': '#6366f1',
+                    'params': {'emergency_months': f'{emergency_months:.1f}', 'emergency_weeks': str(max(1, round(emergency_months * 4.3))), 'balance': f'{latest_balance:,.0f}', 'essential_monthly': f'{essential_monthly_avg:,.0f}'},
+                    'savings': 0,
+                    'priority': 'info',
+                })
+
     # Sort by priority
-    priority_order = {'high': 0, 'medium': 1, 'low': 2}
+    priority_order = {'critical': 0, 'high': 1, 'warning': 2, 'medium': 3, 'info': 4, 'low': 5}
     tips.sort(key=lambda t: priority_order.get(t['priority'], 99))
 
     conn.close()
@@ -2283,6 +2637,27 @@ def analyze_budget():
         elif fixed_ratio > 70:
             score -= 10
 
+    # Bank balance trend factor (max ±10)
+    bal_trend = conn.execute(
+        "SELECT closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' ORDER BY month DESC LIMIT 3",
+        (uid,)
+    ).fetchall()
+    if len(bal_trend) >= 2:
+        recent_bal = bal_trend[0]['closing_balance']
+        if recent_bal > 0:
+            score += 5
+        if recent_bal < 0:
+            score -= 10
+        # Compare first vs last chronologically (oldest vs newest)
+        bal_chrono = [r['closing_balance'] for r in reversed(bal_trend)]
+        oldest, newest = bal_chrono[0], bal_chrono[-1]
+        # Declining: newest balance lower than oldest
+        if oldest > 0 and newest < oldest * 0.90:
+            score -= 5
+        # Improving: newest balance higher than oldest
+        elif newest > oldest * 1.10:
+            score += 5
+
     score = max(0, min(100, score))
 
     # Recommended budget (50/30/20 rule adapted)
@@ -2375,6 +2750,21 @@ def analyze_budget():
         'icon': 'bi-graph-up-arrow',
         'text': invest_text,
     })
+
+    # Bank balance section (only if data exists)
+    if bal_trend:
+        latest = bal_trend[0]['closing_balance']
+        bal_text = f'יתרת חשבון סוף חודש: {latest:,.0f} ₪.\n'
+        if len(bal_trend) >= 2:
+            change = bal_trend[0]['closing_balance'] - bal_trend[-1]['closing_balance']
+            direction = 'עלתה' if change > 0 else 'ירדה'
+            bal_text += f'היתרה {direction} ב-{abs(change):,.0f} ₪ ב-{len(bal_trend)} חודשים אחרונים.\n'
+        bal_text += '\nהערה: הנתון משקף את היתרה בעת העסקה האחרונה שיובאה ועלול להשתנות עקב תזמון משכורת, חיובי כרטיס ועוד.'
+        analysis_sections.append({
+            'title': 'יתרת חשבון',
+            'icon': 'bi-bank',
+            'text': bal_text,
+        })
 
     conn.close()
 
@@ -2545,6 +2935,19 @@ def export_excel():
         row = inc_start + 2 + i
         ws_sum.cell(row, 1, PERSON_HE.get(r[0], r[0]))
         ws_sum.cell(row, 2, r[1]).number_format = '#,##0.00'
+
+    # Bank balance & cashflow section
+    bal_start = inc_start + 2 + len(inc_person_rows) + 2
+    bank_bal_row = conn.execute(
+        "SELECT closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, month)
+    ).fetchone()
+    ws_sum.cell(bal_start, 1, 'תזרים ויתרה').font = Font(bold=True, size=12)
+    ws_sum.cell(bal_start + 1, 1, 'תזרים מזומנים נטו').font = Font(bold=True)
+    ws_sum.cell(bal_start + 1, 2, income_total - expense_total).number_format = '#,##0.00'
+    if bank_bal_row:
+        ws_sum.cell(bal_start + 2, 1, 'יתרת חשבון סוף חודש').font = Font(bold=True)
+        ws_sum.cell(bal_start + 2, 2, bank_bal_row['closing_balance']).number_format = '#,##0.00'
 
     _auto_width(ws_sum)
 
@@ -3137,6 +3540,22 @@ def insights_burnrate():
         )
     """, (uid, month)).fetchone()[0] or 0
 
+    # Bank balance context
+    bank_bal = conn.execute(
+        "SELECT closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, month)
+    ).fetchone()
+    bank_balance = bank_bal['closing_balance'] if bank_bal else None
+
+    # Previous month bank balance for change
+    prev_dt = date(year, mon, 1) - timedelta(days=1)
+    prev_month_str = prev_dt.strftime('%Y-%m')
+    prev_bank = conn.execute(
+        "SELECT closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' AND month=?",
+        (uid, prev_month_str)
+    ).fetchone()
+    bank_balance_change = round(bank_balance - prev_bank['closing_balance'], 0) if bank_balance is not None and prev_bank else None
+
     conn.close()
     return jsonify({
         'month': month,
@@ -3149,6 +3568,8 @@ def insights_burnrate():
         'pct_of_income': round(pct_of_income, 1),
         'prev_month_avg': round(prev_months, 0),
         'on_track': projected <= income if income > 0 else projected <= prev_months,
+        'bank_balance': bank_balance,
+        'bank_balance_change': bank_balance_change,
     })
 
 
@@ -3469,6 +3890,13 @@ def insights_projection():
 
     inc_map = {r[0]: r[1] for r in income_monthly}
 
+    # Bank balance history
+    bank_balances = conn.execute(
+        "SELECT month, closing_balance FROM bank_balances WHERE user_id=? AND account_name='main' ORDER BY month",
+        (uid,)
+    ).fetchall()
+    bal_map = {r[0]: r[1] for r in bank_balances}
+
     if len(monthly) < 2:
         conn.close()
         return jsonify({'error': 'Not enough data for projection', 'history': [], 'projection': []})
@@ -3487,6 +3915,26 @@ def insights_projection():
     inc_values = list(inc_map.values())
     avg_income = sum(inc_values) / len(inc_values) if inc_values else 0
 
+    # Bank balance projection: only if 3+ months and low volatility
+    bal_values = [r[1] for r in bank_balances]
+    bank_projection_suppressed = True
+    b_slope = 0
+    b_intercept = 0
+    bn = len(bal_values)
+    if bn >= 3:
+        b_mean = sum(bal_values) / bn
+        b_x_mean = (bn - 1) / 2
+        b_num = sum((i - b_x_mean) * (v - b_mean) for i, v in enumerate(bal_values))
+        b_den = sum((i - b_x_mean) ** 2 for i in range(bn))
+        b_slope = b_num / b_den if b_den else 0
+        b_intercept = b_mean - b_slope * b_x_mean
+        # Check volatility: stddev < 30% of mean
+        if b_mean != 0:
+            variance = sum((v - b_mean) ** 2 for v in bal_values) / bn
+            stddev = variance ** 0.5
+            if stddev / abs(b_mean) < 0.30:
+                bank_projection_suppressed = False
+
     # Build history
     history = []
     for r in monthly:
@@ -3496,6 +3944,7 @@ def insights_projection():
             'expenses': round(r[1], 0),
             'income': round(inc, 0),
             'balance': round(inc - r[1], 0),
+            'bank_balance': round(bal_map[r[0]], 0) if r[0] in bal_map else None,
         })
 
     # Project 12 months forward
@@ -3513,22 +3962,39 @@ def insights_projection():
         proj_expense = max(intercept + slope * (n - 1 + i), 0)
         proj_balance = avg_income - proj_expense
         cumulative_savings += proj_balance
+        proj_bank = round(b_intercept + b_slope * (bn - 1 + i), 0) if not bank_projection_suppressed else None
         projection.append({
             'month': proj_month,
             'expenses': round(proj_expense, 0),
             'income': round(avg_income, 0),
             'balance': round(proj_balance, 0),
             'cumulative': round(cumulative_savings, 0),
+            'bank_balance': proj_bank,
         })
+
+    # "Why" inputs for frontend explainability
+    trend_dir = 'up' if slope > 50 else 'down' if slope < -50 else 'stable'
+    why_inputs = {
+        'months_of_data': n,
+        'trend_direction': trend_dir,
+        'monthly_trend': round(abs(slope), 0),
+        'avg_income': round(avg_income, 0),
+    }
+    if not bank_projection_suppressed:
+        why_inputs['bank_months_of_data'] = bn
+        why_inputs['bank_monthly_trend'] = round(b_slope, 0)
 
     conn.close()
     return jsonify({
         'history': history,
         'projection': projection,
-        'trend_direction': 'up' if slope > 50 else 'down' if slope < -50 else 'stable',
+        'trend_direction': trend_dir,
         'monthly_trend': round(slope, 0),
         'avg_income': round(avg_income, 0),
         'projected_yearly_savings': round(sum(p['balance'] for p in projection), 0),
+        'bank_projection_suppressed': bank_projection_suppressed,
+        'note': 'Estimates based on recent trends — actual results may vary',
+        'why_inputs': why_inputs,
     })
 
 
@@ -3857,7 +4323,7 @@ def admin_delete_user(user_id):
         conn.close()
         return jsonify({'error': 'Cannot delete admin user'}), 400
     # Cascade delete all user data
-    for tbl in ['expenses', 'income', 'budget', 'budget_plans', 'installments', 'reminders', 'financial_products']:
+    for tbl in ['expenses', 'income', 'budget', 'budget_plans', 'installments', 'reminders', 'financial_products', 'bank_balances']:
         conn.execute(f"DELETE FROM {tbl} WHERE user_id=?", (user_id,))
     conn.execute("DELETE FROM users WHERE id=?", (user_id,))
     conn.commit()

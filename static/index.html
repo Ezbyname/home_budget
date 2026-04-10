@@ -151,6 +151,18 @@
         .stat-expense { background: linear-gradient(135deg, #e11d48, #f43f5e, #fb7185); box-shadow: 0 4px 16px rgba(244, 63, 94, 0.35); }
         .stat-balance-positive { background: linear-gradient(135deg, #4f46e5, #6366f1, #818cf8); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35); }
         .stat-balance-negative { background: linear-gradient(135deg, #e11d48, #f97316); box-shadow: 0 4px 16px rgba(249, 115, 22, 0.35); }
+        .stat-bank-positive { background: linear-gradient(135deg, #0d9488, #14b8a6, #5eead4); box-shadow: 0 4px 16px rgba(20, 184, 166, 0.35); }
+        .stat-bank-negative { background: linear-gradient(135deg, #dc2626, #ef4444, #f87171); box-shadow: 0 4px 16px rgba(239, 68, 68, 0.35); }
+        .stat-safe-healthy { background: linear-gradient(135deg, #16a34a, #22c55e, #4ade80); box-shadow: 0 4px 16px rgba(34, 197, 94, 0.35); }
+        .stat-safe-tight { background: linear-gradient(135deg, #d97706, #f59e0b, #fbbf24); box-shadow: 0 4px 16px rgba(245, 158, 11, 0.35); }
+        .stat-safe-negative { background: linear-gradient(135deg, #dc2626, #f97316); box-shadow: 0 4px 16px rgba(249, 115, 22, 0.35); }
+        .why-toggle { cursor:pointer; opacity:.6; font-size:.7rem; display:inline-flex; align-items:center; gap:3px; transition:opacity .2s; }
+        .why-toggle:hover { opacity:1; }
+        .why-detail { font-size:.65rem; opacity:.75; margin-top:4px; padding:4px 8px; background:rgba(0,0,0,.08); border-radius:6px; display:none; direction:ltr; text-align:center; }
+        .why-detail.show { display:block; }
+        .monthly-summary-metric { text-align:center; padding:12px 20px; min-width:120px; border-radius:12px; background:rgba(255,255,255,0.05); }
+        .monthly-summary-metric .value { font-size:1.3rem; font-weight:700; }
+        .monthly-summary-metric .label { font-size:.75rem; opacity:.7; }
         /* ── Tab Navigation ── */
         .nav-pills .nav-link {
             color: var(--text);
@@ -824,26 +836,61 @@
         <!-- ========== DASHBOARD TAB ========== -->
         <div class="tab-pane fade show active" id="dashboardTab">
             <!-- Summary Cards -->
-            <div class="row g-3 mb-4">
-                <div class="col-md-4">
+            <div class="row g-3 mb-4" id="summaryCardsRow">
+                <div class="col-md-4 summary-card-col">
                     <div class="stat-card stat-income">
                         <div style="position:relative;z-index:1"><i class="bi bi-arrow-down-circle" style="font-size:1.6rem;opacity:.9"></i></div>
                         <h3 id="totalIncome">0</h3>
                         <small><span data-t="total_income">סה"כ הכנסות</span></small>
                     </div>
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-4 summary-card-col">
                     <div class="stat-card stat-expense">
                         <div style="position:relative;z-index:1"><i class="bi bi-arrow-up-circle" style="font-size:1.6rem;opacity:.9"></i></div>
                         <h3 id="totalExpense">0</h3>
                         <small><span data-t="total_expense">סה"כ הוצאות</span></small>
                     </div>
                 </div>
-                <div class="col-md-4">
+                <div class="col-md-4 summary-card-col">
                     <div class="stat-card" id="balanceCard">
                         <div style="position:relative;z-index:1"><i class="bi bi-piggy-bank" style="font-size:1.6rem;opacity:.9"></i></div>
                         <h3 id="totalBalance">0</h3>
                         <small><span data-t="balance">יתרה</span></small>
+                    </div>
+                </div>
+                <div class="col-md-4 summary-card-col" id="bankBalanceCol" style="display:none">
+                    <div class="stat-card" id="bankBalanceCard">
+                        <div style="position:relative;z-index:1"><i class="bi bi-bank" style="font-size:1.6rem;opacity:.9"></i></div>
+                        <h3 id="bankBalance">0</h3>
+                        <small><span data-t="bank_balance">יתרת חשבון סוף חודש</span></small>
+                        <div class="mt-1" style="font-size:.7rem;opacity:.7" id="bankBalanceDate"></div>
+                    </div>
+                </div>
+                <div class="col-md-4 summary-card-col" id="safeToSpendCol" style="display:none">
+                    <div class="stat-card" id="safeToSpendCard">
+                        <div style="position:relative;z-index:1"><i class="bi bi-shield-check" style="font-size:1.6rem;opacity:.9"></i></div>
+                        <h3 id="safeToSpendAmount">0</h3>
+                        <small><span data-t="safe_to_spend">זמין אחרי כרית ביטחון</span></small>
+                        <div class="mt-1" style="font-size:.7rem;opacity:.7" id="dailyBudgetInfo"></div>
+                        <div class="mt-1" style="font-size:.65rem;opacity:.5" id="safeNote"></div>
+                        <div class="why-toggle mt-1" onclick="this.nextElementSibling.classList.toggle('show')"><i class="bi bi-info-circle"></i> <span data-t="why_label">איך חושב?</span></div>
+                        <div class="why-detail" id="safeWhyDetail"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Trust Banner (only when bank data exists) -->
+            <div id="trustBanner" style="display:none" class="mb-3 px-3 py-2 rounded-3 text-center" style="font-size:.78rem"></div>
+
+            <!-- Monthly Financial Summary (only when bank data exists) -->
+            <div class="row g-3 mb-4" id="monthlySummaryRow" style="display:none">
+                <div class="col-12">
+                    <div class="card p-3">
+                        <div class="section-title"><i class="bi bi-calendar-check"></i><span data-t="monthly_summary">סיכום חודשי</span></div>
+                        <div class="d-flex flex-wrap gap-3 justify-content-center" id="monthlySummaryCards">
+                        </div>
+                        <div id="reconciliationNote" style="display:none" class="mt-3 p-2 rounded-3 text-center" style="font-size:.8rem"></div>
+                        <div id="salaryInfoBar" style="display:none" class="mt-3 p-2 rounded-3 text-center" style="font-size:.8rem"></div>
                     </div>
                 </div>
             </div>
@@ -904,6 +951,12 @@
                         <div class="section-title"><i class="bi bi-graph-up"></i><span data-t="monthly_expense_trend">מגמת הוצאות חודשית</span></div>
                         <div class="chart-container">
                             <canvas id="trendChart"></canvas>
+                        </div>
+                        <div id="bankBalanceChartWrap" style="display:none">
+                            <div class="section-title mt-3"><i class="bi bi-bank"></i><span data-t="bank_balance_chart">יתרת חשבון</span></div>
+                            <div class="chart-container">
+                                <canvas id="bankBalanceChart"></canvas>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2356,6 +2409,39 @@ const I18N = {
     tab_financial: 'ביטוח וחיסכון', tab_insights: 'תובנות', tab_analysis: 'ניתוח חכם', tab_import: 'ייבוא',
     export_excel: 'ייצוא Excel', prev_month: 'חודש קודם', next_month: 'חודש הבא',
     total_income: 'סה"כ הכנסות', total_expenses: 'סה"כ הוצאות', balance: 'יתרה', total: 'סה"כ',
+    bank_balance: 'יתרת חשבון סוף חודש', bank_balance_chart: 'יתרת חשבון', bank_balance_axis: 'יתרת חשבון (₪)',
+    expenses_axis: 'הוצאות (₪)', safe_to_spend: 'זמין להוצאה (הערכה)', safe_daily: 'תקציב יומי',
+    safe_note: 'הערכה בלבד, לפי יתרת חשבון אחרונה. לא כולל חיובים עתידיים.',
+    emergency_buffer: 'כרית ביטחון', emergency_months: 'חודשי הוצאות מכוסים',
+    emergency_recommended: 'מומלץ: 3-6 חודשים',
+    emergency_weeks: '~{w} שבועות הוצאות',
+    emergency_month_single: '~חודש הוצאות',
+    emergency_months_approx: '~{m} חודשי הוצאות',
+    net_cashflow: 'תזרים נטו', balance_change: 'שינוי מחודש קודם', balance_as_of: 'נכון ל-',
+    balance_updated_days: 'עודכן לפני {days} ימים', balance_updated_today: 'עודכן היום',
+    balance_stale_warning: 'הנתונים ישנים — מומלץ לייבא CSV עדכני מהבנק',
+    reconciliation_gap: 'התזרים מראה {cashflow} אבל היתרה בפועל השתנתה ב-{actual} (הפרש: {gap})',
+    reconciliation_reason: 'ייתכן שיש עסקאות חסרות, תזמון חיובים, או הכנסות/הוצאות שלא יובאו.',
+    salary_day: 'יום', salary_days_until: '{days} ימים למשכורת',
+    salary_person_husband: 'משכורת בעל', salary_person_wife: 'משכורת אישה', salary_person_family: 'משכורת',
+    trust_last_import: 'יבוא אחרון: לפני {days} ימים', trust_import_today: 'יבוא אחרון: היום',
+    trust_salary_day: 'משכורת: {day} לחודש', trust_fixed_bills: 'הוצאות קבועות: {amount}/חודש',
+    trust_stale: 'נתוני הבנק ישנים ({days} ימים) — מומלץ לייבא CSV עדכני',
+    trust_no_import: 'לא יובאו נתוני בנק — ייבאו CSV לנתונים מדויקים יותר',
+    insight_data_note: 'נתוני יתרה מבוססים על יבוא בנק אחרון. ייתכנו שינויים מאז.',
+    balance_note: 'הנתון מבוסס על יבוא אחרון מהבנק', estimate_only: 'הערכה בלבד',
+    why_label: 'איך חושב?',
+    why_safe_to_spend: '{balance} (יתרה) − {buffer} (כרית ביטחון) = {result}',
+    why_daily_budget: '{result} ÷ {horizon} ימים = {daily}/יום',
+    why_cashflow: '{income} (הכנסות) − {expenses} (הוצאות) = {result}',
+    why_emergency_buffer: '{balance} (יתרה) ÷ {essential} (הוצ׳ חודשיות) = {result}',
+    why_balance_change: '{current} (החודש) − {previous} (חודש קודם) = {change}',
+    why_projection: 'מבוסס על {months} חודשי נתונים. הוצאות {direction} {trend}/חודש',
+    why_trend_rising: 'עולות',
+    why_trend_falling: 'יורדות',
+    why_trend_stable: 'יציבות',
+    balances_imported: 'יתרות חשבון יובאו', no_balance_data: 'אין נתוני יתרה — ייבאו CSV מהבנק',
+    monthly_summary: 'סיכום חודשי', bank_bal_context: 'יתרת חשבון לפי יבוא אחרון',
     daily_trend: 'מגמת הוצאות יומית', by_category: 'הוצאות לפי קטגוריה',
     budget_vs_actual: 'תקציב מול ביצוע', by_frequency: 'הוצאות לפי תדירות',
     by_card: 'הוצאות לפי כרטיס', monthly_trend: 'מגמת חודשית',
@@ -2576,6 +2662,43 @@ const I18N = {
     // Tips
     tip_savings: 'חיסכון', per_year: '/שנה', show_me: 'תראה לי איך', skip_tip: 'דלג',
     show_skipped: 'הצג טיפים שדולגו', analyzing_expenses: 'מנתח את ההוצאות שלכם...',
+    // Tip content
+    tip_overdraft_title: 'ריבית מינוס - כסף שנזרק לפח',
+    tip_overdraft_summary: 'שילמתם {total} ש"ח ריבית על מינוס. זה כ-{yearly} ש"ח בשנה!',
+    tip_overdraft_detail: 'ריבית מינוס היא הוצאה שאפשר לבטל לחלוטין. כמה אפשרויות:\n\n1. **הלוואה אישית** - ריבית נמוכה בהרבה ממינוס (4-6% במקום 12-18%)\n2. **העברת חלק מהחיסכון** - אם יש כסף בקרנות/חסכונות, שחרור חלק יחסוך את הריבית\n3. **תזמון הוצאות** - לדחות הוצאות גדולות לאחרי קבלת משכורת\n4. **חיסכון שנתי פוטנציאלי: {yearly} ש"ח**',
+    tip_cash_title: 'הוצאות מזומן - הכסף "נעלם"',
+    tip_cash_summary: 'משכתם {total} ש"ח מזומן ({monthly} ש"ח/חודש). אי אפשר לעקוב לאן הכסף הולך.',
+    tip_cash_detail: 'מזומן הוא האויב של תקציב מסודר - אי אפשר לעקוב אחריו.\n\n1. **עברו לתשלום בכרטיס/ביט** - כל הוצאה תתועד אוטומטית\n2. **הגדירו תקרת מזומן** - לא יותר מ-500 ש"ח בחודש\n3. **רשמו הוצאות מזומן** - תפתחו הערה בנייד ותרשמו מיד\n4. **חיסכון פוטנציאלי: {monthly_savings} ש"ח/חודש** (30% מהמזומן בד"כ הולך על דברים לא הכרחיים)',
+    tip_cards_title: 'יותר מדי כרטיסי אשראי',
+    tip_cards_summary: 'יש לכם ויזה, ישראכרט ({isracard} ש"ח) ודיינרס ({diners} ש"ח). ריכוז יחסוך כסף.',
+    tip_cards_detail: 'ריבוי כרטיסים = דמי כרטיס כפולים + קושי לעקוב אחרי הוצאות.\n\n1. **בטלו כרטיסים מיותרים** - דיינרס וישראכרט עולים 10-20 ש"ח/חודש כל אחד\n2. **רכזו הכל בויזה אחת** - קל יותר לעקוב, יותר נקודות/הטבות\n3. **בדקו הטבות** - לפעמים כרטיס אחד נותן cashback טוב יותר\n4. **חיסכון: 240-480 ש"ח/שנה** בדמי כרטיס + שליטה טובה יותר',
+    tip_food_title: 'הוצאות מזון - יש מקום לחסוך',
+    tip_food_summary: 'ממוצע חודשי על מזון: {monthly} ש"ח. מתוכם {rest_pct}% על מסעדות/מזון מהיר.',
+    tip_food_detail: 'מזון הוא תחום שקל לחסוך בו בלי לוותר על איכות חיים:\n\n1. **תכננו תפריט שבועי** - מונע קניות אימפולסיביות ובזבוז אוכל\n2. **קנו במבצעים** - השוו מחירים בין סופרים, קנו מותג פרטי\n3. **בישול ביתי** - ארוחה ביתית עולה 15-30 ש"ח, במסעדה 60-120 ש"ח\n4. **הפחיתו מסעדות ב-50%** - תאכלו בחוץ פעם בשבוע במקום 2-3\n5. **חיסכון פוטנציאלי: {monthly_savings} ש"ח/חודש** (20% מהוצאות מזון)',
+    tip_entertainment_title: 'בילויים ופנאי - ליהנות בחכמה',
+    tip_entertainment_summary: 'ממוצע חודשי: {monthly} ש"ח על בילויים ופנאי.',
+    tip_entertainment_detail: 'בילויים חשובים לאיכות חיים, אבל אפשר ליהנות בפחות:\n\n1. **הגדירו תקציב בילויים** - 1,000-1,500 ש"ח/חודש למשפחה\n2. **חפשו חלופות חינמיות** - פארקים, חופים, טיולים בטבע, אירועי עירייה\n3. **השתמשו בהנחות** - כרטיסים מוזלים, גרופון, מבצעי שעות מוקדמות\n4. **תכננו מראש** - הזמנה מוקדמת תמיד זולה יותר\n5. **חיסכון פוטנציאלי: {potential_savings} ש"ח/חודש**',
+    tip_insurance_title: 'ביטוחים - בדקו כפילויות',
+    tip_insurance_summary: 'משלמים כ-{monthly} ש"ח/חודש על ביטוחים. ייתכן שיש כפילויות!',
+    tip_insurance_detail: 'ביטוחים הם תחום שרוב המשפחות משלמות עליו יותר מדי:\n\n1. **בדקו כפילויות** - ביטוח חיים דרך העבודה + פרטי = כפול\n2. **השוו מחירים** - סוכן ביטוח עצמאי יכול לחסוך 20-30%\n3. **בטלו ביטוחים מיותרים** - ביטוח מכשיר סלולרי, ביטוח נסיעות שנתי\n4. **העלו השתתפות עצמית** - מוריד פרמיה משמעותית\n5. **חיסכון פוטנציאלי: {monthly_savings} ש"ח/חודש** (20% מהביטוחים)',
+    tip_savings_title: 'שיעור חיסכון - תכננו לעתיד',
+    tip_savings_summary: 'שיעור החיסכון שלכם (פנסיה+קרנות+השתלמות): {rate}% מההכנסה.',
+    tip_savings_detail: 'מומלץ לחסוך 20% מההכנסה ברוטו. הנה תוכנית:\n\n1. **פנסיה** - ודאו שאתם מפרישים את המקסימום (עד 7% עובד + 7.5% מעביד)\n2. **קרן השתלמות** - הכלי הכי טוב בישראל! פטור ממס אחרי 6 שנים\n3. **חיסכון חירום** - 3-6 חודשי הוצאות נזילים (כ-100,000-200,000 ש"ח)\n4. **השקעות** - אחרי שיש חיסכון חירום:\n   - **קרן מחקה S&P500** - תשואה ממוצעת 10% בשנה\n   - **תיק השקעות מנוהל** - בנק/בית השקעות, מ-50,000 ש"ח\n   - **קופת גמל להשקעה** - הטבת מס, נזילות אחרי 15 שנה\n5. **כלל 50/30/20** - 50% צרכים, 30% רצונות, 20% חיסכון',
+    tip_transfers_title: 'העברות BIT/PAYBOX - לאן הכסף הולך?',
+    tip_transfers_summary: 'העברתם {total} ש"ח דרך BIT/PAYBOX. ההוצאות האלה לא מסווגות.',
+    tip_transfers_detail: 'העברות דיגיטליות קשות לעקוב כי אין להן קטגוריה:\n\n1. **רשמו הערה** - כשמעבירים ב-BIT, כתבו למה (מטפלת, חוג, חלוקת חשבון)\n2. **הוסיפו ידנית** - את ההוצאות הגדולות הוסיפו ידנית לקטגוריה הנכונה\n3. **הגדירו תקרה** - לא יותר מ-1,000 ש"ח/חודש בהעברות\n4. **בדקו חיובים חוזרים** - אולי יש מנוי שמשולם ב-BIT שאפשר לבטל',
+    tip_deficit_title: 'גרעון תקציבי - {neg_months} חודשים במינוס',
+    tip_deficit_summary: 'ב-{neg_months} מתוך {num_months} חודשים הוצאתם יותר ממה שהרווחתם.',
+    tip_deficit_detail: 'גרעון חודשי חוזר הוא הגורם העיקרי לחוב ולריבית מינוס:\n\n1. **הגדירו תקציב חודשי מחייב** - לא רק לעקוב, אלא להגביל\n2. **שיטת המעטפות** - חלקו את הכסף לקטגוריות בתחילת החודש\n3. **חוק 24 שעות** - לפני קנייה מעל 200 ש"ח, חכו יום\n4. **הפחיתו הוצאות קבועות** - הן הכי משפיעות כי חוזרות כל חודש\n5. **הגדילו הכנסה** - עבודה נוספת, פרילנס, מכירת דברים מיותרים',
+    tip_negative_balance_title: 'החשבון במינוס',
+    tip_negative_balance_summary: 'יתרת חשבון סוף חודש: {balance} ₪. ריבית מינוס עולה כסף.',
+    tip_negative_balance_detail: 'חשבון במינוס גורר ריבית של 12-18% שנתי. כמה צעדים שיכולים לעזור:\n\n1. **בדקו אפשרות להלוואה** - ריבית הלוואה (4-6%) נמוכה בהרבה מריבית מינוס\n2. **תזמנו תשלומים** - דחו חיובים לאחרי קבלת משכורת\n3. **צמצמו הוצאות משתנות** - זה המקום הכי קל לחסוך\n4. **שחררו חיסכון** - אם יש כסף בקרנות, שווה לשקול שחרור חלקי',
+    tip_balance_decline_title: 'יתרת החשבון במגמת ירידה',
+    tip_balance_decline_summary: 'היתרה ירדה ב-{drop} ₪ ב-{months} חודשים אחרונים.',
+    tip_balance_decline_detail: 'יתרת החשבון יורדת בממוצע {monthly_drop} ₪ לחודש לפי החודשים האחרונים.\n\nכמה דברים שכדאי לבדוק:\n\n1. **האם הייתה הוצאה חד-פעמית גדולה?** - אם כן, זה לא בהכרח מגמה\n2. **בדקו הוצאות קבועות חדשות** - מנויים, תשלומים שהתחילו לאחרונה\n3. **השוו הכנסות** - האם ההכנסה נשארה יציבה?\n4. **תקציב חודשי** - הגדירו תקציב וצמצמו הוצאות משתנות',
+    tip_low_buffer_title: 'כרית ביטחון נמוכה',
+    tip_low_buffer_summary: 'היתרה מכסה כ-{emergency_weeks} שבועות הוצאות (מומלץ: 3-6 חודשים).',
+    tip_low_buffer_detail: 'מומלץ לשמור כרית ביטחון של 3-6 חודשי הוצאות.\n\nכרגע היתרה ({balance} ₪) מכסה כ-{emergency_weeks} שבועות מתוך ממוצע הוצאות של {essential_monthly} ₪/חודש.\n\n1. **הפרישו סכום קבוע** - גם סכום קטן כל חודש בונה כרית\n2. **חשבון חירום נפרד** - כסף שלא נוגעים בו\n3. **יעד ראשוני: חודש אחד** - התחילו בקטן והגדילו בהדרגה',
     // Dynamic chart/insight labels
     total_expenses_chart: 'סה"כ הוצאות', day_label: 'יום',
     of_income: 'מההכנסה החודשית', spent_so_far: 'הוצאתם עד עכשיו',
@@ -2724,6 +2847,39 @@ const I18N = {
     tab_financial: 'Insurance & Savings', tab_insights: 'Insights', tab_analysis: 'AI Analysis', tab_import: 'Import',
     export_excel: 'Export Excel', prev_month: 'Previous month', next_month: 'Next month',
     total_income: 'Total Income', total_expenses: 'Total Expenses', balance: 'Balance', total: 'Total',
+    bank_balance: 'End-of-Month Account Balance', bank_balance_chart: 'Account Balance', bank_balance_axis: 'Account Balance (₪)',
+    expenses_axis: 'Expenses (₪)', safe_to_spend: 'Estimated Available', safe_daily: 'Daily Budget',
+    safe_note: 'Estimate only, based on last bank balance. Does not include upcoming bills.',
+    emergency_buffer: 'Emergency Buffer', emergency_months: 'months of expenses covered',
+    emergency_recommended: 'Recommended: 3\u20136 months',
+    emergency_weeks: '~{w} weeks of expenses',
+    emergency_month_single: '~1 month of expenses',
+    emergency_months_approx: '~{m} months of expenses',
+    net_cashflow: 'Net Cashflow', balance_change: 'Change from Last Month', balance_as_of: 'As of ',
+    balance_updated_days: 'Updated {days} days ago', balance_updated_today: 'Updated today',
+    balance_stale_warning: 'Data is outdated \u2014 consider importing a fresh bank CSV',
+    reconciliation_gap: 'Cashflow shows {cashflow} but actual balance changed by {actual} (gap: {gap})',
+    reconciliation_reason: 'There may be missing transactions, timing differences, or unimported income/expenses.',
+    salary_day: 'Day', salary_days_until: '{days} days to salary',
+    salary_person_husband: 'Salary (husband)', salary_person_wife: 'Salary (wife)', salary_person_family: 'Salary',
+    trust_last_import: 'Last import: {days} days ago', trust_import_today: 'Last import: today',
+    trust_salary_day: 'Salary: {day}th of month', trust_fixed_bills: 'Fixed bills: {amount}/mo',
+    trust_stale: 'Bank data is {days} days old \u2014 consider importing a fresh CSV',
+    trust_no_import: 'No bank data imported \u2014 import a CSV for more accurate insights',
+    insight_data_note: 'Balance data is based on last bank import and may have changed since.',
+    balance_note: 'Based on last bank import', estimate_only: 'Estimate only',
+    why_label: 'How is this calculated?',
+    why_safe_to_spend: '{balance} (balance) − {buffer} (safety buffer) = {result}',
+    why_daily_budget: '{result} ÷ {horizon} days = {daily}/day',
+    why_cashflow: '{income} (income) − {expenses} (expenses) = {result}',
+    why_emergency_buffer: '{balance} (balance) ÷ {essential} (monthly expenses) = {result}',
+    why_balance_change: '{current} (this month) − {previous} (last month) = {change}',
+    why_projection: 'Based on {months} months of data. Expenses {direction} {trend}/mo',
+    why_trend_rising: 'rising',
+    why_trend_falling: 'falling',
+    why_trend_stable: 'stable',
+    balances_imported: 'Account balances imported', no_balance_data: 'No balance data — import a bank CSV',
+    monthly_summary: 'Monthly Summary', bank_bal_context: 'Account balance per last import',
     daily_trend: 'Daily Expense Trend', by_category: 'Expenses by Category',
     budget_vs_actual: 'Budget vs Actual', by_frequency: 'Expenses by Frequency',
     by_card: 'Expenses by Card', monthly_trend: 'Monthly Trend',
@@ -2943,6 +3099,43 @@ const I18N = {
     // Tips
     tip_savings: 'Savings', per_year: '/year', show_me: 'Show me how', skip_tip: 'Skip',
     show_skipped: 'Show skipped tips', analyzing_expenses: 'Analyzing your expenses...',
+    // Tip content
+    tip_overdraft_title: 'Overdraft Interest \u2014 Money Down the Drain',
+    tip_overdraft_summary: 'You paid {total} NIS in overdraft interest. That\'s about {yearly} NIS/year!',
+    tip_overdraft_detail: 'Overdraft interest is completely avoidable. Here are some options:\n\n1. **Personal loan** \u2014 Loan interest (4-6%) is far lower than overdraft (12-18%)\n2. **Tap into savings** \u2014 If you have funds in savings/investments, releasing some could save on interest\n3. **Time your expenses** \u2014 Delay large purchases until after payday\n4. **Potential yearly savings: {yearly} NIS**',
+    tip_cash_title: 'Cash Withdrawals \u2014 Untracked Spending',
+    tip_cash_summary: 'You withdrew {total} NIS in cash ({monthly} NIS/month). Impossible to track where it goes.',
+    tip_cash_detail: 'Cash is the enemy of a well-tracked budget \u2014 it\'s invisible.\n\n1. **Switch to card/digital payments** \u2014 Every transaction is automatically recorded\n2. **Set a cash limit** \u2014 No more than 500 NIS/month\n3. **Log cash expenses** \u2014 Note every cash purchase on your phone immediately\n4. **Potential savings: {monthly_savings} NIS/month** (30% of cash typically goes to non-essentials)',
+    tip_cards_title: 'Too Many Credit Cards',
+    tip_cards_summary: 'You have Visa, Isracard ({isracard} NIS) and Diners ({diners} NIS). Consolidating could save money.',
+    tip_cards_detail: 'Multiple cards = double card fees + harder expense tracking.\n\n1. **Cancel unnecessary cards** \u2014 Extra cards cost 10-20 NIS/month each\n2. **Consolidate to one card** \u2014 Easier to track, better rewards\n3. **Compare benefits** \u2014 One card may offer better cashback\n4. **Savings: 240-480 NIS/year** in card fees + better control',
+    tip_food_title: 'Food Spending \u2014 Room to Save',
+    tip_food_summary: 'Monthly food average: {monthly} NIS. {rest_pct}% goes to restaurants/fast food.',
+    tip_food_detail: 'Food is one of the easiest areas to save without sacrificing quality:\n\n1. **Plan weekly menus** \u2014 Prevents impulse shopping and food waste\n2. **Shop for deals** \u2014 Compare prices, buy store brands\n3. **Cook at home** \u2014 A home meal costs 15-30 NIS, dining out 60-120 NIS\n4. **Cut restaurants by 50%** \u2014 Eat out once a week instead of 2-3 times\n5. **Potential savings: {monthly_savings} NIS/month** (20% of food spending)',
+    tip_entertainment_title: 'Entertainment \u2014 Enjoy Smarter',
+    tip_entertainment_summary: 'Monthly average: {monthly} NIS on entertainment and leisure.',
+    tip_entertainment_detail: 'Entertainment is important for quality of life, but you can enjoy more for less:\n\n1. **Set an entertainment budget** \u2014 1,000-1,500 NIS/month for a family\n2. **Find free alternatives** \u2014 Parks, beaches, nature hikes, community events\n3. **Use discounts** \u2014 Discount tickets, group deals, early-bird offers\n4. **Plan ahead** \u2014 Booking early is always cheaper\n5. **Potential savings: {potential_savings} NIS/month**',
+    tip_insurance_title: 'Insurance \u2014 Check for Overlaps',
+    tip_insurance_summary: 'You\'re paying about {monthly} NIS/month on insurance. There may be duplicates!',
+    tip_insurance_detail: 'Insurance is an area where most families overpay:\n\n1. **Check for duplicates** \u2014 Employer life insurance + private = double coverage\n2. **Compare prices** \u2014 An independent agent can save 20-30%\n3. **Cancel unnecessary policies** \u2014 Phone insurance, annual travel insurance\n4. **Raise deductibles** \u2014 Significantly lowers premiums\n5. **Potential savings: {monthly_savings} NIS/month** (20% of insurance costs)',
+    tip_savings_title: 'Savings Rate \u2014 Plan for the Future',
+    tip_savings_summary: 'Your savings rate (pension + funds): {rate}% of income.',
+    tip_savings_detail: 'It\'s recommended to save 20% of gross income. Here\'s a plan:\n\n1. **Pension** \u2014 Make sure you\'re contributing the maximum\n2. **Education fund** \u2014 Great tax-advantaged savings vehicle\n3. **Emergency fund** \u2014 3-6 months of expenses in liquid savings\n4. **Investments** \u2014 After you have an emergency fund:\n   - **Index funds (S&P 500)** \u2014 Average 10% annual return\n   - **Managed portfolio** \u2014 Available at banks/investment firms\n   - **Tax-advantaged accounts** \u2014 Maximize all available tax benefits\n5. **50/30/20 rule** \u2014 50% needs, 30% wants, 20% savings',
+    tip_transfers_title: 'BIT/PAYBOX Transfers \u2014 Where Does the Money Go?',
+    tip_transfers_summary: 'You transferred {total} NIS via BIT/PAYBOX. These expenses are uncategorized.',
+    tip_transfers_detail: 'Digital transfers are hard to track because they have no category:\n\n1. **Add a note** \u2014 When transferring via BIT, write what it\'s for\n2. **Add manually** \u2014 Enter large transfers in the correct category\n3. **Set a limit** \u2014 No more than 1,000 NIS/month in transfers\n4. **Check recurring charges** \u2014 There may be a subscription paid via BIT you can cancel',
+    tip_deficit_title: 'Budget Deficit \u2014 {neg_months} Months in the Red',
+    tip_deficit_summary: 'In {neg_months} of {num_months} months you spent more than you earned.',
+    tip_deficit_detail: 'Recurring monthly deficits are the main cause of debt and overdraft interest:\n\n1. **Set a binding monthly budget** \u2014 Not just tracking, but limiting\n2. **Envelope method** \u2014 Divide money into categories at the start of each month\n3. **24-hour rule** \u2014 Before any purchase over 200 NIS, wait a day\n4. **Reduce fixed expenses** \u2014 They have the biggest impact since they recur monthly\n5. **Increase income** \u2014 Side job, freelance, selling unused items',
+    tip_negative_balance_title: 'Account in Overdraft',
+    tip_negative_balance_summary: 'End-of-month balance: {balance} NIS. Overdraft interest costs money.',
+    tip_negative_balance_detail: 'An overdrawn account carries 12-18% annual interest. Steps that can help:\n\n1. **Consider a loan** \u2014 Loan interest (4-6%) is far lower than overdraft\n2. **Time your payments** \u2014 Delay charges until after payday\n3. **Cut variable expenses** \u2014 The easiest area to save\n4. **Release savings** \u2014 If you have invested funds, consider a partial withdrawal',
+    tip_balance_decline_title: 'Account Balance Declining',
+    tip_balance_decline_summary: 'Balance dropped by {drop} NIS over the last {months} months.',
+    tip_balance_decline_detail: 'Your account balance has been falling by an average of {monthly_drop} NIS/month based on recent months.\n\nA few things to check:\n\n1. **Was there a large one-time expense?** \u2014 If so, it may not be a trend\n2. **Check new recurring expenses** \u2014 Subscriptions, payments that started recently\n3. **Compare income** \u2014 Has your income remained stable?\n4. **Monthly budget** \u2014 Set a budget and reduce variable spending',
+    tip_low_buffer_title: 'Low Emergency Buffer',
+    tip_low_buffer_summary: 'Your balance covers ~{emergency_weeks} weeks of expenses (recommended: 3\u20136 months).',
+    tip_low_buffer_detail: 'It\'s recommended to keep 3-6 months of expenses as an emergency buffer.\n\nCurrently your balance ({balance} NIS) covers ~{emergency_weeks} weeks out of an average {essential_monthly} NIS/month in expenses.\n\n1. **Set aside a fixed amount** \u2014 Even a small monthly amount builds a buffer\n2. **Separate emergency account** \u2014 Money you don\'t touch\n3. **First goal: one month** \u2014 Start small and build up gradually',
     // Dynamic chart/insight labels
     total_expenses_chart: 'Total Expenses', day_label: 'Day',
     of_income: 'of monthly income', spent_so_far: 'Spent so far',
@@ -3087,6 +3280,7 @@ const I18N = {
 };
 
 function t(key) { return (I18N[currentLang] || I18N.he)[key] || (I18N.he)[key] || key; }
+function tParams(key, params) { let s = t(key); if (params) { for (const [k, v] of Object.entries(params)) { s = s.replaceAll('{' + k + '}', v); } } return s; }
 
 function setLang(lang) {
     currentLang = lang;
@@ -4055,7 +4249,7 @@ function handleCategorySelect(selectEl) {
 
 async function loadDashboard() {
     let data = await api(`/api/summary?month=${currentMonth}&plan=${currentPlanId}`);
-    if (!data || Array.isArray(data)) data = { income_total: 0, expense_total: 0, balance: 0, by_category: [], daily: [], budget_vs_actual: [], by_frequency: [], by_card: [], monthly_trend: [] };
+    if (!data || Array.isArray(data)) data = { income_total: 0, expense_total: 0, balance: 0, by_category: [], daily: [], budget_vs_actual: [], by_frequency: [], by_card: [], monthly_trend: [], bank_balance: null, bank_balance_trend: [] };
 
     // Summary cards
     document.getElementById('totalIncome').textContent = fmt(data.income_total);
@@ -4064,6 +4258,41 @@ async function loadDashboard() {
 
     const balCard = document.getElementById('balanceCard');
     balCard.className = `stat-card ${data.balance >= 0 ? 'stat-balance-positive' : 'stat-balance-negative'}`;
+
+    // Bank Balance card (only show if data exists)
+    const bankCol = document.getElementById('bankBalanceCol');
+    const safeCol = document.getElementById('safeToSpendCol');
+    const cardsRow = document.getElementById('summaryCardsRow');
+    if (data.bank_balance !== null && data.bank_balance !== undefined) {
+        bankCol.style.display = '';
+        const bankCard = document.getElementById('bankBalanceCard');
+        bankCard.className = `stat-card ${data.bank_balance >= 0 ? 'stat-bank-positive' : 'stat-bank-negative'}`;
+        document.getElementById('bankBalance').textContent = fmt(data.bank_balance);
+        // Show "as of" date on the card
+        const dateEl = document.getElementById('bankBalanceDate');
+        if (data.bank_balance_date) {
+            const parts = data.bank_balance_date.split('-');
+            const dFmt = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : data.bank_balance_date;
+            dateEl.textContent = `${t('balance_as_of')}${dFmt}`;
+        } else {
+            dateEl.textContent = '';
+        }
+        // Adjust grid: switch to smaller columns when extra cards shown
+        cardsRow.querySelectorAll('.summary-card-col').forEach(c => { c.className = c.className.replace('col-md-4', 'col-md'); });
+
+        // Load Safe to Spend
+        loadSafeToSpend();
+        // Load Monthly Summary
+        loadMonthlySummary();
+        loadSalaryInfo();
+        renderTrustBanner(data);
+    } else {
+        bankCol.style.display = 'none';
+        safeCol.style.display = 'none';
+        document.getElementById('monthlySummaryRow').style.display = 'none';
+        document.getElementById('trustBanner').style.display = 'none';
+        cardsRow.querySelectorAll('.summary-card-col').forEach(c => { c.className = c.className.replace(/\bcol-md\b/, 'col-md-4'); });
+    }
 
     // Category Pie Chart
     renderPieChart(data.by_category);
@@ -4080,14 +4309,175 @@ async function loadDashboard() {
     // Card breakdown
     renderCardChart(data.by_card || []);
 
-    // Monthly Trend
-    renderTrendChart(data.monthly_trend);
+    // Monthly Trend (with bank balance overlay)
+    renderTrendChart(data.monthly_trend, data.bank_balance_trend || []);
 
     // Recent expenses table
     dashboardExpenses = await api(`/api/expenses?month=${currentMonth}`) || [];
     activeFilter = null;
     renderRecentExpenses();
     await loadStandingOrders();
+}
+
+function renderTrustBanner(data) {
+    const banner = document.getElementById('trustBanner');
+    const segments = [];
+    let isStale = false;
+
+    // Last import freshness
+    if (data.last_bank_import) {
+        const importDate = new Date(data.last_bank_import);
+        const daysAgo = Math.floor((new Date() - importDate) / 86400000);
+        if (daysAgo > 30) {
+            isStale = true;
+            segments.push(`<i class="bi bi-exclamation-triangle-fill"></i> ${tParams('trust_stale', {days: daysAgo})}`);
+        } else if (daysAgo <= 0) {
+            segments.push(`<i class="bi bi-check-circle"></i> ${t('trust_import_today')}`);
+        } else {
+            segments.push(`<i class="bi bi-check-circle"></i> ${tParams('trust_last_import', {days: daysAgo})}`);
+        }
+    } else if (data.bank_balance !== null) {
+        // Has balance data but no created_at — fall back to balance_date
+        if (data.bank_balance_date) {
+            const balDate = new Date(data.bank_balance_date);
+            const daysAgo = Math.floor((new Date() - balDate) / 86400000);
+            if (daysAgo > 30) {
+                isStale = true;
+                segments.push(`<i class="bi bi-exclamation-triangle-fill"></i> ${tParams('trust_stale', {days: daysAgo})}`);
+            } else {
+                segments.push(`<i class="bi bi-check-circle"></i> ${tParams('trust_last_import', {days: daysAgo})}`);
+            }
+        }
+    }
+
+    // Salary day
+    if (data.salary_day) {
+        segments.push(`<i class="bi bi-wallet2"></i> ${tParams('trust_salary_day', {day: data.salary_day})}`);
+    }
+
+    // Fixed bills
+    if (data.fixed_monthly_total > 0) {
+        segments.push(`<i class="bi bi-receipt"></i> ${tParams('trust_fixed_bills', {amount: fmt(data.fixed_monthly_total)})}`);
+    }
+
+    if (segments.length === 0) {
+        banner.style.display = 'none';
+        return;
+    }
+
+    banner.style.display = '';
+    banner.style.fontSize = '.78rem';
+    if (isStale) {
+        banner.style.background = 'rgba(251,191,36,.1)';
+        banner.style.border = '1px solid rgba(251,191,36,.3)';
+        banner.style.color = '#b45309';
+    } else {
+        banner.style.background = 'rgba(99,102,241,.05)';
+        banner.style.border = '1px solid rgba(99,102,241,.12)';
+        banner.style.color = '#6366f1';
+    }
+    banner.innerHTML = segments.join(' <span style="opacity:.3">·</span> ');
+}
+
+async function loadSafeToSpend() {
+    const col = document.getElementById('safeToSpendCol');
+    const data = await api(`/api/safe-to-spend?month=${currentMonth}`);
+    if (!data || !data.available) { col.style.display = 'none'; return; }
+    col.style.display = '';
+    const card = document.getElementById('safeToSpendCard');
+    const safe = data.safe_to_spend;
+    // Color by absolute thresholds: negative = red, < 1000 = yellow, else green
+    card.className = `stat-card ${safe < 0 ? 'stat-safe-negative' : safe < 1000 ? 'stat-safe-tight' : 'stat-safe-healthy'}`;
+    document.getElementById('safeToSpendAmount').textContent = fmt(safe);
+    const info = document.getElementById('dailyBudgetInfo');
+    if (data.daily_budget !== null) {
+        const horizon = data.salary_detected && data.days_until_salary !== null
+            ? tParams('salary_days_until', {days: data.days_until_salary})
+            : `${data.days_remaining} ${currentLang === 'he' ? 'ימים' : 'days'}`;
+        info.textContent = `${t('safe_daily')}: ${fmt(data.daily_budget)} (${horizon})`;
+    } else {
+        info.textContent = '';
+    }
+    const noteEl = document.getElementById('safeNote');
+    if (data.balance_date) {
+        const parts = data.balance_date.split('-');
+        const dFmt = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : data.balance_date;
+        noteEl.textContent = `${t('balance_as_of')} ${dFmt} · ${t('safe_note')}`;
+    } else {
+        noteEl.textContent = t('safe_note');
+    }
+    // Populate "why" explanation
+    const whyEl = document.getElementById('safeWhyDetail');
+    if (data.why_inputs) {
+        const w = data.why_inputs;
+        let whyText = tParams('why_safe_to_spend', {balance: fmt(w.balance), buffer: fmt(w.buffer), result: fmt(w.result)});
+        if (w.daily_result !== undefined && w.horizon !== undefined) {
+            whyText += '\n' + tParams('why_daily_budget', {result: fmt(w.result), horizon: w.horizon, daily: fmt(w.daily_result)});
+        }
+        whyEl.textContent = whyText;
+    }
+}
+
+function formatBufferMonths(m) {
+    if (m < 1) { const w = Math.round(m * 4.3); return tParams('emergency_weeks', {w: w > 0 ? w : 1}); }
+    if (m < 1.5) return t('emergency_month_single');
+    return tParams('emergency_months_approx', {m: Math.round(m)});
+}
+
+async function loadMonthlySummary() {
+    const row = document.getElementById('monthlySummaryRow');
+    const data = await api(`/api/monthly-summary?month=${currentMonth}`);
+    if (!data || data.bank_balance === null) { row.style.display = 'none'; return; }
+    row.style.display = '';
+    const container = document.getElementById('monthlySummaryCards');
+    const changeIcon = data.balance_change > 0 ? '↑' : data.balance_change < 0 ? '↓' : '–';
+    const changeColor = data.balance_change > 0 ? '#22c55e' : data.balance_change < 0 ? '#ef4444' : '#94a3b8';
+    const bufferColor = data.emergency_buffer_months >= 3 ? '#22c55e' : data.emergency_buffer_months >= 1 ? '#f59e0b' : '#ef4444';
+    const w = data.why_inputs || {};
+    const whyCashflow = w.cashflow ? `<div class="why-toggle" onclick="this.nextElementSibling.classList.toggle('show')"><i class="bi bi-info-circle"></i> ${t('why_label')}</div><div class="why-detail">${tParams('why_cashflow', {income: fmt(w.cashflow.income), expenses: fmt(w.cashflow.expenses), result: fmt(w.cashflow.result)})}</div>` : '';
+    const whyChange = w.balance_change ? `<div class="why-toggle" onclick="this.nextElementSibling.classList.toggle('show')"><i class="bi bi-info-circle"></i> ${t('why_label')}</div><div class="why-detail">${tParams('why_balance_change', {current: fmt(w.balance_change.current), previous: fmt(w.balance_change.previous), change: fmt(w.balance_change.change)})}</div>` : '';
+    const whyBuffer = w.emergency_buffer ? `<div class="why-toggle" onclick="this.nextElementSibling.classList.toggle('show')"><i class="bi bi-info-circle"></i> ${t('why_label')}</div><div class="why-detail">${tParams('why_emergency_buffer', {balance: fmt(w.emergency_buffer.balance), essential: fmt(w.emergency_buffer.essential_monthly), result: w.emergency_buffer.result})}</div>` : '';
+    container.innerHTML = `
+        <div class="monthly-summary-metric"><div class="value" style="color:#22c55e">${fmt(data.income)}</div><div class="label">${t('total_income')}</div></div>
+        <div class="monthly-summary-metric"><div class="value" style="color:#ef4444">${fmt(data.expenses)}</div><div class="label">${t('total_expenses')}</div></div>
+        <div class="monthly-summary-metric"><div class="value" style="color:${data.net_cashflow >= 0 ? '#818cf8' : '#f97316'}">${fmt(data.net_cashflow)}</div><div class="label">${t('net_cashflow')}</div>${whyCashflow}</div>
+        <div class="monthly-summary-metric"><div class="value" style="color:${data.bank_balance >= 0 ? '#14b8a6' : '#ef4444'}">${fmt(data.bank_balance)}</div><div class="label">${t('bank_balance_chart')}</div></div>
+        ${data.balance_change !== null ? `<div class="monthly-summary-metric"><div class="value" style="color:${changeColor}">${changeIcon} ${fmt(Math.abs(data.balance_change))}</div><div class="label">${t('balance_change')}</div>${whyChange}</div>` : ''}
+        ${data.emergency_buffer_months !== null ? `<div class="monthly-summary-metric"><div class="value" style="color:${bufferColor}">${formatBufferMonths(data.emergency_buffer_months)}</div><div class="label">${t('emergency_buffer')}</div><div style="font-size:.65rem;opacity:.5;margin-top:2px">${t('emergency_recommended')}</div>${whyBuffer}</div>` : ''}
+    `;
+    // Reconciliation insight: flag when cashflow and balance change diverge
+    const reconEl = document.getElementById('reconciliationNote');
+    if (data.balance_change !== null && data.net_cashflow !== null) {
+        const gap = Math.abs(data.net_cashflow - data.balance_change);
+        const threshold = Math.max(Math.abs(data.net_cashflow), Math.abs(data.balance_change), 1) * 0.20;
+        if (gap > 500 && gap > threshold) {
+            const sign = v => v >= 0 ? '+' + fmt(v) : fmt(v);
+            reconEl.style.display = '';
+            reconEl.style.background = 'rgba(251,191,36,.1)';
+            reconEl.style.border = '1px solid rgba(251,191,36,.3)';
+            reconEl.style.fontSize = '.8rem';
+            reconEl.innerHTML = `<i class="bi bi-info-circle text-warning"></i> ${tParams('reconciliation_gap', {cashflow: sign(data.net_cashflow), actual: sign(data.balance_change), gap: fmt(gap)})}<br><small class="text-muted">${t('reconciliation_reason')}</small>`;
+        } else {
+            reconEl.style.display = 'none';
+        }
+    } else {
+        reconEl.style.display = 'none';
+    }
+}
+
+async function loadSalaryInfo() {
+    const bar = document.getElementById('salaryInfoBar');
+    const data = await api('/api/salary-info');
+    if (!data || !data.detected) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    bar.style.background = 'rgba(99,102,241,.08)';
+    bar.style.border = '1px solid rgba(99,102,241,.2)';
+    bar.style.fontSize = '.8rem';
+    const lines = data.salaries.map(s => {
+        const personLabel = t('salary_person_' + s.person) || s.person;
+        return `<i class="bi bi-wallet2 text-primary"></i> ${personLabel}: ${fmt(s.avg_amount)} · ${t('salary_day')} ${s.typical_day} · ${tParams('salary_days_until', {days: s.days_until_next})}`;
+    });
+    bar.innerHTML = lines.join('<br>');
 }
 
 async function loadStandingOrders() {
@@ -4812,10 +5202,14 @@ function renderBudgetChart(data) {
     });
 }
 
-function renderTrendChart(data) {
+function renderTrendChart(data, bankData) {
     destroyChart('trend');
+    destroyChart('bankBalance');
     if (!data.length) return;
     const ctx = document.getElementById('trendChart').getContext('2d');
+    const hasBankData = bankData && bankData.length > 0;
+
+    // Expenses chart (single axis, no confusion)
     charts.trend = new Chart(ctx, {
         type: 'line',
         data: {
@@ -4825,30 +5219,51 @@ function renderTrendChart(data) {
                 data: data.map(d => d.total),
                 borderColor: '#6366f1',
                 backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                fill: true,
-                tension: 0.3,
-                pointRadius: 5,
+                fill: true, tension: 0.3, pointRadius: 5,
                 pointBackgroundColor: '#6366f1',
             }]
         },
         options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    rtl: true,
-                    callbacks: { label: ctx => fmt(ctx.raw) }
-                }
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false },
+                tooltip: { rtl: true, callbacks: { label: ctx => ctx.raw !== null ? `${ctx.dataset.label}: ${fmt(ctx.raw)}` : '' } }
             },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: { callback: v => fmt(v) }
-                }
-            }
+            scales: { y: { beginAtZero: true, ticks: { callback: v => fmt(v) } } }
         }
     });
+
+    // Separate bank balance chart (only when data exists)
+    const wrap = document.getElementById('bankBalanceChartWrap');
+    if (hasBankData) {
+        wrap.style.display = '';
+        const bankMap = {};
+        bankData.forEach(b => { bankMap[b.month] = b.closing_balance; });
+        const bankCtx = document.getElementById('bankBalanceChart').getContext('2d');
+        charts.bankBalance = new Chart(bankCtx, {
+            type: 'line',
+            data: {
+                labels: data.map(d => monthDisplay(d.month)),
+                datasets: [{
+                    label: t('bank_balance_chart'),
+                    data: data.map(d => bankMap[d.month] !== undefined ? bankMap[d.month] : null),
+                    borderColor: '#14b8a6',
+                    backgroundColor: 'rgba(20, 184, 166, 0.1)',
+                    fill: true, tension: 0.3, pointRadius: 5,
+                    pointBackgroundColor: '#14b8a6',
+                    spanGaps: false,
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false },
+                    tooltip: { rtl: true, callbacks: { label: ctx => ctx.raw !== null ? `${ctx.dataset.label}: ${fmt(ctx.raw)}` : '' } }
+                },
+                scales: { y: { ticks: { callback: v => fmt(v) } } }
+            }
+        });
+    } else {
+        wrap.style.display = 'none';
+    }
 }
 
 const CARD_COLORS = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1'];
@@ -4993,8 +5408,8 @@ async function loadTips() {
                     <i class="bi ${tip.icon}"></i>
                 </div>
                 <div class="tip-content">
-                    <div class="tip-title">${tip.title}</div>
-                    <div class="tip-summary">${tip.summary}</div>
+                    <div class="tip-title">${tParams('tip_' + tip.id + '_title', tip.params)}</div>
+                    <div class="tip-summary">${tParams('tip_' + tip.id + '_summary', tip.params)}</div>
                 </div>
                 ${tip.savings > 0 ? `<div class="tip-savings"><i class="bi bi-graph-up-arrow me-1"></i>${t('tip_savings')}: ${fmt(tip.savings)}${t('per_year')}</div>` : ''}
             </div>
@@ -5006,7 +5421,7 @@ async function loadTips() {
                     <i class="bi bi-skip-forward me-1"></i>${t('skip_tip')}
                 </button>
             </div>
-            <div class="tip-detail" id="tipDetail-${tip.id}">${formatTipDetail(tip.detail)}</div>
+            <div class="tip-detail" id="tipDetail-${tip.id}">${formatTipDetail(tParams('tip_' + tip.id + '_detail', tip.params))}</div>
         </div>
         `;
     }).join('');
@@ -5314,7 +5729,7 @@ async function uploadSingleFile(file, resultDiv) {
                     <strong>${file.name} — ${t('import_complete')}</strong><br>
                     <i class="bi bi-arrow-up-circle text-danger"></i> ${data.imported_expenses} ${t('expenses_imported')}<br>
                     <i class="bi bi-arrow-down-circle text-success"></i> ${data.imported_income} ${t('income_imported')}<br>
-                    <i class="bi bi-skip-forward text-warning"></i> ${data.skipped_visa} ${t('visa_skipped')}${dupLine}
+                    <i class="bi bi-skip-forward text-warning"></i> ${data.skipped_visa} ${t('visa_skipped')}${dupLine}${data.balances_saved ? `<br><i class="bi bi-bank text-info"></i> ${data.balances_saved} ${t('balances_imported')}` : ''}
                 </div>`;
             refreshAll();
         } else {
@@ -6109,6 +6524,14 @@ async function loadBurnRate() {
                 <div class="fs-5 fw-bold">${fmt(data.prev_month_avg)}</div>
             </div>
         </div>
+        ${data.bank_balance !== null ? `<div class="col-12">
+            <div class="p-2 rounded d-flex align-items-center gap-2" style="background:#f0fdfa;border:1px solid #14b8a620">
+                <i class="bi bi-bank" style="color:#14b8a6"></i>
+                <span class="small">${t('bank_bal_context')}: <strong style="color:${data.bank_balance >= 0 ? '#14b8a6' : '#dc2626'}">${fmt(data.bank_balance)}</strong></span>
+                ${data.bank_balance_change !== null ? `<span class="small text-muted">(${data.bank_balance_change >= 0 ? '+' : ''}${fmt(data.bank_balance_change)})</span>` : ''}
+                <span class="small text-muted ms-auto" style="font-size:.7rem;opacity:.6"><i class="bi bi-info-circle"></i> ${t('insight_data_note')}</span>
+            </div>
+        </div>` : ''}
     `;
 
     // Progress bar
@@ -6394,6 +6817,15 @@ async function loadProjection() {
             <div class="fs-5 fw-bold">${data.history.length}</div>
         </div></div>
     `;
+    if (data.history.some(h => h.bank_balance !== null)) {
+        document.getElementById('projectionSummary').innerHTML += `<div class="col-12"><div class="small text-muted text-center" style="font-size:.7rem;opacity:.6"><i class="bi bi-info-circle"></i> ${t('insight_data_note')}</div></div>`;
+    }
+    if (data.why_inputs) {
+        const pw = data.why_inputs;
+        const dirKey = pw.trend_direction === 'up' ? 'why_trend_rising' : pw.trend_direction === 'down' ? 'why_trend_falling' : 'why_trend_stable';
+        const whyProj = tParams('why_projection', {months: pw.months_of_data, direction: t(dirKey), trend: fmt(pw.monthly_trend)});
+        document.getElementById('projectionSummary').innerHTML += `<div class="col-12 text-center"><div class="why-toggle d-inline-flex" onclick="this.nextElementSibling.classList.toggle('show')"><i class="bi bi-info-circle"></i> ${t('why_label')}</div><div class="why-detail">${whyProj}</div></div>`;
+    }
 
     // Build chart with history + projection
     const allLabels = [...data.history.map(h => monthDisplay(h.month)), ...data.projection.map(p => monthDisplay(p.month))];
@@ -6402,44 +6834,75 @@ async function loadProjection() {
     const projExpenses = [...new Array(data.history.length).fill(null), ...data.projection.map(p => p.expenses)];
     const projCumulative = [...new Array(data.history.length).fill(null), ...data.projection.map(p => p.cumulative)];
 
+    // Bank balance history + projection
+    const hasBankBal = data.history.some(h => h.bank_balance !== null);
+    const histBankBal = data.history.map(h => h.bank_balance);
+    const projBankBal = data.projection.map(p => p.bank_balance);
+
     destroyChart('projection');
     const ctx = document.getElementById('projectionChart').getContext('2d');
+    const datasets = [
+        {
+            label: t('expense_history'),
+            data: [...histExpenses, ...new Array(data.projection.length).fill(null)],
+            borderColor: '#dc2626',
+            backgroundColor: 'rgba(220,38,38,0.1)',
+            fill: false, tension: 0.3, pointRadius: 4,
+        },
+        {
+            label: t('expense_forecast'),
+            data: projExpenses,
+            borderColor: '#dc2626',
+            borderDash: [8, 4],
+            fill: false, tension: 0.3, pointRadius: 3, pointStyle: 'triangle',
+        },
+        {
+            label: t('income_label'),
+            data: [...histIncome, ...new Array(data.projection.length).fill(data.avg_income)],
+            borderColor: '#6366f1',
+            borderDash: [4, 2],
+            fill: false, tension: 0, pointRadius: 0,
+        },
+        {
+            label: t('cumulative_savings'),
+            data: projCumulative,
+            borderColor: '#16a34a',
+            backgroundColor: 'rgba(22,163,74,0.1)',
+            fill: true, tension: 0.3, pointRadius: 3,
+            yAxisID: 'y1',
+        }
+    ];
+
+    // Add bank balance dataset if data exists
+    if (hasBankBal) {
+        datasets.push({
+            label: t('bank_balance_chart'),
+            data: [...histBankBal, ...projBankBal],
+            borderColor: '#14b8a6',
+            backgroundColor: 'rgba(20,184,166,0.05)',
+            fill: false, tension: 0.3, pointRadius: 4,
+            pointBackgroundColor: '#14b8a6',
+            spanGaps: false,
+        });
+        // Mark projected portion with dashes if not suppressed
+        if (!data.bank_projection_suppressed) {
+            datasets.push({
+                label: `${t('bank_balance_chart')} (${t('estimate_only')})`,
+                data: [...new Array(data.history.length).fill(null), ...projBankBal],
+                borderColor: '#14b8a6',
+                borderDash: [6, 3],
+                fill: false, tension: 0.3, pointRadius: 2,
+                pointStyle: 'triangle',
+                pointBackgroundColor: '#14b8a6',
+            });
+            // Remove projected values from the main bank balance line
+            datasets[datasets.length - 2].data = [...histBankBal, ...new Array(data.projection.length).fill(null)];
+        }
+    }
+
     charts.projection = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels: allLabels,
-            datasets: [
-                {
-                    label: t('expense_history'),
-                    data: [...histExpenses, ...new Array(data.projection.length).fill(null)],
-                    borderColor: '#dc2626',
-                    backgroundColor: 'rgba(220,38,38,0.1)',
-                    fill: false, tension: 0.3, pointRadius: 4,
-                },
-                {
-                    label: t('expense_forecast'),
-                    data: projExpenses,
-                    borderColor: '#dc2626',
-                    borderDash: [8, 4],
-                    fill: false, tension: 0.3, pointRadius: 3, pointStyle: 'triangle',
-                },
-                {
-                    label: t('income_label'),
-                    data: [...histIncome, ...new Array(data.projection.length).fill(data.avg_income)],
-                    borderColor: '#6366f1',
-                    borderDash: [4, 2],
-                    fill: false, tension: 0, pointRadius: 0,
-                },
-                {
-                    label: t('cumulative_savings'),
-                    data: projCumulative,
-                    borderColor: '#16a34a',
-                    backgroundColor: 'rgba(22,163,74,0.1)',
-                    fill: true, tension: 0.3, pointRadius: 3,
-                    yAxisID: 'y1',
-                }
-            ]
-        },
+        data: { labels: allLabels, datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
