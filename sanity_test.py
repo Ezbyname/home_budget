@@ -539,15 +539,15 @@ status, res = api_get("/api/auth/status")
 check(status == 200, "GET /api/auth/status returns 200")
 check(res["logged_in"] == False, "After logout, logged_in is false")
 
-# GET endpoints allow browsing without login
+# All data endpoints require auth when logged out
 status, _ = api_get("/api/expenses?month=2026-04")
-check(status == 200, "GET /api/expenses allows browsing without login")
+check(status == 401, "GET /api/expenses returns 401 when not logged in")
 
 status, _ = api_get("/api/income?month=2026-04")
-check(status == 200, "GET /api/income allows browsing without login")
+check(status == 401, "GET /api/income returns 401 when not logged in")
 
 status, _ = api_get("/api/summary?month=2026-04&plan=1")
-check(status == 200, "GET /api/summary allows browsing without login")
+check(status == 401, "GET /api/summary returns 401 when not logged in")
 
 # Write actions require auth
 status, _ = api_post("/api/expenses", {
@@ -744,9 +744,10 @@ print("\n🔹 24. Chat Assistant — Keyword Search & Fuzzy Fallback")
 # Insert a known expense with a specific subcategory for search testing
 with budget_app.app.app_context():
     conn = budget_app.get_db()
-    conn.execute("""INSERT INTO expenses (date, category_id, subcategory, description, amount, source)
-                    VALUES ('2026-04-01', ?, 'Supermarket Rami Levy', 'Weekly groceries', 250.0, 'visa')""",
-                 (cat_ids[0],))
+    test_uid = conn.execute("SELECT id FROM users WHERE username='testadmin'").fetchone()['id']
+    conn.execute("""INSERT INTO expenses (date, category_id, subcategory, description, amount, source, user_id)
+                    VALUES ('2026-04-01', ?, 'Supermarket Rami Levy', 'Weekly groceries', 250.0, 'visa', ?)""",
+                 (cat_ids[0], test_uid))
     conn.commit()
     conn.close()
 
@@ -898,7 +899,7 @@ if res["recent"]:
 
 # Non-admin should not access satisfaction data
 api_post("/api/auth/logout")
-api_post("/api/auth/login", {"username": "regularuser", "password": "regularpass123"})
+api_post("/api/auth/login", {"username": "regularuser", "password": "regular123"})
 status, _ = api_get("/api/admin/chat-satisfaction")
 check(status in [401, 403], "Admin satisfaction: non-admin blocked",
       f"got {status}")
@@ -925,6 +926,294 @@ check(status == 401, "Chat feedback: POST without auth returns 401", f"got {stat
 
 # Re-login for cleanup
 api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+print("\n🔹 29. Multi-User Data Isolation")
+# ====================================================================
+# Create two fresh test users for isolation testing
+api_post("/api/auth/logout")
+
+api_post("/api/auth/signup", {
+    "username": "isolationA",
+    "password": "isopass123A",
+    "email": "isoA@example.com",
+    "verification_method": "email",
+})
+# isolationA is auto-verified and logged in
+
+# -- User A: add expense, income, installment --
+status, _ = api_post("/api/expenses", {
+    "description": "UserA Expense Only",
+    "amount": 777.77,
+    "date": "2026-04-05",
+    "category_id": cat_ids[0],
+    "source": "cash",
+    "frequency": "once",
+})
+check(status == 200, "Isolation: User A creates expense")
+
+status, _ = api_post("/api/income", {
+    "description": "UserA Salary Only",
+    "amount": 9999.99,
+    "date": "2026-04-05",
+    "source": "bank_transfer",
+    "person": "User A",
+    "is_recurring": 1,
+})
+check(status == 200, "Isolation: User A creates income")
+
+status, _ = api_post("/api/installments", {
+    "description": "UserA Laptop Only",
+    "total_amount": 3000,
+    "num_payments": 6,
+    "start_date": "2026-04-01",
+    "card": "1111",
+})
+check(status == 200, "Isolation: User A creates installment")
+
+# Verify User A sees own data
+status, exps = api_get("/api/expenses?month=2026-04")
+check(status == 200, "Isolation: User A GET expenses")
+a_exps = [e for e in exps if e["description"] == "UserA Expense Only"]
+check(len(a_exps) == 1, "Isolation: User A sees own expense")
+check(a_exps[0]["amount"] == 777.77, "Isolation: User A expense amount correct")
+
+status, incs = api_get("/api/income?month=2026-04")
+a_incs = [i for i in incs if i["description"] == "UserA Salary Only"]
+check(len(a_incs) == 1, "Isolation: User A sees own income")
+
+status, inst = api_get("/api/installments")
+a_inst = [i for i in inst if i["description"] == "UserA Laptop Only"]
+check(len(a_inst) == 1, "Isolation: User A sees own installment")
+
+# Get user A's budget plan info
+status, a_plans = api_get("/api/budget-plans")
+check(len(a_plans) >= 1, "Isolation: User A has a budget plan")
+a_plan_id = a_plans[0]["id"]
+
+# Set a budget for User A
+api_post("/api/budget", {
+    "category_id": cat_ids[0], "month": "2026-04",
+    "planned_amount": 1234, "plan_id": a_plan_id,
+})
+status, a_budgets = api_get(f"/api/budget?month=2026-04&plan={a_plan_id}")
+a_bud = [b for b in a_budgets if b["category_id"] == cat_ids[0]]
+check(len(a_bud) == 1 and a_bud[0]["planned_amount"] == 1234,
+      "Isolation: User A budget set to 1234")
+
+# Summary should reflect User A data only
+status, a_summary = api_get(f"/api/summary?month=2026-04&plan={a_plan_id}")
+check(a_summary["expense_total"] == 777.77,
+      "Isolation: User A summary expense_total = 777.77",
+      f"got {a_summary.get('expense_total')}")
+check(a_summary["income_total"] == 9999.99,
+      "Isolation: User A summary income_total = 9999.99",
+      f"got {a_summary.get('income_total')}")
+
+# -- Switch to User B --
+api_post("/api/auth/logout")
+api_post("/api/auth/signup", {
+    "username": "isolationB",
+    "password": "isopass123B",
+    "email": "isoB@example.com",
+    "verification_method": "email",
+})
+# isolationB is auto-verified and logged in
+
+# User B should see NONE of User A's data
+status, exps = api_get("/api/expenses?month=2026-04")
+check(status == 200, "Isolation: User B GET expenses")
+b_sees_a = [e for e in exps if e["description"] == "UserA Expense Only"]
+check(len(b_sees_a) == 0, "Isolation: User B does NOT see User A expense")
+
+status, incs = api_get("/api/income?month=2026-04")
+b_sees_a_inc = [i for i in incs if i["description"] == "UserA Salary Only"]
+check(len(b_sees_a_inc) == 0, "Isolation: User B does NOT see User A income")
+
+status, inst = api_get("/api/installments")
+b_sees_a_inst = [i for i in inst if i["description"] == "UserA Laptop Only"]
+check(len(b_sees_a_inst) == 0, "Isolation: User B does NOT see User A installment")
+
+# User B should have own empty budget plan, NOT User A's
+status, b_plans = api_get("/api/budget-plans")
+check(len(b_plans) >= 1, "Isolation: User B has own budget plan")
+b_plan_id = b_plans[0]["id"]
+check(b_plan_id != a_plan_id, "Isolation: User B plan id differs from User A",
+      f"A={a_plan_id}, B={b_plan_id}")
+
+status, b_budgets = api_get(f"/api/budget?month=2026-04&plan={b_plan_id}")
+b_bud_a = [b for b in b_budgets if b.get("planned_amount", 0) == 1234]
+check(len(b_bud_a) == 0, "Isolation: User B does NOT see User A budget entries")
+
+# User B summary should be empty/zero
+status, b_summary = api_get(f"/api/summary?month=2026-04&plan={b_plan_id}")
+check(b_summary["expense_total"] == 0,
+      "Isolation: User B summary expense_total = 0",
+      f"got {b_summary.get('expense_total')}")
+check(b_summary["income_total"] == 0,
+      "Isolation: User B summary income_total = 0",
+      f"got {b_summary.get('income_total')}")
+
+# -- User B adds own data --
+status, _ = api_post("/api/expenses", {
+    "description": "UserB Expense Only",
+    "amount": 333.33,
+    "date": "2026-04-06",
+    "category_id": cat_ids[1],
+    "source": "visa",
+    "frequency": "once",
+})
+check(status == 200, "Isolation: User B creates expense")
+
+status, exps = api_get("/api/expenses?month=2026-04")
+b_exps = [e for e in exps if e["description"] == "UserB Expense Only"]
+check(len(b_exps) == 1, "Isolation: User B sees own expense")
+
+# User B still shouldn't see User A
+b_sees_a2 = [e for e in exps if e["description"] == "UserA Expense Only"]
+check(len(b_sees_a2) == 0, "Isolation: User B still doesn't see User A after own insert")
+
+# -- Switch back to User A — verify A doesn't see B --
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "isolationA", "password": "isopass123A"})
+
+status, exps = api_get("/api/expenses?month=2026-04")
+a_sees_b = [e for e in exps if e["description"] == "UserB Expense Only"]
+check(len(a_sees_b) == 0, "Isolation: User A does NOT see User B expense")
+
+# User A still sees own expense
+a_exps2 = [e for e in exps if e["description"] == "UserA Expense Only"]
+check(len(a_exps2) == 1, "Isolation: User A still sees own expense")
+
+# -- User A cannot UPDATE User B's expense --
+# Get User B's expense id via direct DB
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    b_exp = conn.execute("SELECT id FROM expenses WHERE description='UserB Expense Only'").fetchone()
+    conn.close()
+
+if b_exp:
+    status, _ = api_put(f"/api/expenses/{b_exp['id']}", {
+        "description": "UserA hacked B", "amount": 0.01,
+        "date": "2026-04-06", "category_id": cat_ids[1],
+        "source": "visa", "frequency": "once",
+    })
+    # Should either 404 or silently update 0 rows — verify B's data unchanged
+    with budget_app.app.app_context():
+        conn = budget_app.get_db()
+        b_exp_check = conn.execute("SELECT description FROM expenses WHERE id=?", (b_exp['id'],)).fetchone()
+        conn.close()
+    check(b_exp_check["description"] == "UserB Expense Only",
+          "Isolation: User A cannot overwrite User B's expense")
+
+    # User A cannot DELETE User B's expense
+    status, _ = api_delete(f"/api/expenses/{b_exp['id']}")
+    with budget_app.app.app_context():
+        conn = budget_app.get_db()
+        b_exp_still = conn.execute("SELECT id FROM expenses WHERE id=?", (b_exp['id'],)).fetchone()
+        conn.close()
+    check(b_exp_still is not None, "Isolation: User A cannot delete User B's expense")
+
+# -- Admin cascade delete removes user data --
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# Get isolationB user id
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    iso_b = conn.execute("SELECT id FROM users WHERE username='isolationB'").fetchone()
+    conn.close()
+
+if iso_b:
+    status, _ = api_delete(f"/api/admin/users/{iso_b['id']}")
+    check(status == 200, "Isolation: Admin deletes User B")
+
+    # Verify User B's data is gone
+    with budget_app.app.app_context():
+        conn = budget_app.get_db()
+        b_exps_left = conn.execute("SELECT COUNT(*) as c FROM expenses WHERE user_id=?", (iso_b['id'],)).fetchone()['c']
+        b_incs_left = conn.execute("SELECT COUNT(*) as c FROM income WHERE user_id=?", (iso_b['id'],)).fetchone()['c']
+        b_plans_left = conn.execute("SELECT COUNT(*) as c FROM budget_plans WHERE user_id=?", (iso_b['id'],)).fetchone()['c']
+        conn.close()
+    check(b_exps_left == 0, "Isolation: Admin delete cascaded — User B expenses removed")
+    check(b_incs_left == 0, "Isolation: Admin delete cascaded — User B income removed")
+    check(b_plans_left == 0, "Isolation: Admin delete cascaded — User B budget plans removed")
+
+# Clean up isolationA too
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    iso_a = conn.execute("SELECT id FROM users WHERE username='isolationA'").fetchone()
+    conn.close()
+
+if iso_a:
+    status, _ = api_delete(f"/api/admin/users/{iso_a['id']}")
+    check(status == 200, "Isolation: Admin deletes User A")
+
+
+# ====================================================================
+print("\n🔹 30. Cross-User Endpoint Isolation (standing orders, available months, export)")
+# ====================================================================
+# Create userC with data, verify userD sees nothing on derived endpoints
+api_post("/api/auth/logout")
+api_post("/api/auth/signup", {
+    "username": "isolationC",
+    "password": "isopass123C",
+    "email": "isoC@example.com",
+    "verification_method": "email",
+})
+
+# User C: add monthly expense (creates standing order)
+status, _ = api_post("/api/expenses", {
+    "description": "UserC Monthly Gym",
+    "amount": 200,
+    "date": "2026-04-01",
+    "category_id": cat_ids[0],
+    "source": "visa",
+    "frequency": "monthly",
+})
+check(status == 200, "Isolation: User C creates monthly expense")
+
+status, c_orders = api_get("/api/standing-orders")
+check(any(o["description"] == "UserC Monthly Gym" for o in c_orders),
+      "Isolation: User C sees own standing order")
+
+status, c_months = api_get("/api/available-months")
+check("2026-04" in c_months, "Isolation: User C sees own available month")
+
+# Switch to User D
+api_post("/api/auth/logout")
+api_post("/api/auth/signup", {
+    "username": "isolationD",
+    "password": "isopass123D",
+    "email": "isoD@example.com",
+    "verification_method": "email",
+})
+
+# User D should not see User C's standing orders or months
+status, d_orders = api_get("/api/standing-orders")
+d_sees_c = [o for o in d_orders if o.get("description") == "UserC Monthly Gym"]
+check(len(d_sees_c) == 0, "Isolation: User D does NOT see User C standing order")
+
+status, d_months = api_get("/api/available-months")
+check(len(d_months) == 0, "Isolation: User D has no available months (no data)",
+      f"got {d_months}")
+
+# Export for User D should be empty/minimal
+r = client.get("/api/export?month=2026-04")
+check(r.status_code == 200, "Isolation: User D export returns 200")
+
+# Cleanup isolation users C and D
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+for uname in ['isolationC', 'isolationD']:
+    with budget_app.app.app_context():
+        conn = budget_app.get_db()
+        u = conn.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone()
+        conn.close()
+    if u:
+        api_delete(f"/api/admin/users/{u['id']}")
 
 
 # ====================================================================

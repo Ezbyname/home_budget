@@ -688,7 +688,7 @@
     <div class="container">
         <div class="d-flex align-items-center gap-2">
             <span class="navbar-brand mb-0"><i class="bi bi-wallet2 me-2"></i><span data-t="app_title">ניהול תקציב משפחתי</span></span>
-            <span id="appVersion" class="text-white-50" style="font-size:.65rem;opacity:.5">v1.0.1000007</span>
+            <span id="appVersion" class="text-white-50" style="font-size:.65rem;opacity:.5">v1.0.1000011</span>
         </div>
         <div class="d-flex align-items-center gap-3">
             <!-- Budget Plan Selector -->
@@ -1607,43 +1607,49 @@
         <!-- ========== IMPORT TAB ========== -->
         <div class="tab-pane fade" id="importTab">
             <div class="row g-4">
-                <div class="col-lg-4">
-                    <div class="card p-4">
+                <div class="col-lg-4 d-flex">
+                    <div class="card p-4 d-flex flex-column w-100">
                         <div class="section-title"><i class="bi bi-bank"></i><span data-t="import_bank_title">ייבוא עו"ש בנק (CSV)</span></div>
                         <p class="text-muted mb-3" data-t="import_bank_desc">העלה קובץ עובר ושב מהבנק. המערכת תזהה הכנסות, תדלג על חיובי ויזה כפולים, ותסווג הוצאות לפי תדירות.</p>
-                        <div class="upload-zone" id="bankUploadZone" onclick="document.getElementById('bankFileInput').click()">
-                            <i class="bi bi-cloud-upload d-block mb-2"></i>
-                            <p class="mb-1 fw-bold" data-t="drag_csv">גרור קובץ CSV לכאן</p>
-                            <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
-                            <input type="file" id="bankFileInput" accept=".csv" hidden>
+                        <div class="mt-auto">
+                            <div class="upload-zone" id="bankUploadZone" onclick="document.getElementById('bankFileInput').click()">
+                                <i class="bi bi-cloud-upload d-block mb-2"></i>
+                                <p class="mb-1 fw-bold" data-t="drag_csv">גרור קובץ CSV לכאן</p>
+                                <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
+                                <input type="file" id="bankFileInput" accept=".csv" hidden multiple>
+                            </div>
+                            <div id="bankUploadResult" class="mt-3"></div>
                         </div>
-                        <div id="bankUploadResult" class="mt-3"></div>
                     </div>
                 </div>
-                <div class="col-lg-4">
-                    <div class="card p-4">
+                <div class="col-lg-4 d-flex">
+                    <div class="card p-4 d-flex flex-column w-100">
                         <div class="section-title"><i class="bi bi-credit-card-2-front"></i><span data-t="import_visa_title">ייבוא דוח ויזה (XLSX)</span></div>
                         <p class="text-muted mb-3" data-t="import_visa_desc">העלה קובץ דוח חיובים מכרטיס ויזה. המערכת תזהה אוטומטית את הקטגוריות.</p>
-                        <div class="upload-zone" id="visaUploadZone" onclick="document.getElementById('visaFileInput').click()">
-                            <i class="bi bi-cloud-upload d-block mb-2"></i>
-                            <p class="mb-1 fw-bold" data-t="drag_xlsx">גרור קובץ XLSX לכאן</p>
-                            <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
-                            <input type="file" id="visaFileInput" accept=".xlsx" hidden multiple>
+                        <div class="mt-auto">
+                            <div class="upload-zone" id="visaUploadZone" onclick="document.getElementById('visaFileInput').click()">
+                                <i class="bi bi-cloud-upload d-block mb-2"></i>
+                                <p class="mb-1 fw-bold" data-t="drag_xlsx">גרור קובץ XLSX לכאן</p>
+                                <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
+                                <input type="file" id="visaFileInput" accept=".xlsx" hidden multiple>
+                            </div>
+                            <div id="visaUploadResult" class="mt-3"></div>
                         </div>
-                        <div id="visaUploadResult" class="mt-3"></div>
                     </div>
                 </div>
-                <div class="col-lg-4">
-                    <div class="card p-4">
+                <div class="col-lg-4 d-flex">
+                    <div class="card p-4 d-flex flex-column w-100">
                         <div class="section-title"><i class="bi bi-file-earmark-spreadsheet"></i><span data-t="import_xls_title">ייבוא תקציב (XLS)</span></div>
                         <p class="text-muted mb-3" data-t="import_xls_desc">העלה קובץ תכנון תקציב שבועי בפורמט XLS (כמו הקובץ המקורי).</p>
-                        <div class="upload-zone" id="xlsUploadZone" onclick="document.getElementById('xlsFileInput').click()">
-                            <i class="bi bi-cloud-upload d-block mb-2"></i>
-                            <p class="mb-1 fw-bold" data-t="drag_xls">גרור קובץ XLS לכאן</p>
-                            <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
-                            <input type="file" id="xlsFileInput" accept=".xls" hidden>
+                        <div class="mt-auto">
+                            <div class="upload-zone" id="xlsUploadZone" onclick="document.getElementById('xlsFileInput').click()">
+                                <i class="bi bi-cloud-upload d-block mb-2"></i>
+                                <p class="mb-1 fw-bold" data-t="drag_xls">גרור קובץ XLS לכאן</p>
+                                <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
+                                <input type="file" id="xlsFileInput" accept=".xls" hidden multiple>
+                            </div>
+                            <div id="xlsUploadResult" class="mt-3"></div>
                         </div>
-                        <div id="xlsUploadResult" class="mt-3"></div>
                     </div>
                 </div>
             </div>
@@ -2440,6 +2446,7 @@ const I18N = {
     click_to_browse: 'או לחץ לבחירת קובץ',
     import_complete: 'ייבוא עו"ש הושלם!', expenses_imported: 'הוצאות יובאו',
     income_imported: 'הכנסות יובאו', visa_skipped: 'חיובי ויזה דולגו (כבר קיימים)',
+    duplicates_skipped: 'כפילויות דולגו',
     records_imported: 'רשומות יובאו בהצלחה!', import_error: 'שגיאה',
     processing: 'מעבד...',
     // Reminders modal
@@ -2799,6 +2806,7 @@ const I18N = {
     click_to_browse: 'or click to browse',
     import_complete: 'Bank import complete!', expenses_imported: 'expenses imported',
     income_imported: 'income imported', visa_skipped: 'card charges skipped (already exist)',
+    duplicates_skipped: 'duplicates skipped',
     records_imported: 'records imported successfully!', import_error: 'Error',
     processing: 'Processing...',
     // Reminders modal
@@ -3015,6 +3023,9 @@ function t(key) { return (I18N[currentLang] || I18N.he)[key] || (I18N.he)[key] |
 function setLang(lang) {
     currentLang = lang;
     setPlanSetting('lang', lang);
+    // Close settings dropdown
+    const ddToggle = document.querySelector('.dropdown [data-bs-toggle="dropdown"]');
+    if (ddToggle) bootstrap.Dropdown.getOrCreateInstance(ddToggle).hide();
     const isRTL = lang === 'he';
     document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
     document.documentElement.lang = lang;
@@ -3209,6 +3220,9 @@ function fmtDecimal(n) {
 function setCurrency(cur) {
     currentCurrency = cur;
     setPlanSetting('currency', cur);
+    // Close settings dropdown
+    const ddToggle = document.querySelector('.dropdown [data-bs-toggle="dropdown"]');
+    if (ddToggle) bootstrap.Dropdown.getOrCreateInstance(ddToggle).hide();
     document.querySelectorAll('.currency-btn').forEach(b => {
         const isActive = b.dataset.currency === cur;
         b.classList.toggle('active', isActive);
@@ -3304,6 +3318,11 @@ function appAlert(msg, type = 'info') {
 async function api(url, options = {}) {
     const res = await fetch(url, options);
     if (res.status === 401) {
+        const method = (options.method || 'GET').toUpperCase();
+        if (method === 'GET') {
+            // Return empty data so UI shows zeros when not logged in
+            return [];
+        }
         showAuthModal('login');
         // Never resolve — prevents caller from continuing (no success toasts, no UI updates)
         return new Promise(() => {});
@@ -3550,6 +3569,11 @@ async function doLogout() {
     document.getElementById('navLogoutItem').style.display = 'none';
     document.getElementById('adminTabNav').style.display = 'none';
     document.getElementById('navAuthItem').style.display = '';
+    // Close settings dropdown
+    const ddToggle = document.querySelector('.dropdown [data-bs-toggle="dropdown"]');
+    if (ddToggle) bootstrap.Dropdown.getOrCreateInstance(ddToggle).hide();
+    // Refresh all data — will show zeros since API returns 401
+    refreshAll();
 }
 
 // Chat assistant
@@ -3929,7 +3953,7 @@ function changeMonth(delta) {
 // Data Loading
 // ============================================================
 async function loadCategories() {
-    categories = await api('/api/categories');
+    categories = await api('/api/categories') || [];
     // Populate category select
     const sel = document.getElementById('expenseCategory');
     sel.innerHTML = categoryOptionsHtml();
@@ -3958,7 +3982,8 @@ function handleCategorySelect(selectEl) {
 }
 
 async function loadDashboard() {
-    const data = await api(`/api/summary?month=${currentMonth}&plan=${currentPlanId}`);
+    let data = await api(`/api/summary?month=${currentMonth}&plan=${currentPlanId}`);
+    if (!data || Array.isArray(data)) data = { income_total: 0, expense_total: 0, balance: 0, by_category: [], daily: [], budget_vs_actual: [], by_frequency: [], by_card: [], monthly_trend: [] };
 
     // Summary cards
     document.getElementById('totalIncome').textContent = fmt(data.income_total);
@@ -3987,7 +4012,7 @@ async function loadDashboard() {
     renderTrendChart(data.monthly_trend);
 
     // Recent expenses table
-    dashboardExpenses = await api(`/api/expenses?month=${currentMonth}`);
+    dashboardExpenses = await api(`/api/expenses?month=${currentMonth}`) || [];
     activeFilter = null;
     renderRecentExpenses();
     await loadStandingOrders();
@@ -3998,7 +4023,7 @@ async function loadStandingOrders() {
     const tfoot = document.getElementById('standingOrdersFoot');
     const badge = document.getElementById('standingOrdersBadge');
 
-    standingOrdersData = await api('/api/standing-orders');
+    standingOrdersData = await api('/api/standing-orders') || [];
 
     if (!standingOrdersData.length) {
         tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted py-3">${t('so_no_orders')}</td></tr>`;
@@ -4209,7 +4234,7 @@ function renderExpenseTableRows(expenses) {
 }
 
 async function loadExpenses() {
-    tabExpenses = await api(`/api/expenses?month=${currentMonth}`);
+    tabExpenses = await api(`/api/expenses?month=${currentMonth}`) || [];
     sortState['expenseListBody'] = { column: null, direction: null };
     renderExpenseTableRows(tabExpenses);
     populateFilterCategories();
@@ -4344,14 +4369,15 @@ function renderIncomeTableRows(income) {
 }
 
 async function loadIncome() {
-    const income = tabIncome = await api(`/api/income?month=${currentMonth}`);
+    const income = tabIncome = await api(`/api/income?month=${currentMonth}`) || [];
     sortState['incomeListBody'] = { column: null, direction: null };
     renderIncomeTableRows(income);
 
     // Income summary
-    const summary = await api(`/api/summary?month=${currentMonth}`);
+    let summary = await api(`/api/summary?month=${currentMonth}`);
+    if (!summary || Array.isArray(summary)) summary = { income_by_person: [] };
     const cards = document.getElementById('incomeSummaryCards');
-    cards.innerHTML = summary.income_by_person.map(p => `
+    cards.innerHTML = (summary.income_by_person || []).map(p => `
         <div class="col-auto">
             <div class="badge bg-success bg-opacity-10 text-success p-2 fs-6">
                 ${getPL()[p.person] || p.person}: ${fmt(p.total)}
@@ -4361,11 +4387,12 @@ async function loadIncome() {
 }
 
 async function loadBudget() {
-    const [budget, averages, plans] = await Promise.all([
+    let [budget, averages, plans] = await Promise.all([
         api(`/api/budget?month=${currentMonth}&plan=${currentPlanId}`),
         api(`/api/category-averages?from=${avgFromMonth}`),
         api('/api/budget-plans')
     ]);
+    budget = budget || []; averages = averages || {}; plans = plans || [];
     budgetPlans = plans;
     // Reset to first plan if stored plan no longer exists
     if (plans.length && !plans.find(p => p.id === currentPlanId)) {
@@ -4870,7 +4897,7 @@ function renderFrequencyChart(data) {
 // Tips
 // ============================================================
 async function loadTips() {
-    const tips = await api(`/api/tips?month=${currentMonth}`);
+    const tips = await api(`/api/tips?month=${currentMonth}`) || [];
     const container = document.getElementById('tipsContainer');
 
     if (!tips.length) {
@@ -5125,35 +5152,45 @@ async function uploadFile(file, resultDiv) {
     const formData = new FormData();
     formData.append('file', file);
 
-    resultDiv.innerHTML = `<div class="text-primary"><i class="bi bi-hourglass-split me-1"></i>${t('processing')}</div>`;
+    // Add a processing indicator for this file
+    const statusEl = document.createElement('div');
+    statusEl.className = 'text-primary mb-2';
+    statusEl.innerHTML = `<i class="bi bi-hourglass-split me-1"></i>${t('processing')} <b>${file.name}</b>...`;
+    resultDiv.appendChild(statusEl);
 
     try {
         const res = await fetch('/api/import', { method: 'POST', body: formData });
         const data = await res.json();
 
         if (data.error) {
-            resultDiv.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+            statusEl.className = '';
+            statusEl.innerHTML = `<div class="alert alert-danger py-2 mb-2"><b>${file.name}</b>: ${data.error}</div>`;
         } else if (data.source === 'bank_csv') {
-            resultDiv.innerHTML += `
-                <div class="alert alert-success">
+            statusEl.className = '';
+            const dupLine = data.skipped_duplicates ? `<br><i class="bi bi-copy text-muted"></i> ${data.skipped_duplicates} ${t('duplicates_skipped')}` : '';
+            statusEl.innerHTML = `
+                <div class="alert alert-success py-2 mb-2">
                     <i class="bi bi-check-circle me-1"></i>
-                    <strong>${t('import_complete')}</strong><br>
+                    <strong>${file.name} — ${t('import_complete')}</strong><br>
                     <i class="bi bi-arrow-up-circle text-danger"></i> ${data.imported_expenses} ${t('expenses_imported')}<br>
                     <i class="bi bi-arrow-down-circle text-success"></i> ${data.imported_income} ${t('income_imported')}<br>
-                    <i class="bi bi-skip-forward text-warning"></i> ${data.skipped_visa} ${t('visa_skipped')}
+                    <i class="bi bi-skip-forward text-warning"></i> ${data.skipped_visa} ${t('visa_skipped')}${dupLine}
                 </div>`;
             refreshAll();
         } else {
-            resultDiv.innerHTML += `
-                <div class="alert alert-success">
+            statusEl.className = '';
+            const dupLine = data.skipped_duplicates ? `<br><i class="bi bi-copy text-muted"></i> ${data.skipped_duplicates} ${t('duplicates_skipped')}` : '';
+            statusEl.innerHTML = `
+                <div class="alert alert-success py-2 mb-2">
                     <i class="bi bi-check-circle me-1"></i>
-                    ${data.imported} ${t('records_imported')}
-                    ${data.month ? `(${monthDisplay(data.month)})` : ''}
+                    <b>${file.name}</b> — ${data.imported} ${t('records_imported')}
+                    ${data.month ? `(${monthDisplay(data.month)})` : ''}${dupLine}
                 </div>`;
             refreshAll();
         }
     } catch (e) {
-        resultDiv.innerHTML = `<div class="alert alert-danger">${t('import_error')}: ${e.message}</div>`;
+        statusEl.className = '';
+        statusEl.innerHTML = `<div class="alert alert-danger py-2 mb-2"><b>${file.name}</b>: ${t('import_error')}: ${e.message}</div>`;
     }
 }
 
@@ -5167,17 +5204,16 @@ function setupUploadZone(zoneId, inputId, resultDivId) {
     zone.addEventListener('drop', e => {
         e.preventDefault();
         zone.classList.remove('dragover');
-        resultDiv.innerHTML = '';
         for (const file of e.dataTransfer.files) {
             uploadFile(file, resultDiv);
         }
     });
 
     input.addEventListener('change', () => {
-        resultDiv.innerHTML = '';
         for (const file of input.files) {
             uploadFile(file, resultDiv);
         }
+        input.value = '';
     });
 }
 
@@ -5230,7 +5266,7 @@ document.getElementById('addIncomeForm').addEventListener('submit', async e => {
 // Installment Payments
 // ============================================================
 async function loadInstallments() {
-    const data = await api('/api/installments');
+    const data = await api('/api/installments') || [];
     const tbody = document.getElementById('installmentsBody');
     const summaryDiv = document.getElementById('installmentsSummary');
 

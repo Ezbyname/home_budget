@@ -27,7 +27,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.0.1000007'
+APP_VERSION = '1.0.1000014'
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 # Store user data in a stable folder that survives exe rebuilds
@@ -100,7 +100,7 @@ def get_db():
     return conn
 
 
-def apply_category_rule(conn, description, category_id, frequency='random'):
+def apply_category_rule(conn, description, category_id, frequency='random', user_id=None):
     """Check if user has a saved category/frequency rule for this description."""
     if description:
         rule = conn.execute(
@@ -109,10 +109,16 @@ def apply_category_rule(conn, description, category_id, frequency='random'):
         if rule:
             category_id = rule['category_id']
         # Also check if existing expenses with same description have a non-random frequency
-        freq_row = conn.execute(
-            "SELECT frequency FROM expenses WHERE description=? AND frequency != 'random' LIMIT 1",
-            (description,)
-        ).fetchone()
+        if user_id is not None:
+            freq_row = conn.execute(
+                "SELECT frequency FROM expenses WHERE description=? AND frequency != 'random' AND user_id=? LIMIT 1",
+                (description, user_id)
+            ).fetchone()
+        else:
+            freq_row = conn.execute(
+                "SELECT frequency FROM expenses WHERE description=? AND frequency != 'random' LIMIT 1",
+                (description,)
+            ).fetchone()
         if freq_row:
             frequency = freq_row['frequency']
     return category_id, frequency
@@ -138,6 +144,7 @@ def init_db():
             source TEXT DEFAULT 'manual',
             frequency TEXT DEFAULT 'random',
             card TEXT DEFAULT '',
+            user_id INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (category_id) REFERENCES categories(id)
         );
@@ -150,13 +157,15 @@ def init_db():
             amount REAL NOT NULL,
             description TEXT,
             is_recurring INTEGER DEFAULT 0,
+            user_id INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS budget_plans (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL DEFAULT 'תקציב 1',
-            description TEXT NOT NULL DEFAULT ''
+            description TEXT NOT NULL DEFAULT '',
+            user_id INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS budget (
@@ -165,12 +174,11 @@ def init_db():
             month TEXT NOT NULL,
             planned_amount REAL NOT NULL DEFAULT 0,
             plan_id INTEGER NOT NULL DEFAULT 1,
-            UNIQUE(category_id, month, plan_id),
+            user_id INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(category_id, month, plan_id, user_id),
             FOREIGN KEY (category_id) REFERENCES categories(id),
             FOREIGN KEY (plan_id) REFERENCES budget_plans(id)
         );
-
-        INSERT OR IGNORE INTO budget_plans (id, name) VALUES (1, 'תקציב 1');
 
         CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
         CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category_id);
@@ -209,6 +217,7 @@ def init_db():
             notes TEXT DEFAULT '',
             expense_pattern TEXT DEFAULT '',
             status TEXT DEFAULT 'active',
+            user_id INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
@@ -226,6 +235,7 @@ def init_db():
             message TEXT DEFAULT '',
             enabled INTEGER DEFAULT 1,
             last_sent TEXT DEFAULT '',
+            user_id INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -246,6 +256,7 @@ def init_db():
             start_date TEXT NOT NULL,
             card TEXT DEFAULT '',
             notes TEXT DEFAULT '',
+            user_id INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -299,6 +310,47 @@ def init_db():
         conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
         conn.commit()
 
+    # Migration: add user_id to data tables for per-user isolation
+    exp_cols = [r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()]
+    if 'user_id' not in exp_cols:
+        first_user = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        default_uid = first_user['id'] if first_user else 1
+        for tbl in ['expenses', 'income', 'budget_plans', 'installments', 'reminders', 'financial_products']:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER NOT NULL DEFAULT {default_uid}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_expenses_user ON expenses(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_user ON income(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_installments_user ON installments(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_financial_products_user ON financial_products(user_id)")
+        conn.commit()
+
+    # Migration: add user_id to budget table (requires recreate for UNIQUE constraint)
+    bud_cols = [r[1] for r in conn.execute("PRAGMA table_info(budget)").fetchall()]
+    if 'user_id' not in bud_cols:
+        first_user = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        default_uid = first_user['id'] if first_user else 1
+        conn.execute("ALTER TABLE budget RENAME TO budget_old_uid")
+        conn.execute(f"""
+            CREATE TABLE budget (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category_id TEXT NOT NULL,
+                month TEXT NOT NULL,
+                planned_amount REAL NOT NULL DEFAULT 0,
+                plan_id INTEGER NOT NULL DEFAULT 1,
+                user_id INTEGER NOT NULL DEFAULT {default_uid},
+                UNIQUE(category_id, month, plan_id, user_id),
+                FOREIGN KEY (category_id) REFERENCES categories(id),
+                FOREIGN KEY (plan_id) REFERENCES budget_plans(id)
+            )
+        """)
+        conn.execute(f"""
+            INSERT INTO budget (id, category_id, month, planned_amount, plan_id, user_id)
+            SELECT id, category_id, month, planned_amount, plan_id, {default_uid} FROM budget_old_uid
+        """)
+        conn.execute("DROP TABLE budget_old_uid")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_budget_user ON budget(user_id)")
+        conn.commit()
+
     # Insert default categories if empty
     existing = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
     if existing == 0:
@@ -338,8 +390,6 @@ def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
-            if request.method == 'GET':
-                return f(*args, **kwargs)
             return jsonify({'error': 'Not authenticated'}), 401
         return f(*args, **kwargs)
     return decorated
@@ -357,6 +407,24 @@ def admin_required(f):
             return jsonify({'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated
+
+
+def get_uid():
+    """Return current user's id from session."""
+    return session['user_id']
+
+
+def ensure_user_budget_plan(conn, user_id):
+    """Ensure user has a default budget plan."""
+    existing = conn.execute(
+        "SELECT id FROM budget_plans WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            "INSERT INTO budget_plans (name, description, user_id) VALUES ('תקציב 1', '', ?)",
+            (user_id,)
+        )
+        conn.commit()
 
 
 def has_any_users():
@@ -782,7 +850,7 @@ _scheduler_thread.start()
 @login_required
 def get_reminders():
     conn = get_db()
-    rows = conn.execute("SELECT * FROM reminders ORDER BY created_at DESC").fetchall()
+    rows = conn.execute("SELECT * FROM reminders WHERE user_id=? ORDER BY created_at DESC", (get_uid(),)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -793,8 +861,8 @@ def add_reminder():
     data = request.json
     conn = get_db()
     conn.execute("""
-        INSERT INTO reminders (name, method, destination, frequency, day_of_month, day_of_week, hour, minute, message, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO reminders (name, method, destination, frequency, day_of_month, day_of_week, hour, minute, message, enabled, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data.get('name', 'תזכורת ייבוא'),
         data.get('method', 'email'),
@@ -805,7 +873,8 @@ def add_reminder():
         data.get('hour', 9),
         data.get('minute', 0),
         data.get('message', ''),
-        1
+        1,
+        get_uid()
     ))
     conn.commit()
     conn.close()
@@ -820,7 +889,7 @@ def update_reminder(rid):
     conn.execute("""
         UPDATE reminders SET name=?, method=?, destination=?, frequency=?,
         day_of_month=?, day_of_week=?, hour=?, minute=?, message=?, enabled=?
-        WHERE id=?
+        WHERE id=? AND user_id=?
     """, (
         data.get('name', ''),
         data.get('method', 'email'),
@@ -832,7 +901,8 @@ def update_reminder(rid):
         data.get('minute', 0),
         data.get('message', ''),
         data.get('enabled', 1),
-        rid
+        rid,
+        get_uid()
     ))
     conn.commit()
     conn.close()
@@ -843,7 +913,7 @@ def update_reminder(rid):
 @login_required
 def delete_reminder(rid):
     conn = get_db()
-    conn.execute("DELETE FROM reminders WHERE id=?", (rid,))
+    conn.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (rid, get_uid()))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -854,7 +924,7 @@ def delete_reminder(rid):
 def test_reminder(rid):
     """Send a test reminder immediately."""
     conn = get_db()
-    r = conn.execute("SELECT * FROM reminders WHERE id=?", (rid,)).fetchone()
+    r = conn.execute("SELECT * FROM reminders WHERE id=? AND user_id=?", (rid, get_uid())).fetchone()
     conn.close()
     if not r:
         return jsonify({'error': 'Reminder not found'}), 404
@@ -912,10 +982,10 @@ def get_standing_orders():
                c.color as category_color, e.card, e.amount, MAX(e.date) as last_date
         FROM expenses e
         JOIN categories c ON e.category_id = c.id
-        WHERE e.frequency = 'monthly'
+        WHERE e.frequency = 'monthly' AND e.user_id = ?
         GROUP BY e.description
         ORDER BY e.amount DESC
-    """).fetchall()
+    """, (get_uid(),)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -933,8 +1003,8 @@ def get_expenses():
     cards = request.args.getlist('card')  # multi-select source/card filter
 
     sql = """SELECT e.*, c.name_he as category_name, c.color as category_color
-             FROM expenses e JOIN categories c ON e.category_id = c.id WHERE 1=1"""
-    params = []
+             FROM expenses e JOIN categories c ON e.category_id = c.id WHERE e.user_id = ?"""
+    params = [get_uid()]
 
     if from_date and to_date:
         sql += " AND e.date >= ? AND e.date <= ?"
@@ -971,10 +1041,10 @@ def add_expense():
     data = request.json
     conn = get_db()
     conn.execute(
-        "INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (data['date'], data['category_id'], data.get('subcategory', ''),
          data.get('description', ''), data['amount'], data.get('source', 'manual'),
-         data.get('frequency', 'random'))
+         data.get('frequency', 'random'), get_uid())
     )
     conn.commit()
     conn.close()
@@ -996,16 +1066,17 @@ def update_expense(expense_id):
         conn.close()
         return jsonify({'error': 'No fields to update'}), 400
     values.append(expense_id)
-    conn.execute(f"UPDATE expenses SET {','.join(fields)} WHERE id=?", values)
+    values.append(get_uid())
+    conn.execute(f"UPDATE expenses SET {','.join(fields)} WHERE id=? AND user_id=?", values)
 
     # If category changed, update ALL expenses with the same description and save a rule
     if 'category_id' in data:
-        exp = conn.execute("SELECT description FROM expenses WHERE id=?", (expense_id,)).fetchone()
+        exp = conn.execute("SELECT description FROM expenses WHERE id=? AND user_id=?", (expense_id, get_uid())).fetchone()
         if exp and exp['description']:
             desc = exp['description']
             conn.execute(
-                "UPDATE expenses SET category_id=? WHERE description=?",
-                (data['category_id'], desc)
+                "UPDATE expenses SET category_id=? WHERE description=? AND user_id=?",
+                (data['category_id'], desc, get_uid())
             )
             conn.execute(
                 "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
@@ -1014,11 +1085,11 @@ def update_expense(expense_id):
 
     # If frequency changed, update ALL expenses with the same description
     if 'frequency' in data:
-        exp = conn.execute("SELECT description FROM expenses WHERE id=?", (expense_id,)).fetchone()
+        exp = conn.execute("SELECT description FROM expenses WHERE id=? AND user_id=?", (expense_id, get_uid())).fetchone()
         if exp and exp['description']:
             conn.execute(
-                "UPDATE expenses SET frequency=? WHERE description=?",
-                (data['frequency'], exp['description'])
+                "UPDATE expenses SET frequency=? WHERE description=? AND user_id=?",
+                (data['frequency'], exp['description'], get_uid())
             )
 
     conn.commit()
@@ -1030,7 +1101,7 @@ def update_expense(expense_id):
 @login_required
 def delete_expense(expense_id):
     conn = get_db()
-    conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+    conn.execute("DELETE FROM expenses WHERE id = ? AND user_id = ?", (expense_id, get_uid()))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -1044,11 +1115,11 @@ def get_income():
     month = request.args.get('month')
     if month:
         rows = conn.execute(
-            "SELECT * FROM income WHERE date LIKE ? ORDER BY date DESC",
-            (month + '%',)
+            "SELECT * FROM income WHERE user_id=? AND date LIKE ? ORDER BY date DESC",
+            (get_uid(), month + '%')
         ).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM income ORDER BY date DESC LIMIT 200").fetchall()
+        rows = conn.execute("SELECT * FROM income WHERE user_id=? ORDER BY date DESC LIMIT 200", (get_uid(),)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -1059,9 +1130,9 @@ def add_income():
     data = request.json
     conn = get_db()
     conn.execute(
-        "INSERT INTO income (date, person, source, amount, description, is_recurring) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO income (date, person, source, amount, description, is_recurring, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (data['date'], data['person'], data['source'], data['amount'],
-         data.get('description', ''), data.get('is_recurring', 0))
+         data.get('description', ''), data.get('is_recurring', 0), get_uid())
     )
     conn.commit()
     conn.close()
@@ -1072,7 +1143,7 @@ def add_income():
 @login_required
 def delete_income(income_id):
     conn = get_db()
-    conn.execute("DELETE FROM income WHERE id = ?", (income_id,))
+    conn.execute("DELETE FROM income WHERE id = ? AND user_id = ?", (income_id, get_uid()))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -1085,7 +1156,8 @@ def get_available_months():
     """Return all months that have expense data, sorted ascending."""
     conn = get_db()
     rows = conn.execute(
-        "SELECT DISTINCT substr(date, 1, 7) as month FROM expenses ORDER BY month"
+        "SELECT DISTINCT substr(date, 1, 7) as month FROM expenses WHERE user_id=? ORDER BY month",
+        (get_uid(),)
     ).fetchall()
     conn.close()
     return jsonify([r['month'] for r in rows])
@@ -1097,23 +1169,25 @@ def get_category_averages():
     """Return monthly average expense per category. Optional ?from=YYYY-MM filter."""
     conn = get_db()
     from_month = request.args.get('from')
+    uid = get_uid()
     if from_month and from_month != 'all':
         rows = conn.execute("""
             SELECT e.category_id,
                    SUM(e.amount) as total,
                    COUNT(DISTINCT substr(e.date, 1, 7)) as months
             FROM expenses e
-            WHERE substr(e.date, 1, 7) >= ?
+            WHERE e.user_id=? AND substr(e.date, 1, 7) >= ?
             GROUP BY e.category_id
-        """, (from_month,)).fetchall()
+        """, (uid, from_month)).fetchall()
     else:
         rows = conn.execute("""
             SELECT e.category_id,
                    SUM(e.amount) as total,
                    COUNT(DISTINCT substr(e.date, 1, 7)) as months
             FROM expenses e
+            WHERE e.user_id=?
             GROUP BY e.category_id
-        """).fetchall()
+        """, (uid,)).fetchall()
     conn.close()
     result = {}
     for r in rows:
@@ -1128,20 +1202,22 @@ def get_budget():
     conn = get_db()
     month = request.args.get('month')
     plan_id = request.args.get('plan', '1')
+    uid = get_uid()
+    ensure_user_budget_plan(conn, uid)
     if month:
         rows = conn.execute(
             """SELECT b.*, c.name_he, c.color FROM budget b
                JOIN categories c ON b.category_id = c.id
-               WHERE b.month = ? AND b.plan_id = ? ORDER BY c.sort_order""",
-            (month, plan_id)
+               WHERE b.month = ? AND b.plan_id = ? AND b.user_id = ? ORDER BY c.sort_order""",
+            (month, plan_id, uid)
         ).fetchall()
     else:
         rows = conn.execute(
             """SELECT b.*, c.name_he, c.color FROM budget b
                JOIN categories c ON b.category_id = c.id
-               WHERE b.plan_id = ?
+               WHERE b.plan_id = ? AND b.user_id = ?
                ORDER BY b.month DESC, c.sort_order""",
-            (plan_id,)
+            (plan_id, uid)
         ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -1154,11 +1230,11 @@ def set_budget():
     plan_id = data.get('plan_id', 1)
     conn = get_db()
     conn.execute(
-        """INSERT INTO budget (category_id, month, planned_amount, plan_id)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(category_id, month, plan_id)
+        """INSERT INTO budget (category_id, month, planned_amount, plan_id, user_id)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(category_id, month, plan_id, user_id)
            DO UPDATE SET planned_amount = excluded.planned_amount""",
-        (data['category_id'], data['month'], data['planned_amount'], plan_id)
+        (data['category_id'], data['month'], data['planned_amount'], plan_id, get_uid())
     )
     conn.commit()
     conn.close()
@@ -1169,7 +1245,8 @@ def set_budget():
 @login_required
 def get_budget_plans():
     conn = get_db()
-    rows = conn.execute("SELECT * FROM budget_plans ORDER BY id").fetchall()
+    ensure_user_budget_plan(conn, get_uid())
+    rows = conn.execute("SELECT * FROM budget_plans WHERE user_id=? ORDER BY id", (get_uid(),)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -1179,15 +1256,15 @@ def get_budget_plans():
 def save_budget_plan():
     data = request.json
     conn = get_db()
-    count = conn.execute("SELECT COUNT(*) FROM budget_plans").fetchone()[0]
+    uid = get_uid()
+    count = conn.execute("SELECT COUNT(*) FROM budget_plans WHERE user_id=?", (uid,)).fetchone()[0]
     desc = data.get('description', '')
     if data.get('id'):
-        conn.execute("UPDATE budget_plans SET name = ?, description = ? WHERE id = ?",
-                     (data['name'], desc, data['id']))
+        conn.execute("UPDATE budget_plans SET name = ?, description = ? WHERE id = ? AND user_id = ?",
+                     (data['name'], desc, data['id'], uid))
     elif count < 3:
-        new_id = count + 1
-        conn.execute("INSERT INTO budget_plans (id, name, description) VALUES (?, ?, ?)",
-                     (new_id, data['name'], desc))
+        conn.execute("INSERT INTO budget_plans (name, description, user_id) VALUES (?, ?, ?)",
+                     (data['name'], desc, uid))
     else:
         conn.close()
         return jsonify({'error': 'max 3 plans'}), 400
@@ -1202,8 +1279,9 @@ def delete_budget_plan(plan_id):
     if plan_id == 1:
         return jsonify({'error': 'cannot delete default plan'}), 400
     conn = get_db()
-    conn.execute("DELETE FROM budget WHERE plan_id = ?", (plan_id,))
-    conn.execute("DELETE FROM budget_plans WHERE id = ?", (plan_id,))
+    uid = get_uid()
+    conn.execute("DELETE FROM budget WHERE plan_id = ? AND user_id = ?", (plan_id, uid))
+    conn.execute("DELETE FROM budget_plans WHERE id = ? AND user_id = ?", (plan_id, uid))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -1215,33 +1293,34 @@ def delete_budget_plan(plan_id):
 def get_summary():
     conn = get_db()
     month = request.args.get('month', date.today().strftime('%Y-%m'))
+    uid = get_uid()
 
     # Expenses by category
     cat_expenses = conn.execute(
         """SELECT c.id, c.name_he, c.color, COALESCE(SUM(e.amount), 0) as total
-           FROM categories c LEFT JOIN expenses e ON c.id = e.category_id AND e.date LIKE ?
+           FROM categories c LEFT JOIN expenses e ON c.id = e.category_id AND e.date LIKE ? AND e.user_id = ?
            GROUP BY c.id ORDER BY total DESC""",
-        (month + '%',)
+        (month + '%', uid)
     ).fetchall()
 
     # Daily expenses for the month
     daily = conn.execute(
         """SELECT date, SUM(amount) as total FROM expenses
-           WHERE date LIKE ? GROUP BY date ORDER BY date""",
-        (month + '%',)
+           WHERE user_id = ? AND date LIKE ? GROUP BY date ORDER BY date""",
+        (uid, month + '%')
     ).fetchall()
 
     # Total income for the month
     income_total = conn.execute(
-        "SELECT COALESCE(SUM(amount), 0) as total FROM income WHERE date LIKE ?",
-        (month + '%',)
+        "SELECT COALESCE(SUM(amount), 0) as total FROM income WHERE user_id = ? AND date LIKE ?",
+        (uid, month + '%')
     ).fetchone()['total']
 
     # Income by person
     income_by_person = conn.execute(
         """SELECT person, SUM(amount) as total FROM income
-           WHERE date LIKE ? GROUP BY person""",
-        (month + '%',)
+           WHERE user_id = ? AND date LIKE ? GROUP BY person""",
+        (uid, month + '%')
     ).fetchall()
 
     # Budget vs actual
@@ -1251,36 +1330,37 @@ def get_summary():
                   COALESCE(b.planned_amount, 0) as planned,
                   COALESCE(SUM(e.amount), 0) as actual
            FROM categories c
-           LEFT JOIN budget b ON c.id = b.category_id AND b.month = ? AND b.plan_id = ?
-           LEFT JOIN expenses e ON c.id = e.category_id AND e.date LIKE ?
+           LEFT JOIN budget b ON c.id = b.category_id AND b.month = ? AND b.plan_id = ? AND b.user_id = ?
+           LEFT JOIN expenses e ON c.id = e.category_id AND e.date LIKE ? AND e.user_id = ?
            GROUP BY c.id
            HAVING planned > 0 OR actual > 0
            ORDER BY c.sort_order""",
-        (month, plan_id, month + '%')
+        (month, plan_id, uid, month + '%', uid)
     ).fetchall()
 
     # Monthly trend (last 6 months)
     monthly_trend = conn.execute(
         """SELECT substr(date, 1, 7) as month, SUM(amount) as total
-           FROM expenses GROUP BY substr(date, 1, 7)
-           ORDER BY month DESC LIMIT 6"""
+           FROM expenses WHERE user_id = ? GROUP BY substr(date, 1, 7)
+           ORDER BY month DESC LIMIT 6""",
+        (uid,)
     ).fetchall()
 
     # Expenses by card
     by_card = conn.execute(
         """SELECT CASE WHEN card = '' THEN 'אחר' ELSE card END as card_name,
                   SUM(amount) as total, COUNT(*) as count
-           FROM expenses WHERE date LIKE ?
+           FROM expenses WHERE user_id = ? AND date LIKE ?
            GROUP BY card_name ORDER BY total DESC""",
-        (month + '%',)
+        (uid, month + '%')
     ).fetchall()
 
     # Expenses by frequency
     by_frequency = conn.execute(
         """SELECT frequency, SUM(amount) as total, COUNT(*) as count
-           FROM expenses WHERE date LIKE ?
+           FROM expenses WHERE user_id = ? AND date LIKE ?
            GROUP BY frequency""",
-        (month + '%',)
+        (uid, month + '%')
     ).fetchall()
 
     expense_total = sum(r['total'] for r in cat_expenses)
@@ -1316,12 +1396,13 @@ def import_file():
     file.save(filepath)
 
     try:
+        uid = get_uid()
         if file.filename.endswith('.xls'):
-            result = parse_budget_xls(filepath)
+            result = parse_budget_xls(filepath, uid)
         elif file.filename.endswith('.xlsx'):
-            result = parse_visa_xlsx(filepath)
+            result = parse_visa_xlsx(filepath, uid)
         elif file.filename.endswith('.csv'):
-            result = parse_bank_csv(filepath)
+            result = parse_bank_csv(filepath, uid)
         else:
             return jsonify({'error': 'Unsupported file format. Use .xls, .xlsx or .csv'}), 400
         return jsonify(result)
@@ -1329,7 +1410,7 @@ def import_file():
         return jsonify({'error': str(e)}), 400
 
 
-def parse_budget_xls(filepath):
+def parse_budget_xls(filepath, user_id=None):
     """Parse the Hebrew budget XLS format and import expenses."""
     wb = xlrd.open_workbook(filepath)
     sheet = wb.sheets()[0]
@@ -1397,12 +1478,18 @@ def parse_budget_xls(filepath):
                     # Use middle of the week as the date
                     day = min(day_start + 3, 28)
                     expense_date = f"{month_str}-{day:02d}"
-                    conn.execute(
-                        """INSERT INTO expenses (date, category_id, subcategory, description, amount, source)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (expense_date, category_id, subcategory, f'Imported from XLS', amount, 'xls_import')
-                    )
-                    imported += 1
+                    # Skip duplicates
+                    dup = conn.execute(
+                        "SELECT COUNT(*) FROM expenses WHERE date=? AND category_id=? AND amount=? AND source='xls_import' AND user_id=?",
+                        (expense_date, category_id, amount, user_id)
+                    ).fetchone()[0]
+                    if not dup:
+                        conn.execute(
+                            """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, user_id)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (expense_date, category_id, subcategory, f'Imported from XLS', amount, 'xls_import', user_id)
+                        )
+                        imported += 1
             except (ValueError, TypeError, IndexError):
                 continue
 
@@ -1449,7 +1536,7 @@ VISA_CATEGORY_MAP = {
 }
 
 
-def parse_visa_xlsx(filepath):
+def parse_visa_xlsx(filepath, user_id=None):
     """Parse Visa credit card XLSX export and import expenses."""
     import re
     wb = openpyxl.load_workbook(filepath)
@@ -1531,18 +1618,27 @@ def parse_visa_xlsx(filepath):
                     break
 
         # Apply user's saved category/frequency rules
-        category_id, freq = apply_category_rule(conn, description, category_id)
+        category_id, freq = apply_category_rule(conn, description, category_id, user_id=user_id)
+
+        # Skip duplicates (same date, description, amount, user)
+        dup = conn.execute(
+            "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
+            (expense_date, description, amount, user_id)
+        ).fetchone()[0]
+        if dup:
+            skipped += 1
+            continue
 
         conn.execute(
-            """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (expense_date, category_id, subcategory, description, amount, 'visa_import', card_label, freq)
+            """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (expense_date, category_id, subcategory, description, amount, 'visa_import', card_label, freq, user_id)
         )
         imported += 1
 
     conn.commit()
     conn.close()
-    return {'status': 'ok', 'imported': imported, 'source': 'visa'}
+    return {'status': 'ok', 'imported': imported, 'skipped_duplicates': skipped, 'source': 'visa'}
 
 
 # ---- Bank CSV Import ----
@@ -1630,7 +1726,7 @@ VISA_DESCRIPTION_MAP = [
 ]
 
 
-def parse_bank_csv(filepath):
+def parse_bank_csv(filepath, user_id=None):
     """Parse Israeli bank CSV (עובר ושב) and import expenses + income."""
     # Try different encodings
     content = None
@@ -1650,11 +1746,13 @@ def parse_bank_csv(filepath):
 
     conn = get_db()
     has_visa_imports = conn.execute(
-        "SELECT COUNT(*) FROM expenses WHERE source = 'visa_import'"
+        "SELECT COUNT(*) FROM expenses WHERE source = 'visa_import' AND user_id = ?",
+        (user_id,)
     ).fetchone()[0] > 0
     imported_expenses = 0
     imported_income = 0
     skipped_visa = 0
+    skipped_dup = 0
     skipped_other = 0
 
     for row in reader:
@@ -1714,10 +1812,19 @@ def parse_bank_csv(filepath):
                     is_recurring = rec
                     break
 
+            # Skip duplicates (same date, description, amount, user)
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM income WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, amount, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped_dup += 1
+                continue
+
             conn.execute(
-                """INSERT INTO income (date, person, source, amount, description, is_recurring)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (expense_date, person, source, amount, description, is_recurring)
+                """INSERT INTO income (date, person, source, amount, description, is_recurring, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, person, source, amount, description, is_recurring, user_id)
             )
             imported_income += 1
 
@@ -1742,12 +1849,21 @@ def parse_bank_csv(filepath):
                 skipped_other += 1
 
             # Apply user's saved category/frequency rules
-            category_id, frequency = apply_category_rule(conn, description, category_id, frequency)
+            category_id, frequency = apply_category_rule(conn, description, category_id, frequency, user_id=user_id)
+
+            # Skip duplicates (same date, description, amount, user)
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, abs_amount, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped_dup += 1
+                continue
 
             conn.execute(
-                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, card)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, category_id, subcategory, description, abs_amount, 'bank_csv', frequency, 'בנק דיסקונט')
+                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, card, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, abs_amount, 'bank_csv', frequency, 'בנק דיסקונט', user_id)
             )
             imported_expenses += 1
 
@@ -1758,7 +1874,7 @@ def parse_bank_csv(filepath):
         'imported_expenses': imported_expenses,
         'imported_income': imported_income,
         'skipped_visa': skipped_visa,
-        'skipped_unmatched': skipped_other,
+        'skipped_duplicates': skipped_dup,
         'source': 'bank_csv'
     }
 
@@ -1770,25 +1886,26 @@ def parse_bank_csv(filepath):
 def get_tips():
     conn = get_db()
     month = request.args.get('month', date.today().strftime('%Y-%m'))
+    uid = get_uid()
     tips = []
 
     # Helper: get total months of data
     months_list = [r[0] for r in conn.execute(
-        "SELECT DISTINCT substr(date,1,7) FROM expenses ORDER BY substr(date,1,7)"
+        "SELECT DISTINCT substr(date,1,7) FROM expenses WHERE user_id=? ORDER BY substr(date,1,7)", (uid,)
     ).fetchall()]
     num_months = max(len(months_list), 1)
 
     # Current month data
     exp_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE date LIKE ?", (month+'%',)
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND date LIKE ?", (uid, month+'%')
     ).fetchone()[0]
     inc_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM income WHERE date LIKE ?", (month+'%',)
+        "SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=? AND date LIKE ?", (uid, month+'%')
     ).fetchone()[0]
 
     # ---- TIP 1: Overdraft interest ----
     overdraft = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE subcategory='ריבית מינוס'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND subcategory='ריבית מינוס'", (uid,)
     ).fetchone()[0] or 0
     if overdraft > 0:
         monthly_avg = overdraft / num_months
@@ -1810,7 +1927,7 @@ def get_tips():
 
     # ---- TIP 2: Cash withdrawals - untracked spending ----
     cash = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE subcategory='משיכת מזומן'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND subcategory='משיכת מזומן'", (uid,)
     ).fetchone()[0] or 0
     if cash > 500:
         monthly_cash = cash / num_months
@@ -1831,10 +1948,10 @@ def get_tips():
 
     # ---- TIP 3: Multiple credit cards ----
     diners = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE subcategory LIKE '%דיינרס%'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND subcategory LIKE '%דיינרס%'", (uid,)
     ).fetchone()[0] or 0
     isracard = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE subcategory LIKE '%ישראכרט%'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND subcategory LIKE '%ישראכרט%'", (uid,)
     ).fetchone()[0] or 0
     if diners > 0 and isracard > 0:
         tips.append({
@@ -1854,11 +1971,11 @@ def get_tips():
 
     # ---- TIP 4: Food spending analysis ----
     food_total = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE category_id='food'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND category_id='food'", (uid,)
     ).fetchone()[0] or 0
     food_monthly = food_total / num_months if num_months else 0
     restaurants = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE category_id='food' AND (subcategory LIKE '%מסעד%' OR subcategory LIKE '%מזון מהיר%')"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND category_id='food' AND (subcategory LIKE '%מסעד%' OR subcategory LIKE '%מזון מהיר%')", (uid,)
     ).fetchone()[0] or 0
     if food_monthly > 2000:
         rest_pct = (restaurants / food_total * 100) if food_total else 0
@@ -1880,7 +1997,7 @@ def get_tips():
 
     # ---- TIP 5: Entertainment spending ----
     ent_total = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE category_id='entertainment'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND category_id='entertainment'", (uid,)
     ).fetchone()[0] or 0
     ent_monthly = ent_total / num_months if num_months else 0
     if ent_monthly > 1000:
@@ -1902,7 +2019,7 @@ def get_tips():
 
     # ---- TIP 6: Insurance optimization ----
     insurance = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE category_id='insurance'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND category_id='insurance'", (uid,)
     ).fetchone()[0] or 0
     ins_monthly = insurance / num_months if num_months else 0
     if ins_monthly > 500:
@@ -1923,9 +2040,9 @@ def get_tips():
         })
 
     # ---- TIP 7: Savings rate ----
-    total_income = conn.execute("SELECT COALESCE(SUM(amount),0) FROM income").fetchone()[0]
+    total_income = conn.execute("SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=?", (uid,)).fetchone()[0]
     savings_exp = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE category_id='savings'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND category_id='savings'", (uid,)
     ).fetchone()[0] or 0
     if total_income > 0:
         savings_rate = savings_exp / total_income * 100
@@ -1950,7 +2067,7 @@ def get_tips():
 
     # ---- TIP 8: BIT/PAYBOX untracked transfers ----
     bit_total = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE subcategory LIKE '%BIT%' OR subcategory LIKE '%PAYBOX%'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND (subcategory LIKE '%BIT%' OR subcategory LIKE '%PAYBOX%')", (uid,)
     ).fetchone()[0] or 0
     if bit_total > 500:
         tips.append({
@@ -1971,13 +2088,13 @@ def get_tips():
     # ---- TIP 9: Negative balance months ----
     all_months = conn.execute("""
         SELECT substr(date,1,7) as m, SUM(amount) as exp_total
-        FROM expenses GROUP BY m
-    """).fetchall()
+        FROM expenses WHERE user_id=? GROUP BY m
+    """, (uid,)).fetchall()
     neg_months = 0
     for row in all_months:
         m = row[0]
         inc = conn.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM income WHERE substr(date,1,7)=?", (m,)
+            "SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=? AND substr(date,1,7)=?", (uid, m)
         ).fetchone()[0]
         if inc - row[1] < 0:
             neg_months += 1
@@ -2013,22 +2130,24 @@ def get_tips():
 def analyze_budget():
     """Deep analysis engine that processes all expenses and generates conclusions."""
     conn = get_db()
+    uid = get_uid()
 
     # Gather all data
     months_data = conn.execute("""
         SELECT m,
                exp_total,
-               COALESCE((SELECT SUM(amount) FROM income WHERE substr(date,1,7)=m), 0) as inc_total
+               COALESCE((SELECT SUM(amount) FROM income WHERE user_id=? AND substr(date,1,7)=m), 0) as inc_total
         FROM (SELECT substr(date,1,7) as m, SUM(amount) as exp_total
-              FROM expenses GROUP BY m ORDER BY m)
-    """).fetchall()
+              FROM expenses WHERE user_id=? GROUP BY m ORDER BY m)
+    """, (uid, uid)).fetchall()
 
     categories = conn.execute("""
         SELECT c.name_he, c.id, SUM(e.amount) as total,
                COUNT(DISTINCT substr(e.date,1,7)) as months_active
         FROM expenses e JOIN categories c ON e.category_id=c.id
+        WHERE e.user_id=?
         GROUP BY c.id ORDER BY total DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     num_months = len(months_data)
     total_income = sum(r[2] for r in months_data)
@@ -2038,12 +2157,12 @@ def analyze_budget():
 
     # Fixed vs variable
     fixed = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE frequency='monthly'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND frequency='monthly'", (uid,)
     ).fetchone()[0] or 0
     fixed_monthly = fixed / num_months if num_months else 0
 
     variable = conn.execute(
-        "SELECT SUM(amount) FROM expenses WHERE frequency='random'"
+        "SELECT SUM(amount) FROM expenses WHERE user_id=? AND frequency='random'", (uid,)
     ).fetchone()[0] or 0
     variable_monthly = variable / num_months if num_months else 0
 
@@ -2066,7 +2185,7 @@ def analyze_budget():
 
     # Positive factors
     savings_exp = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category_id='savings'"
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND category_id='savings'", (uid,)
     ).fetchone()[0]
     if total_income > 0:
         savings_rate = savings_exp / total_income * 100
@@ -2083,7 +2202,7 @@ def analyze_budget():
 
     # Overdraft penalty
     overdraft = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE subcategory='ריבית מינוס'"
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND subcategory='ריבית מינוס'", (uid,)
     ).fetchone()[0]
     if overdraft > 0:
         score -= 10
@@ -2256,6 +2375,7 @@ def export_excel():
 
     month = request.args.get('month', date.today().strftime('%Y-%m'))
     conn = get_db()
+    uid = get_uid()
 
     wb = openpyxl.Workbook()
 
@@ -2266,10 +2386,10 @@ def export_excel():
 
     # Get summary data
     income_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM income WHERE date LIKE ?", (month+'%',)
+        "SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=? AND date LIKE ?", (uid, month+'%')
     ).fetchone()[0]
     expense_total = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE date LIKE ?", (month+'%',)
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND date LIKE ?", (uid, month+'%')
     ).fetchone()[0]
 
     title_font = Font(bold=True, size=14, color='1E40AF')
@@ -2292,9 +2412,9 @@ def export_excel():
 
     cat_rows = conn.execute(
         """SELECT c.name_he, COALESCE(SUM(e.amount),0) as total
-           FROM categories c LEFT JOIN expenses e ON c.id=e.category_id AND e.date LIKE ?
+           FROM categories c LEFT JOIN expenses e ON c.id=e.category_id AND e.date LIKE ? AND e.user_id=?
            GROUP BY c.id HAVING total>0 ORDER BY total DESC""",
-        (month+'%',)
+        (month+'%', uid)
     ).fetchall()
 
     for i, r in enumerate(cat_rows):
@@ -2313,8 +2433,8 @@ def export_excel():
 
     freq_rows = conn.execute(
         """SELECT frequency, SUM(amount), COUNT(*) FROM expenses
-           WHERE date LIKE ? GROUP BY frequency ORDER BY SUM(amount) DESC""",
-        (month+'%',)
+           WHERE user_id=? AND date LIKE ? GROUP BY frequency ORDER BY SUM(amount) DESC""",
+        (uid, month+'%')
     ).fetchall()
     for i, r in enumerate(freq_rows):
         row = freq_start + 2 + i
@@ -2332,8 +2452,8 @@ def export_excel():
 
     card_rows = conn.execute(
         """SELECT CASE WHEN card='' THEN 'אחר' ELSE card END, SUM(amount), COUNT(*)
-           FROM expenses WHERE date LIKE ? GROUP BY card ORDER BY SUM(amount) DESC""",
-        (month+'%',)
+           FROM expenses WHERE user_id=? AND date LIKE ? GROUP BY card ORDER BY SUM(amount) DESC""",
+        (uid, month+'%')
     ).fetchall()
     for i, r in enumerate(card_rows):
         row = card_start + 2 + i
@@ -2350,8 +2470,8 @@ def export_excel():
 
     inc_person_rows = conn.execute(
         """SELECT person, SUM(amount) FROM income
-           WHERE date LIKE ? GROUP BY person ORDER BY SUM(amount) DESC""",
-        (month+'%',)
+           WHERE user_id=? AND date LIKE ? GROUP BY person ORDER BY SUM(amount) DESC""",
+        (uid, month+'%')
     ).fetchall()
     for i, r in enumerate(inc_person_rows):
         row = inc_start + 2 + i
@@ -2372,8 +2492,8 @@ def export_excel():
         """SELECT e.date, c.name_he, e.subcategory, e.description, e.amount,
                   e.frequency, e.card, e.source
            FROM expenses e JOIN categories c ON e.category_id=c.id
-           WHERE e.date LIKE ? ORDER BY e.date DESC""",
-        (month+'%',)
+           WHERE e.user_id=? AND e.date LIKE ? ORDER BY e.date DESC""",
+        (uid, month+'%')
     ).fetchall()
     for i, r in enumerate(expenses):
         row = i + 2
@@ -2396,8 +2516,8 @@ def export_excel():
     _style_header(ws_inc, len(inc_headers))
 
     incomes = conn.execute(
-        "SELECT date, person, source, amount, description, is_recurring FROM income WHERE date LIKE ? ORDER BY date DESC",
-        (month+'%',)
+        "SELECT date, person, source, amount, description, is_recurring FROM income WHERE user_id=? AND date LIKE ? ORDER BY date DESC",
+        (uid, month+'%')
     ).fetchall()
     for i, r in enumerate(incomes):
         row = i + 2
@@ -2419,8 +2539,8 @@ def export_excel():
 
     daily_rows = conn.execute(
         """SELECT date, SUM(amount), COUNT(*) FROM expenses
-           WHERE date LIKE ? GROUP BY date ORDER BY date""",
-        (month+'%',)
+           WHERE user_id=? AND date LIKE ? GROUP BY date ORDER BY date""",
+        (uid, month+'%')
     ).fetchall()
     for i, r in enumerate(daily_rows):
         row = i + 2
@@ -2440,11 +2560,11 @@ def export_excel():
     bud_rows = conn.execute(
         """SELECT c.name_he, COALESCE(b.planned_amount,0), COALESCE(SUM(e.amount),0)
            FROM categories c
-           LEFT JOIN budget b ON c.id=b.category_id AND b.month=?
-           LEFT JOIN expenses e ON c.id=e.category_id AND e.date LIKE ?
+           LEFT JOIN budget b ON c.id=b.category_id AND b.month=? AND b.user_id=?
+           LEFT JOIN expenses e ON c.id=e.category_id AND e.date LIKE ? AND e.user_id=?
            GROUP BY c.id HAVING COALESCE(b.planned_amount,0)>0 OR COALESCE(SUM(e.amount),0)>0
            ORDER BY c.sort_order""",
-        (month, month+'%')
+        (month, uid, month+'%', uid)
     ).fetchall()
 
     over_fmt = Font(color='DC2626', bold=True)
@@ -2472,10 +2592,11 @@ def export_excel():
 
     trend_rows = conn.execute(
         """SELECT m, exp_total,
-                  COALESCE((SELECT SUM(amount) FROM income WHERE substr(date,1,7)=m), 0),
-                  COALESCE((SELECT SUM(amount) FROM income WHERE substr(date,1,7)=m), 0) - exp_total
+                  COALESCE((SELECT SUM(amount) FROM income WHERE user_id=? AND substr(date,1,7)=m), 0),
+                  COALESCE((SELECT SUM(amount) FROM income WHERE user_id=? AND substr(date,1,7)=m), 0) - exp_total
            FROM (SELECT substr(date,1,7) as m, SUM(amount) as exp_total
-                 FROM expenses GROUP BY m ORDER BY m)"""
+                 FROM expenses WHERE user_id=? GROUP BY m ORDER BY m)""",
+        (uid, uid, uid)
     ).fetchall()
     for i, r in enumerate(trend_rows):
         row = i + 2
@@ -2571,33 +2692,34 @@ PRODUCT_SUBTYPE_HE = {
 def financial_detect():
     """Scan expenses and auto-detect financial products."""
     conn = get_db()
+    uid = get_uid()
 
     # Get all unique expense descriptions/subcategories
     expenses = conn.execute("""
         SELECT DISTINCT description, subcategory, AVG(amount) as avg_amt,
                COUNT(DISTINCT substr(date,1,7)) as months
         FROM expenses
-        WHERE category_id IN ('insurance', 'savings')
+        WHERE user_id=? AND category_id IN ('insurance', 'savings')
         GROUP BY description
         HAVING months >= 1
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     # Also check bank patterns
     bank_expenses = conn.execute("""
         SELECT DISTINCT description, subcategory, AVG(amount) as avg_amt,
                COUNT(DISTINCT substr(date,1,7)) as months
         FROM expenses
-        WHERE source = 'bank_csv' AND frequency = 'monthly'
+        WHERE user_id=? AND source = 'bank_csv' AND frequency = 'monthly'
         GROUP BY description
         HAVING months >= 1
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     all_expenses = list(expenses) + list(bank_expenses)
     seen_patterns = set()
     detected = []
 
     # Check existing products to avoid duplicates
-    existing = conn.execute("SELECT expense_pattern FROM financial_products").fetchall()
+    existing = conn.execute("SELECT expense_pattern FROM financial_products WHERE user_id=?", (uid,)).fetchall()
     existing_patterns = {r[0] for r in existing if r[0]}
 
     for exp in all_expenses:
@@ -2633,22 +2755,23 @@ def financial_auto_add():
     """Add detected products to the database."""
     data = request.json
     conn = get_db()
+    uid = get_uid()
     added = 0
 
     for item in data.get('items', []):
         # Check if already exists
         existing = conn.execute(
-            "SELECT id FROM financial_products WHERE expense_pattern=?",
-            (item['expense_pattern'],)
+            "SELECT id FROM financial_products WHERE expense_pattern=? AND user_id=?",
+            (item['expense_pattern'], uid)
         ).fetchone()
         if existing:
             continue
 
         conn.execute("""
-            INSERT INTO financial_products (type, subtype, company, name, monthly_cost, expense_pattern, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'active')
+            INSERT INTO financial_products (type, subtype, company, name, monthly_cost, expense_pattern, status, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
         """, (item['type'], item['subtype'], item['company'], item['name'],
-              item['monthly_cost'], item['expense_pattern']))
+              item['monthly_cost'], item['expense_pattern'], uid))
         added += 1
 
     conn.commit()
@@ -2661,15 +2784,17 @@ def financial_auto_add():
 def financial_list():
     """List all financial products, optionally filtered by type."""
     conn = get_db()
+    uid = get_uid()
     ptype = request.args.get('type')
     if ptype:
         rows = conn.execute(
-            "SELECT * FROM financial_products WHERE type=? AND status='active' ORDER BY type, company",
-            (ptype,)
+            "SELECT * FROM financial_products WHERE user_id=? AND type=? AND status='active' ORDER BY type, company",
+            (uid, ptype)
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM financial_products WHERE status='active' ORDER BY type, company"
+            "SELECT * FROM financial_products WHERE user_id=? AND status='active' ORDER BY type, company",
+            (uid,)
         ).fetchall()
 
     products = []
@@ -2680,8 +2805,8 @@ def financial_list():
             actual = conn.execute("""
                 SELECT AVG(amount) as avg_amt, COUNT(DISTINCT substr(date,1,7)) as months,
                        MAX(date) as last_payment
-                FROM expenses WHERE description LIKE ? OR subcategory LIKE ?
-            """, ('%' + p['expense_pattern'] + '%', '%' + p['expense_pattern'] + '%')).fetchone()
+                FROM expenses WHERE user_id=? AND (description LIKE ? OR subcategory LIKE ?)
+            """, (uid, '%' + p['expense_pattern'] + '%', '%' + p['expense_pattern'] + '%')).fetchone()
             p['actual_monthly'] = round(actual[0], 0) if actual[0] else 0
             p['months_tracked'] = actual[1] or 0
             p['last_payment'] = actual[2] or ''
@@ -2702,6 +2827,7 @@ def financial_add():
     data = request.json
     conn = get_db()
 
+    uid = get_uid()
     if data.get('id'):
         conn.execute("""
             UPDATE financial_products SET
@@ -2710,7 +2836,7 @@ def financial_add():
                 employee_pct=?, employer_pct=?, return_rate=?,
                 start_date=?, renewal_date=?, notes=?, expense_pattern=?,
                 status=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND user_id=?
         """, (data['type'], data.get('subtype', ''), data.get('company', ''),
               data.get('name', ''), data.get('policy_number', ''),
               data.get('monthly_cost', 0), data.get('coverage_amount', 0),
@@ -2719,14 +2845,14 @@ def financial_add():
               data.get('return_rate', 0),
               data.get('start_date', ''), data.get('renewal_date', ''),
               data.get('notes', ''), data.get('expense_pattern', ''),
-              data.get('status', 'active'), data['id']))
+              data.get('status', 'active'), data['id'], uid))
     else:
         conn.execute("""
             INSERT INTO financial_products (type, subtype, company, name, policy_number,
                 monthly_cost, coverage_amount, balance, balance_date,
                 employee_pct, employer_pct, return_rate,
-                start_date, renewal_date, notes, expense_pattern, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                start_date, renewal_date, notes, expense_pattern, status, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (data['type'], data.get('subtype', ''), data.get('company', ''),
               data.get('name', ''), data.get('policy_number', ''),
               data.get('monthly_cost', 0), data.get('coverage_amount', 0),
@@ -2735,7 +2861,7 @@ def financial_add():
               data.get('return_rate', 0),
               data.get('start_date', ''), data.get('renewal_date', ''),
               data.get('notes', ''), data.get('expense_pattern', ''),
-              data.get('status', 'active')))
+              data.get('status', 'active'), uid))
 
     conn.commit()
     conn.close()
@@ -2746,7 +2872,7 @@ def financial_add():
 @login_required
 def financial_delete(product_id):
     conn = get_db()
-    conn.execute("UPDATE financial_products SET status='deleted' WHERE id=?", (product_id,))
+    conn.execute("UPDATE financial_products SET status='deleted' WHERE id=? AND user_id=?", (product_id, get_uid()))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -2757,9 +2883,10 @@ def financial_delete(product_id):
 def financial_summary():
     """Dashboard summary of all financial products."""
     conn = get_db()
+    uid = get_uid()
 
     products = conn.execute(
-        "SELECT * FROM financial_products WHERE status='active'"
+        "SELECT * FROM financial_products WHERE user_id=? AND status='active'", (uid,)
     ).fetchall()
 
     insurance_items = [dict(r) for r in products if r['type'] == 'insurance']
@@ -2868,6 +2995,7 @@ CBS_AVERAGES = {
 def insights_heatmap():
     """Calendar heatmap: daily spending intensity for the month."""
     conn = get_db()
+    uid = get_uid()
     month = request.args.get('month', date.today().strftime('%Y-%m'))
     year, mon = map(int, month.split('-'))
 
@@ -2878,8 +3006,8 @@ def insights_heatmap():
     first_weekday = (first_weekday + 1) % 7
 
     daily = conn.execute(
-        "SELECT date, SUM(amount) as total FROM expenses WHERE date LIKE ? GROUP BY date ORDER BY date",
-        (month + '%',)
+        "SELECT date, SUM(amount) as total FROM expenses WHERE user_id=? AND date LIKE ? GROUP BY date ORDER BY date",
+        (uid, month + '%')
     ).fetchall()
 
     daily_map = {r[0]: r[1] for r in daily}
@@ -2908,6 +3036,7 @@ def insights_heatmap():
 def insights_burnrate():
     """Burn rate gauge: projected month-end spending based on current pace."""
     conn = get_db()
+    uid = get_uid()
     month = request.args.get('month', date.today().strftime('%Y-%m'))
     year, mon = map(int, month.split('-'))
 
@@ -2921,11 +3050,11 @@ def insights_burnrate():
         day_of_month = days_in_month
 
     spent = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE date LIKE ?", (month + '%',)
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND date LIKE ?", (uid, month + '%')
     ).fetchone()[0]
 
     income = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM income WHERE date LIKE ?", (month + '%',)
+        "SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=? AND date LIKE ?", (uid, month + '%')
     ).fetchone()[0]
 
     daily_avg = spent / day_of_month if day_of_month > 0 else 0
@@ -2936,9 +3065,9 @@ def insights_burnrate():
     prev_months = conn.execute("""
         SELECT AVG(total) FROM (
             SELECT SUM(amount) as total FROM expenses
-            WHERE substr(date,1,7) != ? GROUP BY substr(date,1,7)
+            WHERE user_id=? AND substr(date,1,7) != ? GROUP BY substr(date,1,7)
         )
-    """, (month,)).fetchone()[0] or 0
+    """, (uid, month)).fetchone()[0] or 0
 
     conn.close()
     return jsonify({
@@ -2960,17 +3089,18 @@ def insights_burnrate():
 def insights_latte():
     """Latte factor: show what small recurring costs become over time if invested."""
     conn = get_db()
+    uid = get_uid()
     # Find small recurring expenses (< 200 NIS each, appearing 3+ months)
     candidates = conn.execute("""
         SELECT description, AVG(amount) as avg_amt, COUNT(DISTINCT substr(date,1,7)) as months,
                category_id, subcategory
         FROM expenses
-        WHERE amount < 200 AND amount > 5 AND description != ''
+        WHERE user_id=? AND amount < 200 AND amount > 5 AND description != ''
         GROUP BY description
         HAVING months >= 2
         ORDER BY avg_amt * months DESC
         LIMIT 15
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     items = []
     for r in candidates:
@@ -3024,14 +3154,15 @@ def insights_latte():
 def insights_anomalies():
     """Detect spending anomalies: categories significantly above their average."""
     conn = get_db()
+    uid = get_uid()
     month = request.args.get('month', date.today().strftime('%Y-%m'))
 
     # Get current month totals per category
     current = conn.execute("""
         SELECT c.id, c.name_he, c.color, COALESCE(SUM(e.amount),0) as total
-        FROM categories c LEFT JOIN expenses e ON c.id=e.category_id AND e.date LIKE ?
+        FROM categories c LEFT JOIN expenses e ON c.id=e.category_id AND e.date LIKE ? AND e.user_id=?
         GROUP BY c.id HAVING total > 0
-    """, (month + '%',)).fetchall()
+    """, (month + '%', uid)).fetchall()
 
     anomalies = []
     for r in current:
@@ -3040,10 +3171,10 @@ def insights_anomalies():
         hist = conn.execute("""
             SELECT AVG(monthly_total) FROM (
                 SELECT SUM(amount) as monthly_total FROM expenses
-                WHERE category_id=? AND substr(date,1,7) != ?
+                WHERE user_id=? AND category_id=? AND substr(date,1,7) != ?
                 GROUP BY substr(date,1,7)
             )
-        """, (cat_id, month)).fetchone()[0]
+        """, (uid, cat_id, month)).fetchone()[0]
 
         if hist and hist > 0:
             pct_change = ((cur_total - hist) / hist) * 100
@@ -3051,9 +3182,9 @@ def insights_anomalies():
                 # Find top contributors to the change
                 top_items = conn.execute("""
                     SELECT description, SUM(amount) as total FROM expenses
-                    WHERE category_id=? AND date LIKE ? AND description != ''
+                    WHERE user_id=? AND category_id=? AND date LIKE ? AND description != ''
                     GROUP BY description ORDER BY total DESC LIMIT 3
-                """, (cat_id, month + '%')).fetchall()
+                """, (uid, cat_id, month + '%')).fetchall()
 
                 anomalies.append({
                     'category': name,
@@ -3076,6 +3207,7 @@ def insights_anomalies():
 def insights_recurring():
     """Auto-detect recurring expenses by pattern analysis."""
     conn = get_db()
+    uid = get_uid()
 
     # Find descriptions that appear in 3+ different months
     recurring = conn.execute("""
@@ -3084,11 +3216,11 @@ def insights_recurring():
                COUNT(*) as count, COUNT(DISTINCT substr(date,1,7)) as months,
                GROUP_CONCAT(DISTINCT substr(date,1,7)) as month_list
         FROM expenses
-        WHERE description != '' AND description IS NOT NULL
+        WHERE user_id=? AND description != '' AND description IS NOT NULL
         GROUP BY description
         HAVING months >= 3
         ORDER BY avg_amt DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     # Also find by subcategory for those without description
     recurring_sub = conn.execute("""
@@ -3097,11 +3229,11 @@ def insights_recurring():
                COUNT(*) as count, COUNT(DISTINCT substr(date,1,7)) as months,
                GROUP_CONCAT(DISTINCT substr(date,1,7)) as month_list
         FROM expenses
-        WHERE (description = '' OR description IS NULL) AND subcategory != ''
+        WHERE user_id=? AND (description = '' OR description IS NULL) AND subcategory != ''
         GROUP BY subcategory, category_id
         HAVING months >= 3
         ORDER BY avg_amt DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     # Get category names
     cat_names = {r[0]: r[1] for r in conn.execute("SELECT id, name_he FROM categories").fetchall()}
@@ -3163,20 +3295,21 @@ def insights_recurring():
 def insights_whatif():
     """What-if simulator: provide baseline data for interactive sliders."""
     conn = get_db()
+    uid = get_uid()
 
     months_count = conn.execute(
-        "SELECT COUNT(DISTINCT substr(date,1,7)) FROM expenses"
+        "SELECT COUNT(DISTINCT substr(date,1,7)) FROM expenses WHERE user_id=?", (uid,)
     ).fetchone()[0] or 1
 
     cats = conn.execute("""
         SELECT c.id, c.name_he, c.color, COALESCE(SUM(e.amount),0) as total
-        FROM categories c LEFT JOIN expenses e ON c.id=e.category_id
+        FROM categories c LEFT JOIN expenses e ON c.id=e.category_id AND e.user_id=?
         GROUP BY c.id HAVING total > 0
         ORDER BY total DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     income_monthly = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM income"
+        "SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=?", (uid,)
     ).fetchone()[0] / months_count
 
     categories_data = []
@@ -3205,13 +3338,15 @@ def insights_whatif():
 def insights_weekly_pulse():
     """Average spending by day of the week."""
     conn = get_db()
+    uid = get_uid()
 
     # SQLite strftime('%w') = 0(Sun) to 6(Sat)
     raw = conn.execute(
         "SELECT CAST(strftime('%w', date) AS INTEGER) as dow,"
         " SUM(amount) as total, COUNT(*) as count,"
         " COUNT(DISTINCT date) as days_count"
-        " FROM expenses GROUP BY dow ORDER BY dow"
+        " FROM expenses WHERE user_id=? GROUP BY dow ORDER BY dow",
+        (uid,)
     ).fetchall()
 
     day_names = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת']
@@ -3251,17 +3386,18 @@ def insights_weekly_pulse():
 def insights_projection():
     """12-month forward projection based on trends."""
     conn = get_db()
+    uid = get_uid()
 
     # Get monthly data
     monthly = conn.execute("""
         SELECT substr(date,1,7) as m, SUM(amount) as total
-        FROM expenses GROUP BY m ORDER BY m
-    """).fetchall()
+        FROM expenses WHERE user_id=? GROUP BY m ORDER BY m
+    """, (uid,)).fetchall()
 
     income_monthly = conn.execute("""
         SELECT substr(date,1,7) as m, SUM(amount) as total
-        FROM income GROUP BY m ORDER BY m
-    """).fetchall()
+        FROM income WHERE user_id=? GROUP BY m ORDER BY m
+    """, (uid,)).fetchall()
 
     inc_map = {r[0]: r[1] for r in income_monthly}
 
@@ -3333,22 +3469,23 @@ def insights_projection():
 def insights_comparison():
     """Compare spending to Israeli CBS household averages."""
     conn = get_db()
+    uid = get_uid()
 
     months_count = conn.execute(
-        "SELECT COUNT(DISTINCT substr(date,1,7)) FROM expenses"
+        "SELECT COUNT(DISTINCT substr(date,1,7)) FROM expenses WHERE user_id=?", (uid,)
     ).fetchone()[0] or 1
 
     total_expense = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses"
+        "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=?", (uid,)
     ).fetchone()[0]
     monthly_total = total_expense / months_count
 
     cats = conn.execute("""
         SELECT c.id, c.name_he, c.color, COALESCE(SUM(e.amount),0) as total
-        FROM categories c LEFT JOIN expenses e ON c.id=e.category_id
+        FROM categories c LEFT JOIN expenses e ON c.id=e.category_id AND e.user_id=?
         GROUP BY c.id HAVING total > 0
         ORDER BY total DESC
-    """).fetchall()
+    """, (uid,)).fetchall()
 
     comparisons = []
     for r in cats:
@@ -3383,20 +3520,21 @@ def insights_comparison():
 def insights_achievements():
     """Budget streaks and gamification achievements."""
     conn = get_db()
+    uid = get_uid()
 
     achievements = []
 
     # Get monthly data
     monthly = conn.execute("""
         SELECT substr(date,1,7) as m, SUM(amount) as total
-        FROM expenses GROUP BY m ORDER BY m
-    """).fetchall()
+        FROM expenses WHERE user_id=? GROUP BY m ORDER BY m
+    """, (uid,)).fetchall()
 
     # Income by month
     income_data = conn.execute("""
         SELECT substr(date,1,7) as m, SUM(amount) as total
-        FROM income GROUP BY m ORDER BY m
-    """).fetchall()
+        FROM income WHERE user_id=? GROUP BY m ORDER BY m
+    """, (uid,)).fetchall()
     inc_map = {r[0]: r[1] for r in income_data}
 
     # 1. Surplus streak
@@ -3464,8 +3602,8 @@ def insights_achievements():
     # 4. No overdraft streak
     overdraft_months = set()
     od_data = conn.execute("""
-        SELECT DISTINCT substr(date,1,7) FROM expenses WHERE subcategory='ריבית מינוס'
-    """).fetchall()
+        SELECT DISTINCT substr(date,1,7) FROM expenses WHERE user_id=? AND subcategory='ריבית מינוס'
+    """, (uid,)).fetchall()
     overdraft_months = {r[0] for r in od_data}
 
     all_months = [r[0] for r in monthly]
@@ -3498,14 +3636,14 @@ def insights_achievements():
         cats = conn.execute("SELECT id, name_he FROM categories").fetchall()
         for cat_id, cat_name in cats:
             cur = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category_id=? AND substr(date,1,7)=?",
-                (cat_id, latest)
+                "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND category_id=? AND substr(date,1,7)=?",
+                (uid, cat_id, latest)
             ).fetchone()[0]
             prev_avg_val = 0
             for pm in prev3:
                 prev_avg_val += conn.execute(
-                    "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE category_id=? AND substr(date,1,7)=?",
-                    (cat_id, pm)
+                    "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE user_id=? AND category_id=? AND substr(date,1,7)=?",
+                    (uid, cat_id, pm)
                 ).fetchone()[0]
             prev_avg_val /= 3
             if prev_avg_val > 500 and cur < prev_avg_val * 0.7:
@@ -3564,7 +3702,7 @@ def insights_achievements():
 @login_required
 def cards_list():
     conn = get_db()
-    rows = conn.execute("SELECT DISTINCT card FROM expenses WHERE card != '' ORDER BY card").fetchall()
+    rows = conn.execute("SELECT DISTINCT card FROM expenses WHERE user_id=? AND card != '' ORDER BY card", (get_uid(),)).fetchall()
     conn.close()
     return jsonify([r['card'] for r in rows])
 
@@ -3573,7 +3711,7 @@ def cards_list():
 @login_required
 def installments_list():
     conn = get_db()
-    rows = conn.execute("SELECT * FROM installments ORDER BY start_date DESC").fetchall()
+    rows = conn.execute("SELECT * FROM installments WHERE user_id=? ORDER BY start_date DESC", (get_uid(),)).fetchall()
     result = []
     for r in rows:
         d = dict(r)
@@ -3593,25 +3731,26 @@ def installments_add():
     monthly_payment = round(total_amount / total_payments, 2) if total_payments > 0 else total_amount
     conn = get_db()
 
+    uid = get_uid()
     if data.get('id'):
         conn.execute("""
             UPDATE installments SET description=?, store=?, total_amount=?,
                 total_payments=?, payments_made=?, monthly_payment=?,
                 start_date=?, card=?, notes=?
-            WHERE id=?
+            WHERE id=? AND user_id=?
         """, (data['description'], data.get('store', ''), total_amount,
               total_payments, int(data.get('payments_made', 0)), monthly_payment,
               data.get('start_date', ''), data.get('card', ''),
-              data.get('notes', ''), data['id']))
+              data.get('notes', ''), data['id'], uid))
     else:
         conn.execute("""
             INSERT INTO installments (description, store, total_amount, total_payments,
-                payments_made, monthly_payment, start_date, card, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                payments_made, monthly_payment, start_date, card, notes, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (data['description'], data.get('store', ''), total_amount,
               total_payments, int(data.get('payments_made', 0)), monthly_payment,
               data.get('start_date', ''), data.get('card', ''),
-              data.get('notes', '')))
+              data.get('notes', ''), uid))
 
     conn.commit()
     conn.close()
@@ -3622,7 +3761,7 @@ def installments_add():
 @login_required
 def installments_delete(inst_id):
     conn = get_db()
-    conn.execute("DELETE FROM installments WHERE id=?", (inst_id,))
+    conn.execute("DELETE FROM installments WHERE id=? AND user_id=?", (inst_id, get_uid()))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -3649,6 +3788,9 @@ def admin_delete_user(user_id):
     if user and user['is_admin']:
         conn.close()
         return jsonify({'error': 'Cannot delete admin user'}), 400
+    # Cascade delete all user data
+    for tbl in ['expenses', 'income', 'budget', 'budget_plans', 'installments', 'reminders', 'financial_products']:
+        conn.execute(f"DELETE FROM {tbl} WHERE user_id=?", (user_id,))
     conn.execute("DELETE FROM users WHERE id=?", (user_id,))
     conn.commit()
     conn.close()
@@ -3729,7 +3871,7 @@ def save_ai_settings():
 def get_version():
     return jsonify({'version': APP_VERSION})
 
-def _ai_chat(query, lang, conn):
+def _ai_chat(query, lang, conn, uid=None):
     """Use Claude API to understand the query and generate a structured SQL response."""
     api_key = _get_ai_key()
     if not api_key:
@@ -3744,14 +3886,14 @@ def _ai_chat(query, lang, conn):
     today_str = date.today().strftime('%Y-%m-%d')
     cats = [dict(r) for r in conn.execute("SELECT id, name_he FROM categories ORDER BY sort_order").fetchall()]
     cats_desc = ', '.join(f'{c["id"]}={c["name_he"]}' for c in cats)
-    cards = [r[0] for r in conn.execute("SELECT DISTINCT card FROM expenses WHERE card IS NOT NULL").fetchall()]
+    cards = [r[0] for r in conn.execute("SELECT DISTINCT card FROM expenses WHERE user_id=? AND card IS NOT NULL", (uid,)).fetchall()]
 
     system_prompt = f"""You are a budget assistant for a Hebrew/English family expense tracker app.
 Today's date: {today_str}
 
 DATABASE SCHEMA:
-- expenses: id, date (TEXT YYYY-MM-DD), category_id (TEXT), subcategory (TEXT), description (TEXT), amount (REAL), source, frequency, card (TEXT), created_at
-- income: id, date (TEXT YYYY-MM-DD), person (TEXT), source (TEXT), amount (REAL), description (TEXT), is_recurring, created_at
+- expenses: id, date (TEXT YYYY-MM-DD), category_id (TEXT), subcategory (TEXT), description (TEXT), amount (REAL), source, frequency, card (TEXT), user_id (INTEGER), created_at
+- income: id, date (TEXT YYYY-MM-DD), person (TEXT), source (TEXT), amount (REAL), description (TEXT), is_recurring, user_id (INTEGER), created_at
 - categories: id (TEXT PK), name_he (TEXT)
 
 CATEGORIES: {cats_desc}
@@ -3768,6 +3910,7 @@ YOUR JOB: Parse the user's natural language query and return a JSON object with:
 5. "type" - "expenses", "income", or "navigate"
 
 IMPORTANT RULES:
+- CRITICAL: ALWAYS add "AND e.user_id = ?" to expense queries and "AND user_id = ?" to income queries. The user_id value ({uid}) must be the FIRST element in the params array.
 - The description field contains business names exactly as they appear (e.g. 'מובילנד בתי קולנוע בעם', 'קצביית שור הבר בע"מ'). Search with LIKE '%term%' using the EXACT business name the user provides.
 - For date ranges: "חצי שנה" = 6 months, "שנה" = 12 months, "חודש" = 1 month, "3 חודשים" = 3 months. Calculate from today.
 - Always ORDER BY date DESC and LIMIT 50 for item queries.
@@ -3800,6 +3943,10 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
         params = result.get('params', [])
         if not sql:
             return result  # Navigation or text-only response
+
+        # Safety: ensure user_id filtering is present
+        if ('expenses' in sql.lower() or 'income' in sql.lower()) and 'user_id' not in sql:
+            sql = sql.replace('WHERE', f'WHERE user_id = {uid} AND', 1) if 'WHERE' in sql else sql
 
         rows = conn.execute(sql, params).fetchall()
         items = [dict(r) for r in rows]
@@ -3843,8 +3990,10 @@ def chat_assistant():
 
     conn = get_db()
 
+    uid = get_uid()
+
     # Try AI agent first
-    ai_result = _ai_chat(query, lang, conn)
+    ai_result = _ai_chat(query, lang, conn, uid=uid)
     if ai_result:
         conn.close()
         return jsonify(ai_result)
@@ -3907,8 +4056,8 @@ def chat_assistant():
 
     search_term = ' '.join(words).strip()
 
-    sql_where = "WHERE e.date >= ? AND e.date <= ?"
-    params = [from_date, to_date]
+    sql_where = "WHERE e.user_id = ? AND e.date >= ? AND e.date <= ?"
+    params = [uid, from_date, to_date]
     if cat_id:
         sql_where += " AND e.category_id = ?"
         params.append(cat_id)
@@ -3934,10 +4083,10 @@ def chat_assistant():
                    any(w in query_lower for w in ['where', 'איפה', 'go to', 'take me', 'קח אותי']))
 
     if is_income:
-        rows = conn.execute("SELECT * FROM income WHERE date >= ? AND date <= ? ORDER BY date DESC LIMIT 20",
-                            [from_date, to_date]).fetchall()
-        total = conn.execute("SELECT COALESCE(SUM(amount),0) FROM income WHERE date >= ? AND date <= ?",
-                             [from_date, to_date]).fetchone()[0]
+        rows = conn.execute("SELECT * FROM income WHERE user_id=? AND date >= ? AND date <= ? ORDER BY date DESC LIMIT 20",
+                            [uid, from_date, to_date]).fetchall()
+        total = conn.execute("SELECT COALESCE(SUM(amount),0) FROM income WHERE user_id=? AND date >= ? AND date <= ?",
+                             [uid, from_date, to_date]).fetchone()[0]
         items = [dict(r) for r in rows]
         response['text'] = (f"סה״כ הכנסות מ-{from_date} עד {to_date}: ₪{total:,.0f} ({len(items)} רשומות)"
                             if lang == 'he' else f"Total income {from_date} to {to_date}: ₪{total:,.0f} ({len(items)} entries)")
@@ -3969,7 +4118,7 @@ def chat_assistant():
             kw_list = [w for w in search_term.split() if len(w) >= 2]
             if kw_list:
                 or_clauses = []
-                or_params = [from_date, to_date]
+                or_params = [uid, from_date, to_date]
                 if cat_id:
                     or_params.append(cat_id)
                 for kw in kw_list:
@@ -3980,7 +4129,7 @@ def chat_assistant():
                         or_clauses.append("e.subcategory LIKE ?")
                         or_clauses.append("e.description LIKE ?")
                         or_params += [v, v]
-                or_where = "WHERE e.date >= ? AND e.date <= ?"
+                or_where = "WHERE e.user_id = ? AND e.date >= ? AND e.date <= ?"
                 if cat_id:
                     or_where += " AND e.category_id = ?"
                 or_where += " AND (" + " OR ".join(or_clauses) + ")"
