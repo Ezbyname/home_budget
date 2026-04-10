@@ -27,7 +27,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.0.1000014'
+APP_VERSION = '1.0.1000016'
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 # Store user data in a stable folder that survives exe rebuilds
@@ -1643,11 +1643,25 @@ def parse_visa_xlsx(filepath, user_id=None):
 
 # ---- Bank CSV Import ----
 
-# Patterns to SKIP (already covered by Visa/credit card imports)
+# Patterns to SKIP — credit card summary charges in bank statement
+# (individual transactions come from the card's own XLSX/statement)
 BANK_SKIP_PATTERNS = [
+    # Israeli cards
     'חיוב לכרטיס ויזה',
+    'דיינרס קלו',
+    'ישראכרט חיוב',
+    'ישראכרט גביה',
     'זיכוי הנחות מפתח מכרטיס',
     'החזרת חיוב דיסקונט למשכנתאות',  # mortgage charge-back (paired with charge)
+    # US/international cards
+    'VISA PAYMENT',
+    'MASTERCARD PAYMENT',
+    'AMEX PAYMENT',
+    'AMERICAN EXPRESS PAYMENT',
+    'DISCOVER PAYMENT',
+    'CREDIT CARD PAYMENT',
+    'CARD PAYMENT',
+    'PAYMENT - THANK YOU',
 ]
 
 # Income patterns: (pattern_in_description, person, source, is_recurring)
@@ -1678,10 +1692,7 @@ BANK_EXPENSE_PATTERNS = [
     ('הראלהלואה', 'savings', 'הלוואה הראל', 'monthly'),
     ('כלל חיים/ב', 'insurance', 'ביטוח חיים כלל', 'monthly'),
     ('חיובי הלוו', 'savings', 'הלוואה', 'monthly'),
-    ('דיינרס קלו', 'misc', 'כרטיס דיינרס', 'monthly'),
-    ('ישראכרט חיוב', 'misc', 'כרטיס ישראכרט', 'monthly'),
-    ('ישראכרט גביה', 'misc', 'כרטיס ישראכרט', 'monthly'),
-    ('ישראכרט', 'misc', 'כרטיס ישראכרט', 'monthly'),
+    # דיינרס/ישראכרט charges are now in BANK_SKIP_PATTERNS (skipped)
     ('השתלמות אג', 'savings', 'קרן השתלמות', 'monthly'),
     ('מור גמל ופ חיוב', 'savings', 'גמל מור', 'monthly'),
     ('ריבית על משיכת יתר', 'misc', 'ריבית מינוס', 'monthly'),
@@ -1745,10 +1756,6 @@ def parse_bank_csv(filepath, user_id=None):
     header = next(reader)  # skip header row
 
     conn = get_db()
-    has_visa_imports = conn.execute(
-        "SELECT COUNT(*) FROM expenses WHERE source = 'visa_import' AND user_id = ?",
-        (user_id,)
-    ).fetchone()[0] > 0
     imported_expenses = 0
     imported_income = 0
     skipped_visa = 0
@@ -1786,15 +1793,14 @@ def parse_bank_csv(filepath, user_id=None):
         if amount == 0:
             continue
 
-        # Check if should skip (Visa charges already imported via visa XLSX)
-        # Only skip if there are actual visa_import records in the DB
+        # Always skip visa/card charge lines — they are summary totals,
+        # the individual transactions come from the visa XLSX import
         should_skip = False
-        if has_visa_imports:
-            for pattern in BANK_SKIP_PATTERNS:
-                if pattern in description:
-                    should_skip = True
-                    skipped_visa += 1
-                    break
+        for pattern in BANK_SKIP_PATTERNS:
+            if pattern in description:
+                should_skip = True
+                skipped_visa += 1
+                break
 
         if should_skip:
             continue
@@ -1877,6 +1883,68 @@ def parse_bank_csv(filepath, user_id=None):
         'skipped_duplicates': skipped_dup,
         'source': 'bank_csv'
     }
+
+
+# ---- Recurring Transaction Detection ----
+
+@app.route('/api/detect-recurring', methods=['POST'])
+@login_required
+def detect_recurring():
+    """Detect transactions that look recurring (same business, similar amount, 2+ months)."""
+    conn = get_db()
+    uid = get_uid()
+    # Find descriptions that appear in 2+ distinct months with consistent amounts
+    patterns = conn.execute("""
+        SELECT description,
+               COUNT(DISTINCT substr(date,1,7)) as months_count,
+               ROUND(AVG(amount),2) as avg_amount,
+               MIN(amount) as min_amount,
+               MAX(amount) as max_amount,
+               GROUP_CONCAT(DISTINCT substr(date,1,7)) as months,
+               GROUP_CONCAT(id) as expense_ids
+        FROM expenses
+        WHERE user_id = ? AND frequency IN ('random', 'once')
+          AND description != '' AND source IN ('bank_csv', 'visa_import')
+        GROUP BY description
+        HAVING months_count >= 2
+           AND (max_amount - min_amount) <= avg_amount * 0.15
+        ORDER BY months_count DESC, avg_amount DESC
+    """, (uid,)).fetchall()
+
+    result = []
+    for p in patterns:
+        months_list = sorted(p['months'].split(','))
+        result.append({
+            'description': p['description'],
+            'avg_amount': p['avg_amount'],
+            'months_count': p['months_count'],
+            'months': months_list,
+            'expense_ids': [int(x) for x in p['expense_ids'].split(',')],
+        })
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/expenses/set-recurring', methods=['POST'])
+@login_required
+def set_recurring():
+    """Bulk-update frequency for a set of expenses matching a recurring pattern."""
+    data = request.json
+    description = data.get('description', '')
+    frequency = data.get('frequency', 'monthly')  # monthly or bimonthly
+    end_date = data.get('end_date')  # null = ongoing
+    if not description:
+        return jsonify({'error': 'Missing description'}), 400
+
+    conn = get_db()
+    uid = get_uid()
+    conn.execute(
+        "UPDATE expenses SET frequency = ? WHERE description = ? AND user_id = ?",
+        (frequency, description, uid)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok', 'description': description, 'frequency': frequency})
 
 
 # ---- Budget Tips & Insights ----

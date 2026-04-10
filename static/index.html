@@ -1606,50 +1606,47 @@
 
         <!-- ========== IMPORT TAB ========== -->
         <div class="tab-pane fade" id="importTab">
-            <div class="row g-4">
-                <div class="col-lg-4 d-flex">
-                    <div class="card p-4 d-flex flex-column w-100">
+            <div class="row g-4 align-items-start">
+                <div class="col-lg-4">
+                    <div class="card p-4">
                         <div class="section-title"><i class="bi bi-bank"></i><span data-t="import_bank_title">ייבוא עו"ש בנק (CSV)</span></div>
                         <p class="text-muted mb-3" data-t="import_bank_desc">העלה קובץ עובר ושב מהבנק. המערכת תזהה הכנסות, תדלג על חיובי ויזה כפולים, ותסווג הוצאות לפי תדירות.</p>
-                        <div class="mt-auto">
-                            <div class="upload-zone" id="bankUploadZone" onclick="document.getElementById('bankFileInput').click()">
-                                <i class="bi bi-cloud-upload d-block mb-2"></i>
-                                <p class="mb-1 fw-bold" data-t="drag_csv">גרור קובץ CSV לכאן</p>
-                                <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
-                                <input type="file" id="bankFileInput" accept=".csv" hidden multiple>
-                            </div>
-                            <div id="bankUploadResult" class="mt-3"></div>
+                        <div class="upload-zone" id="bankUploadZone" onclick="document.getElementById('bankFileInput').click()">
+                            <i class="bi bi-cloud-upload d-block mb-2"></i>
+                            <p class="mb-1 fw-bold" data-t="drag_csv">גרור קובץ CSV לכאן</p>
+                            <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
+                            <input type="file" id="bankFileInput" accept=".csv" hidden multiple>
                         </div>
+                        <div id="bankFileQueue" class="mt-3"></div>
+                        <div id="bankUploadResult" class="mt-2" style="max-height:250px;overflow-y:auto"></div>
                     </div>
                 </div>
-                <div class="col-lg-4 d-flex">
-                    <div class="card p-4 d-flex flex-column w-100">
+                <div class="col-lg-4">
+                    <div class="card p-4">
                         <div class="section-title"><i class="bi bi-credit-card-2-front"></i><span data-t="import_visa_title">ייבוא דוח ויזה (XLSX)</span></div>
                         <p class="text-muted mb-3" data-t="import_visa_desc">העלה קובץ דוח חיובים מכרטיס ויזה. המערכת תזהה אוטומטית את הקטגוריות.</p>
-                        <div class="mt-auto">
-                            <div class="upload-zone" id="visaUploadZone" onclick="document.getElementById('visaFileInput').click()">
-                                <i class="bi bi-cloud-upload d-block mb-2"></i>
-                                <p class="mb-1 fw-bold" data-t="drag_xlsx">גרור קובץ XLSX לכאן</p>
-                                <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
-                                <input type="file" id="visaFileInput" accept=".xlsx" hidden multiple>
-                            </div>
-                            <div id="visaUploadResult" class="mt-3"></div>
+                        <div class="upload-zone" id="visaUploadZone" onclick="document.getElementById('visaFileInput').click()">
+                            <i class="bi bi-cloud-upload d-block mb-2"></i>
+                            <p class="mb-1 fw-bold" data-t="drag_xlsx">גרור קובץ XLSX לכאן</p>
+                            <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
+                            <input type="file" id="visaFileInput" accept=".xlsx" hidden multiple>
                         </div>
+                        <div id="visaFileQueue" class="mt-3"></div>
+                        <div id="visaUploadResult" class="mt-2" style="max-height:250px;overflow-y:auto"></div>
                     </div>
                 </div>
-                <div class="col-lg-4 d-flex">
-                    <div class="card p-4 d-flex flex-column w-100">
+                <div class="col-lg-4">
+                    <div class="card p-4">
                         <div class="section-title"><i class="bi bi-file-earmark-spreadsheet"></i><span data-t="import_xls_title">ייבוא תקציב (XLS)</span></div>
                         <p class="text-muted mb-3" data-t="import_xls_desc">העלה קובץ תכנון תקציב שבועי בפורמט XLS (כמו הקובץ המקורי).</p>
-                        <div class="mt-auto">
-                            <div class="upload-zone" id="xlsUploadZone" onclick="document.getElementById('xlsFileInput').click()">
-                                <i class="bi bi-cloud-upload d-block mb-2"></i>
-                                <p class="mb-1 fw-bold" data-t="drag_xls">גרור קובץ XLS לכאן</p>
-                                <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
-                                <input type="file" id="xlsFileInput" accept=".xls" hidden multiple>
-                            </div>
-                            <div id="xlsUploadResult" class="mt-3"></div>
+                        <div class="upload-zone" id="xlsUploadZone" onclick="document.getElementById('xlsFileInput').click()">
+                            <i class="bi bi-cloud-upload d-block mb-2"></i>
+                            <p class="mb-1 fw-bold" data-t="drag_xls">גרור קובץ XLS לכאן</p>
+                            <p class="text-muted small" data-t="click_to_browse">או לחץ לבחירת קובץ</p>
+                            <input type="file" id="xlsFileInput" accept=".xls" hidden multiple>
                         </div>
+                        <div id="xlsFileQueue" class="mt-3"></div>
+                        <div id="xlsUploadResult" class="mt-2" style="max-height:250px;overflow-y:auto"></div>
                     </div>
                 </div>
             </div>
@@ -2104,6 +2101,63 @@
 </div>
 </div>
 
+<!-- Recurring Transaction Detection Modal -->
+<div class="modal fade" id="recurringModal" tabindex="-1">
+<div class="modal-dialog modal-dialog-centered">
+<div class="modal-content" style="border-radius:20px;border:none;overflow:hidden">
+    <div class="modal-header border-0" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff">
+        <h5 class="modal-title mb-0 d-flex align-items-center gap-2" style="font-weight:600">
+            <i class="bi bi-arrow-repeat"></i><span data-t="recurring_title">זיהוי הוצאות קבועות</span>
+        </h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+    </div>
+    <div class="modal-body p-4">
+        <div class="text-center mb-3">
+            <span class="badge bg-primary rounded-pill px-3 py-2" id="recurringCounter"></span>
+        </div>
+        <div class="card border-0 shadow-sm mb-3" style="border-radius:14px;background:#f8f9ff">
+            <div class="card-body text-center py-4">
+                <div class="fw-bold fs-5 mb-1" id="recurringDesc"></div>
+                <div class="fs-3 fw-bold text-primary mb-1" id="recurringAmount"></div>
+                <div class="text-muted small" id="recurringMonths"></div>
+            </div>
+        </div>
+        <!-- Frequency selection (shown after "Yes") -->
+        <div id="recurringOptions" style="display:none">
+            <div class="mb-3">
+                <label class="form-label small fw-bold" data-t="recurring_freq">תדירות</label>
+                <select class="form-select" id="recurringFreqSelect">
+                    <option value="monthly" data-t="freq_monthly">חודשי קבוע</option>
+                    <option value="bimonthly" data-t="freq_bimonthly">דו-חודשי</option>
+                </select>
+            </div>
+            <div class="mb-3" id="recurringEndDateGroup">
+                <label class="form-label small fw-bold" data-t="recurring_end_date">תאריך סיום</label>
+                <input type="date" class="form-control" id="recurringEndDate">
+            </div>
+            <div class="form-check mb-3">
+                <input type="checkbox" class="form-check-input" id="recurringNoEnd" checked onchange="document.getElementById('recurringEndDateGroup').style.display=this.checked?'none':''">
+                <label class="form-check-label" for="recurringNoEnd" data-t="recurring_no_end">אין תאריך סיום ידוע (הוראת קבע)</label>
+            </div>
+        </div>
+    </div>
+    <div class="modal-footer border-0 pt-0 d-flex gap-2" id="recurringFooter">
+        <button class="btn btn-success flex-grow-1" id="recurringYesBtn" onclick="recurringConfirm(true)">
+            <i class="bi bi-check-circle me-1"></i><span data-t="recurring_yes">כן, הוצאה קבועה</span>
+        </button>
+        <button class="btn btn-outline-secondary flex-grow-1" id="recurringNoBtn" onclick="recurringConfirm(false)">
+            <i class="bi bi-x-circle me-1"></i><span data-t="recurring_no">לא, חד פעמי</span>
+        </button>
+    </div>
+    <div class="modal-footer border-0 pt-0" id="recurringApplyFooter" style="display:none">
+        <button class="btn btn-primary w-100" onclick="recurringApply()">
+            <i class="bi bi-check-lg me-1"></i><span data-t="recurring_apply">אישור ומעבר הבא</span>
+        </button>
+    </div>
+</div>
+</div>
+</div>
+
 <!-- Auth Login Wall -->
 <div id="authWall" style="display:none;position:fixed;inset:0;z-index:1040;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);align-items:center;justify-content:center">
     <div style="text-align:center;max-width:400px;padding:20px">
@@ -2449,6 +2503,13 @@ const I18N = {
     duplicates_skipped: 'כפילויות דולגו',
     records_imported: 'רשומות יובאו בהצלחה!', import_error: 'שגיאה',
     processing: 'מעבד...',
+    files_queued: 'קבצים בתור', upload_btn: 'העלה', clear_queue: 'נקה', remove_file: 'הסר',
+    recurring_title: 'זיהוי הוצאות קבועות', recurring_freq: 'תדירות',
+    recurring_end_date: 'תאריך סיום', recurring_no_end: 'אין תאריך סיום ידוע (הוראת קבע)',
+    recurring_yes: 'כן, הוצאה קבועה', recurring_no: 'לא, חד פעמי',
+    recurring_apply: 'אישור ומעבר הבא', recurring_counter: '{0} מתוך {1}',
+    recurring_detected: 'זוהו {0} הוצאות שנראות קבועות', recurring_months: 'מופיע ב-{0} חודשים',
+    recurring_done: 'סיום — עודכנו {0} הוצאות קבועות',
     // Reminders modal
     rem_title: 'תזכורות ייבוא נתונים',
     rem_desc: 'הגדר תזכורות שיישלחו אליך בדוא״ל או SMS כדי להזכיר לך להוריד ולייבא נתונים מהבנק וכרטיסי האשראי.',
@@ -2809,6 +2870,13 @@ const I18N = {
     duplicates_skipped: 'duplicates skipped',
     records_imported: 'records imported successfully!', import_error: 'Error',
     processing: 'Processing...',
+    files_queued: 'files queued', upload_btn: 'Upload', clear_queue: 'Clear', remove_file: 'Remove',
+    recurring_title: 'Recurring Expense Detection', recurring_freq: 'Frequency',
+    recurring_end_date: 'End date', recurring_no_end: 'No known end date (standing order)',
+    recurring_yes: 'Yes, recurring', recurring_no: 'No, one-time',
+    recurring_apply: 'Confirm & next', recurring_counter: '{0} of {1}',
+    recurring_detected: '{0} potentially recurring expenses detected', recurring_months: 'Appears in {0} months',
+    recurring_done: 'Done — updated {0} recurring expenses',
     // Reminders modal
     rem_title: 'Import Data Reminders',
     rem_desc: 'Set reminders via email or SMS to remind you to download and import data from your bank and credit cards.',
@@ -3063,6 +3131,10 @@ function setLang(lang) {
     if (chatMsgs) chatMsgs.innerHTML = '';
     if (chatOpen) { chatInited = true; addChatMsg('bot', t('chat_welcome')); }
     showChatSuggestions();
+    // Re-render file queues with new language
+    for (const zoneId of Object.keys(fileQueues)) {
+        if (fileQueues[zoneId].length) renderFileQueue(zoneId);
+    }
     refreshAll();
 }
 
@@ -4287,7 +4359,7 @@ function renderSourceChips() {
     box.innerHTML = `<span class="small fw-bold d-flex align-items-center">${t('filter_sources')}</span>` +
         selectedSources.map((s, i) => {
             const color = SOURCE_CHIP_COLORS[i % SOURCE_CHIP_COLORS.length];
-            return `<span class="source-chip" style="background:${color}15;border-color:${color};color:${color}" ondblclick="removeSourceFilter('${s.replace(/'/g, "\\'")}')">${s}<span class="chip-x" onclick="event.stopPropagation();removeSourceFilter('${s.replace(/'/g, "\\'")}')">&times;</span></span>`;
+            return `<span class="source-chip" style="background:${color}15;border-color:${color};color:${color};cursor:pointer" onclick="removeSourceFilter('${s.replace(/'/g, "\\'")}')">${s} &times;</span>`;
         }).join('');
 }
 
@@ -5146,13 +5218,81 @@ async function saveBudget() {
 }
 
 // ============================================================
-// File Upload
+// File Upload — queue files first, upload on button click
 // ============================================================
-async function uploadFile(file, resultDiv) {
+const fileQueues = {};  // zoneId -> File[]
+
+function renderFileQueue(zoneId) {
+    const queueDiv = document.getElementById(zoneId.replace('UploadZone', 'FileQueue'));
+    const files = fileQueues[zoneId] || [];
+    if (!files.length) { queueDiv.innerHTML = ''; return; }
+    let html = `<div class="d-flex align-items-center justify-content-between mb-2">
+        <small class="text-muted fw-bold">${files.length} ${t('files_queued')}</small>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="clearFileQueue('${zoneId}')">
+                <i class="bi bi-x-circle me-1"></i>${t('clear_queue')}
+            </button>
+            <button class="btn btn-sm btn-primary" onclick="uploadQueue('${zoneId}')">
+                <i class="bi bi-cloud-upload me-1"></i>${t('upload_btn')}
+            </button>
+        </div>
+    </div>`;
+    files.forEach((f, i) => {
+        const sizeKB = (f.size / 1024).toFixed(0);
+        html += `<div class="d-flex align-items-center gap-2 py-1 border-bottom">
+            <i class="bi bi-file-earmark text-primary"></i>
+            <span class="flex-grow-1 text-truncate small">${f.name} <span class="text-muted">(${sizeKB} KB)</span></span>
+            <button class="btn btn-sm btn-link text-danger p-0" onclick="removeFromQueue('${zoneId}',${i})" title="${t('remove_file')}">
+                <i class="bi bi-trash3"></i>
+            </button>
+        </div>`;
+    });
+    queueDiv.innerHTML = html;
+}
+
+function addToQueue(zoneId, newFiles) {
+    if (!fileQueues[zoneId]) fileQueues[zoneId] = [];
+    for (const f of newFiles) {
+        // avoid adding the exact same filename twice
+        if (!fileQueues[zoneId].some(q => q.name === f.name && q.size === f.size))
+            fileQueues[zoneId].push(f);
+    }
+    renderFileQueue(zoneId);
+}
+
+function removeFromQueue(zoneId, idx) {
+    fileQueues[zoneId].splice(idx, 1);
+    renderFileQueue(zoneId);
+}
+
+function clearFileQueue(zoneId) {
+    fileQueues[zoneId] = [];
+    renderFileQueue(zoneId);
+}
+
+async function uploadQueue(zoneId) {
+    const files = fileQueues[zoneId] || [];
+    if (!files.length) return;
+    const resultDiv = document.getElementById(zoneId.replace('UploadZone', 'UploadResult'));
+    resultDiv.innerHTML = '';
+    // Disable the upload button
+    const queueDiv = document.getElementById(zoneId.replace('UploadZone', 'FileQueue'));
+    const uploadBtn = queueDiv.querySelector('.btn-primary');
+    if (uploadBtn) { uploadBtn.disabled = true; uploadBtn.innerHTML = `<i class="bi bi-hourglass-split me-1"></i>${t('processing')}`; }
+
+    for (const file of files) {
+        await uploadSingleFile(file, resultDiv);
+    }
+    fileQueues[zoneId] = [];
+    renderFileQueue(zoneId);
+    // After import, check for recurring patterns
+    detectRecurringAfterImport();
+}
+
+async function uploadSingleFile(file, resultDiv) {
     const formData = new FormData();
     formData.append('file', file);
 
-    // Add a processing indicator for this file
     const statusEl = document.createElement('div');
     statusEl.className = 'text-primary mb-2';
     statusEl.innerHTML = `<i class="bi bi-hourglass-split me-1"></i>${t('processing')} <b>${file.name}</b>...`;
@@ -5197,24 +5337,116 @@ async function uploadFile(file, resultDiv) {
 function setupUploadZone(zoneId, inputId, resultDivId) {
     const zone = document.getElementById(zoneId);
     const input = document.getElementById(inputId);
-    const resultDiv = document.getElementById(resultDivId);
 
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
     zone.addEventListener('drop', e => {
         e.preventDefault();
         zone.classList.remove('dragover');
-        for (const file of e.dataTransfer.files) {
-            uploadFile(file, resultDiv);
-        }
+        addToQueue(zoneId, e.dataTransfer.files);
     });
 
     input.addEventListener('change', () => {
-        for (const file of input.files) {
-            uploadFile(file, resultDiv);
-        }
+        addToQueue(zoneId, input.files);
         input.value = '';
     });
+}
+
+// ============================================================
+// Recurring Transaction Detection
+// ============================================================
+let recurringPatterns = [];
+let recurringIndex = 0;
+let recurringConfirmed = 0;
+let recurringModalInstance = null;
+
+async function detectRecurringAfterImport() {
+    try {
+        const res = await api('/api/detect-recurring', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        if (!res || !res.length) return;
+        recurringPatterns = res;
+        recurringIndex = 0;
+        recurringConfirmed = 0;
+        showRecurringModal();
+    } catch(e) { /* silent */ }
+}
+
+function showRecurringModal() {
+    if (!recurringPatterns.length) return;
+    renderRecurringItem();
+    const el = document.getElementById('recurringModal');
+    if (!recurringModalInstance) recurringModalInstance = new bootstrap.Modal(el);
+    recurringModalInstance.show();
+}
+
+function renderRecurringItem() {
+    const p = recurringPatterns[recurringIndex];
+    if (!p) return;
+    const total = recurringPatterns.length;
+    document.getElementById('recurringCounter').textContent =
+        t('recurring_counter').replace('{0}', recurringIndex + 1).replace('{1}', total);
+    document.getElementById('recurringDesc').textContent = p.description;
+    document.getElementById('recurringAmount').textContent = fmt(p.avg_amount);
+    document.getElementById('recurringMonths').textContent =
+        t('recurring_months').replace('{0}', p.months_count) + ' (' + p.months.join(', ') + ')';
+    // Reset state
+    document.getElementById('recurringOptions').style.display = 'none';
+    document.getElementById('recurringFooter').style.display = '';
+    document.getElementById('recurringApplyFooter').style.display = 'none';
+    document.getElementById('recurringNoEnd').checked = true;
+    document.getElementById('recurringEndDateGroup').style.display = 'none';
+    document.getElementById('recurringFreqSelect').value = 'monthly';
+}
+
+function recurringConfirm(isRecurring) {
+    if (isRecurring) {
+        // Show frequency/end date options
+        document.getElementById('recurringOptions').style.display = '';
+        document.getElementById('recurringFooter').style.display = 'none';
+        document.getElementById('recurringApplyFooter').style.display = '';
+    } else {
+        // Skip to next
+        recurringIndex++;
+        if (recurringIndex < recurringPatterns.length) {
+            renderRecurringItem();
+        } else {
+            finishRecurring();
+        }
+    }
+}
+
+async function recurringApply() {
+    const p = recurringPatterns[recurringIndex];
+    const freq = document.getElementById('recurringFreqSelect').value;
+    const noEnd = document.getElementById('recurringNoEnd').checked;
+    const endDate = noEnd ? null : document.getElementById('recurringEndDate').value;
+
+    await api('/api/expenses/set-recurring', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: p.description, frequency: freq, end_date: endDate })
+    });
+    recurringConfirmed++;
+
+    recurringIndex++;
+    if (recurringIndex < recurringPatterns.length) {
+        renderRecurringItem();
+    } else {
+        finishRecurring();
+    }
+}
+
+function finishRecurring() {
+    if (recurringModalInstance) recurringModalInstance.hide();
+    if (recurringConfirmed > 0) {
+        showToast(t('recurring_done').replace('{0}', recurringConfirmed));
+        refreshAll();
+    }
+    recurringPatterns = [];
 }
 
 // ============================================================
