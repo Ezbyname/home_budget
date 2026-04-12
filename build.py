@@ -29,6 +29,7 @@ subprocess.check_call([
     '--add-data', f'static{os.pathsep}static',
     '--hidden-import', 'openpyxl',
     '--hidden-import', 'xlrd',
+    '--hidden-import', 'fitz',
     'app.py',
 ], cwd=BASE)
 

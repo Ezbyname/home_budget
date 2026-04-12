@@ -1217,6 +1217,1493 @@ for uname in ['isolationC', 'isolationD']:
 
 
 # ====================================================================
+# 31. Insurance Portfolio Import
+# ====================================================================
+print("\n🔹 31. Insurance Portfolio Import")
+
+# Create a test XLSX insurance file
+import openpyxl
+
+def make_test_insurance_xlsx(filepath, file_type='general'):
+    """Create a minimal test insurance portfolio XLSX."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'תיק ביטוחי'
+
+    if file_type == 'general':
+        # HbResults format (car/home)
+        ws.cell(row=2, column=2, value="התיק הביטוחי, הופק מאתר 'הר הביטוח' של משרד האוצר, בתאריך")
+        ws.cell(row=2, column=6, value='11/04/2026')
+        headers = ['תעודת זהות', 'ענף ראשי', 'ענף (משני)', 'סוג מוצר', 'חברה', 'תקופת ביטוח', 'פרטים נוספים', 'פרמיה בש"ח', 'סוג פרמיה', 'מספר פוליסה', 'סיווג תכנית']
+        for j, h in enumerate(headers):
+            ws.cell(row=4, column=j+1, value=h)
+        # Car insurance
+        for j, v in enumerate(['12345678', 'ביטוח רכב', 'ביטוח מקיף', 'פוליסת ביטוח', 'כלל חברה לביטוח בע"מ', '01/01/2025 - 31/12/2025', None, 6000, 'שנתית', '999111222', 'אישי']):
+            ws.cell(row=6, column=j+1, value=v)
+        # Home insurance
+        for j, v in enumerate(['12345678', 'ביטוח דירה', 'ביטוח מבנה', 'פוליסת ביטוח', 'הראל חברה לביטוח בע"מ', '01/04/2025 - 31/03/2026', None, 1200, 'שנתית', '999333444', 'אישי']):
+            ws.cell(row=7, column=j+1, value=v)
+    elif file_type == 'health':
+        # HitResults section 2 format
+        ws.cell(row=2, column=2, value="התיק הביטוחי, הופקו מאתר 'כלי מסביר ביטוח' של רשות שוק ההון, בתאריך")
+        ws.cell(row=2, column=6, value='4/11/2026')
+        headers = ['תעודת זהות', 'ענף ראשי', 'ענף (משני)', 'סוג מוצר', 'חברה', 'תקופת ביטוח', 'פרמיה בש"ח', 'סוג פרמיה', 'מספר פוליסה', 'סיווג תכנית']
+        for j, h in enumerate(headers):
+            ws.cell(row=4, column=j+1, value=h)
+        # Two coverages under same policy
+        for j, v in enumerate(['12345678', 'ביטוח בריאות', 'ניתוחים', 'קבוצתי', 'מגדל ביטוח', 'מתחדש', 80, 'חודשית', '555666777', 'תכנית ביטוח']):
+            ws.cell(row=5, column=j+1, value=v)
+        for j, v in enumerate(['12345678', 'ביטוח בריאות', 'תרופות', 'קבוצתי', 'מגדל ביטוח', 'מתחדש', 40, 'חודשית', '555666777', 'תכנית ביטוח']):
+            ws.cell(row=6, column=j+1, value=v)
+        # Zero cost entry
+        for j, v in enumerate(['12345678', 'ביטוח בריאות', 'ייעוץ', 'קבוצתי', 'כללית', 'מתחדש', 0, 'חודשית', '', 'תכנית ביטוח']):
+            ws.cell(row=7, column=j+1, value=v)
+
+    wb.save(filepath)
+
+# Test 1: Auto-detection of insurance portfolio files
+general_path = os.path.join(tmp_dir, 'test_general_ins.xlsx')
+health_path = os.path.join(tmp_dir, 'test_health_ins.xlsx')
+make_test_insurance_xlsx(general_path, 'general')
+make_test_insurance_xlsx(health_path, 'health')
+
+with budget_app.app.app_context():
+    check(budget_app._is_insurance_portfolio_xlsx(general_path),
+          "Insurance detect: general portfolio detected")
+    check(budget_app._is_insurance_portfolio_xlsx(health_path),
+          "Insurance detect: health portfolio detected")
+
+# Test 2: Import via API endpoint
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+with open(general_path, 'rb') as f:
+    r = client.post("/api/import", data={'file': (f, 'test_general_ins.xlsx')}, content_type='multipart/form-data')
+check(r.status_code == 200, "Insurance import: general file returns 200")
+data = r.get_json()
+check(data.get('source') == 'insurance_portfolio', "Insurance import: source is insurance_portfolio")
+check(data.get('imported') == 2, f"Insurance import: general imported 2 products (got {data.get('imported')})")
+
+# Test 3: Health file with aggregation (same policy number)
+with open(health_path, 'rb') as f:
+    r = client.post("/api/import", data={'file': (f, 'test_health_ins.xlsx')}, content_type='multipart/form-data')
+check(r.status_code == 200, "Insurance import: health file returns 200")
+data = r.get_json()
+check(data.get('imported') == 1, f"Insurance import: health aggregated to 1 product (got {data.get('imported')})")
+check(data.get('skipped', 0) >= 1, f"Insurance import: zero-cost entries skipped (got {data.get('skipped', 0)})")
+if data.get('products'):
+    check(data['products'][0]['monthly_cost'] == 120.0,
+          f"Insurance import: aggregated monthly cost = 120 (got {data['products'][0].get('monthly_cost')})")
+
+# Test 4: Re-import dedup (same policy numbers should be skipped)
+with open(general_path, 'rb') as f:
+    r = client.post("/api/import", data={'file': (f, 'test_general_ins.xlsx')}, content_type='multipart/form-data')
+data = r.get_json()
+check(data.get('imported') == 0, f"Insurance import: re-import deduped (imported {data.get('imported')})")
+check(data.get('skipped', 0) >= 2, f"Insurance import: re-import skipped duplicates (got {data.get('skipped', 0)})")
+
+# Test 5: Products appear in financial products list
+r = client.get("/api/financial/products")
+products = r.get_json()
+ins_products = [p for p in products if p['type'] == 'insurance']
+check(len(ins_products) >= 3, f"Insurance import: 3+ products in financial list (got {len(ins_products)})")
+
+# Check subtypes are correct
+subtypes = {p['policy_number']: p['subtype'] for p in ins_products if p.get('policy_number')}
+if '999111222' in subtypes:
+    check(subtypes['999111222'] == 'car', f"Insurance import: car subtype correct (got {subtypes['999111222']})")
+if '999333444' in subtypes:
+    check(subtypes['999333444'] == 'home', f"Insurance import: home subtype correct (got {subtypes['999333444']})")
+if '555666777' in subtypes:
+    check(subtypes['555666777'] == 'health', f"Insurance import: health subtype correct (got {subtypes['555666777']})")
+
+# Test 6: Expense pattern set for bank/visa matching
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    uid_row = conn.execute("SELECT id FROM users WHERE username='testadmin'").fetchone()
+    if uid_row:
+        patterns = conn.execute("SELECT expense_pattern FROM financial_products WHERE user_id=? AND type='insurance' AND expense_pattern != ''",
+                                (uid_row['id'],)).fetchall()
+        check(len(patterns) >= 2, f"Insurance import: expense_pattern set for matching ({len(patterns)} products)")
+    conn.close()
+
+# Test 7: Ignore rules endpoint
+r = client.get("/api/insurance/ignore-rules")
+check(r.status_code == 200, "Insurance ignore-rules: GET returns 200")
+
+# Test 8: Merge candidates endpoint
+r = client.get("/api/insurance/merge-candidates")
+check(r.status_code == 200, "Insurance merge-candidates: GET returns 200")
+candidates = r.get_json()
+check(len(candidates) >= 3, f"Insurance merge-candidates: returns imported products (got {len(candidates)})")
+
+
+# ====================================================================
+# 32. Insurance Overlap Detection
+# ====================================================================
+print("\n\U0001f539 32. Insurance Overlap Detection")
+
+# Create two overlapping car insurance products
+ov_product_a = {
+    "type": "insurance", "subtype": "car", "company": "Harel", "name": "Car Insurance A",
+    "monthly_cost": 350, "policy_number": "POL-12345", "insured_object": "12-345-67",
+    "insured_person": "John", "notes": "full coverage", "expense_pattern": "harel car ins"
+}
+ov_product_b = {
+    "type": "insurance", "subtype": "car", "company": "Migdal", "name": "Car Insurance B",
+    "monthly_cost": 380, "policy_number": "MG-99999", "insured_object": "12-345-67",
+    "insured_person": "John", "notes": "third party", "expense_pattern": "migdal car"
+}
+# Create a non-overlapping health product
+ov_product_c = {
+    "type": "insurance", "subtype": "health", "company": "Clalit", "name": "Health Plan",
+    "monthly_cost": 200, "insured_person": "Jane"
+}
+
+status_a, _ = api_post("/api/financial/products", ov_product_a)
+status_b, _ = api_post("/api/financial/products", ov_product_b)
+status_c, _ = api_post("/api/financial/products", ov_product_c)
+check(status_a == 200, "Overlap: create product A returns 200")
+check(status_b == 200, "Overlap: create product B returns 200")
+check(status_c == 200, "Overlap: create product C returns 200")
+
+# Scan for overlaps
+status, scan_result = api_post("/api/insurance/overlap-scan")
+check(status == 200, "Overlap scan: POST returns 200")
+check(scan_result.get("total_open", 0) >= 1, f"Overlap scan: found open alerts (got {scan_result.get('total_open', 0)})")
+
+# List open alerts
+status, alerts = api_get("/api/insurance/overlap-alerts?status=open")
+check(status == 200, "Overlap alerts: GET returns 200")
+check(isinstance(alerts, list), "Overlap alerts: returns list")
+
+# Find the car-car overlap alert
+car_alert = None
+for a in alerts:
+    if (a.get("a_subtype") == "car" and a.get("b_subtype") == "car"):
+        car_alert = a
+        break
+check(car_alert is not None, "Overlap alerts: detected car-car overlap")
+if car_alert:
+    check(car_alert["overlap_score"] >= 50, f"Overlap score: car-car >= 50 (got {car_alert['overlap_score']})")
+    check(car_alert["alert_level"] in ("critical", "warning"), f"Overlap level: critical or warning (got {car_alert['alert_level']})")
+    check(car_alert.get("estimated_duplicate_cost_monthly", 0) > 0, "Overlap: estimated duplicate cost > 0")
+
+    # Test reasons parsing (bundled format: {reasons: [...], confidence_level, ...})
+    raw_reasons = json.loads(car_alert.get("reasons_json", "{}"))
+    if isinstance(raw_reasons, dict):
+        reasons = raw_reasons.get("reasons", [])
+        check("confidence_level" in raw_reasons, f"Overlap reasons: has confidence_level (got {list(raw_reasons.keys())})")
+    else:
+        reasons = raw_reasons  # legacy plain array fallback
+    signal_names = [r["signal"] for r in reasons]
+    check("same_category" in signal_names, "Overlap reasons: includes same_category signal")
+    check("same_target" in signal_names, f"Overlap reasons: includes same_target signal (got {signal_names})")
+
+    # Test dismiss
+    status, _ = api_put(f"/api/insurance/overlap-alerts/{car_alert['id']}", {"status": "dismissed"})
+    check(status == 200, "Overlap dismiss: PUT returns 200")
+
+    # After dismiss, re-list should not include it
+    _, alerts2 = api_get("/api/insurance/overlap-alerts?status=open")
+    dismissed_ids = [a["id"] for a in alerts2]
+    check(car_alert["id"] not in dismissed_ids, "Overlap dismiss: alert no longer in open list")
+
+    # Re-scan should not recreate dismissed alert
+    api_post("/api/insurance/overlap-scan")
+    _, alerts3 = api_get("/api/insurance/overlap-alerts?status=open")
+    recreated = any(a["id"] == car_alert["id"] for a in alerts3)
+    check(not recreated, "Overlap rescan: dismissed alert not recreated")
+
+# Test overlap summary
+status, summary = api_get("/api/insurance/overlap-summary")
+check(status == 200, "Overlap summary: GET returns 200")
+check("total" in summary, "Overlap summary: has total key")
+
+# Test note saving
+if car_alert:
+    # Re-fetch from dismissed list to test note
+    status, _ = api_put(f"/api/insurance/overlap-alerts/{car_alert['id']}", {"user_note": "keeping both for now"})
+    check(status == 200, "Overlap note: PUT returns 200")
+
+# Verify overlap alert status update rejects invalid status
+status, _ = api_put(f"/api/insurance/overlap-alerts/{car_alert['id'] if car_alert else 1}", {"status": "bogus_status"})
+check(status == 400, "Overlap: invalid status returns 400")
+
+
+# ====================================================================
+print("\n\U0001f539 33. Assets / Net Worth")
+# ====================================================================
+
+# Asset CRUD
+status, data = api_post("/api/assets", {
+    "asset_type": "real_estate", "name": "Test Apartment",
+    "current_value": 2000000, "currency": "ILS",
+    "address": "Tel Aviv", "rent_income_monthly": 5000,
+    "mortgage_balance": 800000, "property_expenses_monthly": 1200
+})
+check(status == 200, "Asset: create real estate returns 200")
+asset_re_id = data.get("id")
+check(asset_re_id is not None, "Asset: create returns id")
+
+status, data = api_post("/api/assets", {
+    "asset_type": "stocks", "name": "Investment Portfolio",
+    "current_value": 500000, "currency": "USD",
+    "platform_name": "Interactive Brokers", "dividend_income_monthly": 800
+})
+check(status == 200, "Asset: create stocks returns 200")
+asset_st_id = data.get("id")
+
+status, data = api_post("/api/assets", {
+    "asset_type": "cash", "name": "Savings Account",
+    "current_value": 100000, "institution_name": "Bank Leumi",
+    "interest_rate": 4.5, "interest_income_monthly": 375
+})
+check(status == 200, "Asset: create cash returns 200")
+asset_ca_id = data.get("id")
+
+# List assets
+status, assets = api_get("/api/assets")
+check(status == 200, "Asset: GET list returns 200")
+check(len(assets) >= 3, f"Asset: list has 3+ items (got {len(assets)})")
+
+# Update asset
+status, _ = api_put(f"/api/assets/{asset_re_id}", {"current_value": 2100000})
+check(status == 200, "Asset: PUT update returns 200")
+
+# Verify update
+status, assets2 = api_get("/api/assets")
+updated = next((a for a in assets2 if a["id"] == asset_re_id), None)
+check(updated and updated["current_value"] == 2100000, "Asset: value updated to 2100000")
+
+# Invalid asset type
+status, _ = api_post("/api/assets", {"asset_type": "spaceship", "name": "X"})
+check(status == 400, "Asset: invalid type returns 400")
+
+# Liability CRUD
+status, data = api_post("/api/liabilities", {
+    "liability_type": "mortgage", "name": "Apartment Mortgage",
+    "current_balance": 800000, "monthly_payment": 4500,
+    "interest_rate": 3.5, "linked_asset_id": asset_re_id
+})
+check(status == 200, "Liability: create mortgage returns 200")
+liab_id = data.get("id")
+check(liab_id is not None, "Liability: create returns id")
+
+status, data = api_post("/api/liabilities", {
+    "liability_type": "investment_loan", "name": "Margin Loan",
+    "current_balance": 50000, "monthly_payment": 1500
+})
+check(status == 200, "Liability: create investment_loan returns 200")
+
+# List liabilities
+status, liabs = api_get("/api/liabilities")
+check(status == 200, "Liability: GET list returns 200")
+check(len(liabs) >= 2, f"Liability: list has 2+ items (got {len(liabs)})")
+
+# Update liability
+status, _ = api_put(f"/api/liabilities/{liab_id}", {"current_balance": 790000})
+check(status == 200, "Liability: PUT update returns 200")
+
+# Invalid liability type
+status, _ = api_post("/api/liabilities", {"liability_type": "unicorn", "name": "X"})
+check(status == 400, "Liability: invalid type returns 400")
+
+# Net worth summary
+status, nw = api_get("/api/net-worth/summary")
+check(status == 200, "Net worth: GET summary returns 200")
+check("total_assets" in nw, "Net worth: has total_assets")
+check("total_liabilities" in nw, "Net worth: has total_liabilities")
+check("net_worth" in nw, "Net worth: has net_worth")
+check("passive_income" in nw, "Net worth: has passive_income")
+check("by_type" in nw, "Net worth: has by_type breakdown")
+check(nw["total_assets"] >= 2600000, f"Net worth: total_assets >= 2.6M (got {nw['total_assets']})")
+check(nw["passive_income"]["rent"] == 5000, f"Net worth: rent income = 5000 (got {nw['passive_income']['rent']})")
+check(nw["passive_income"]["dividends"] == 800, f"Net worth: dividend income = 800 (got {nw['passive_income']['dividends']})")
+check(nw["passive_income"]["interest"] == 375, f"Net worth: interest income = 375 (got {nw['passive_income']['interest']})")
+check(nw["net_worth"] > 0, "Net worth: positive net worth")
+
+# Net worth history (should have at least 1 snapshot from auto-save)
+status, history = api_get("/api/net-worth/history")
+check(status == 200, "Net worth: GET history returns 200")
+check(len(history) >= 1, f"Net worth: has snapshot (got {len(history)})")
+
+# Manual snapshot
+status, _ = api_post("/api/net-worth/snapshot")
+check(status == 200, "Net worth: POST snapshot returns 200")
+
+# Delete asset (archive)
+status, _ = api_delete(f"/api/assets/{asset_ca_id}")
+check(status == 200, "Asset: DELETE returns 200")
+status, assets3 = api_get("/api/assets")
+check(all(a["id"] != asset_ca_id for a in assets3), "Asset: deleted asset not in list")
+
+# Delete liability (archive)
+status, _ = api_delete(f"/api/liabilities/{liab_id}")
+check(status == 200, "Liability: DELETE returns 200")
+status, liabs2 = api_get("/api/liabilities")
+check(all(l["id"] != liab_id for l in liabs2), "Liability: deleted liability not in list")
+
+# Net worth summary after deletions
+status, nw2 = api_get("/api/net-worth/summary")
+check(status == 200, "Net worth: summary after deletions returns 200")
+check(nw2["total_assets"] < nw["total_assets"], "Net worth: total_assets decreased after deletion")
+
+# Auth required
+api_post("/api/auth/logout")
+status, _ = api_get("/api/assets")
+check(status == 401, "Assets: GET without auth returns 401")
+status, _ = api_get("/api/net-worth/summary")
+check(status == 401, "Net worth: GET without auth returns 401")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+print("\n\U0001f539 34. Transaction-Asset Linking")
+# ====================================================================
+
+# First, add income entries that match asset patterns
+status, _ = api_post("/api/income", {
+    "date": "2026-04-01", "person": "landlord", "source": "rental",
+    "amount": 5100, "description": "שכירות דירת תל אביב"
+})
+check(status == 200, "Link: create rent income returns 200")
+
+status, _ = api_post("/api/income", {
+    "date": "2026-03-01", "person": "landlord", "source": "rental",
+    "amount": 5000, "description": "שכירות דירת תל אביב"
+})
+check(status == 200, "Link: create 2nd rent income returns 200")
+
+status, _ = api_post("/api/income", {
+    "date": "2026-04-05", "person": "broker", "source": "dividend",
+    "amount": 820, "description": "דיבידנד Interactive Brokers"
+})
+check(status == 200, "Link: create dividend income returns 200")
+
+# Add expense matching mortgage pattern
+status, _ = api_post("/api/expenses", {
+    "date": "2026-04-02", "category_id": "housing",
+    "subcategory": "משכנתא", "description": "דסק-משכנתא",
+    "amount": 4500, "frequency": "monthly"
+})
+check(status == 200, "Link: create mortgage expense returns 200")
+
+# Get income IDs by fetching income list (add_income doesn't return id)
+status, all_income = api_get("/api/income?month=2026-04")
+rent_inc_id = None
+if status == 200 and all_income:
+    for inc in (all_income if isinstance(all_income, list) else all_income.get('income', [])):
+        if 'שכירות' in (inc.get('description') or ''):
+            rent_inc_id = inc['id']
+            break
+
+# Run auto-link engine
+status, link_res = api_post("/api/auto-link", {})
+check(status == 200, "Link: POST /api/auto-link returns 200")
+check(isinstance(link_res.get("auto_linked"), int), "Link: auto-link returns auto_linked count")
+check(isinstance(link_res.get("suggested"), int), "Link: auto-link returns suggested count")
+total_linked = link_res.get("auto_linked", 0) + link_res.get("suggested", 0)
+check(total_linked > 0, f"Link: engine found matches (got {total_linked} linked+suggested)")
+
+# Check suggestions endpoint
+status, suggestions = api_get("/api/link-suggestions")
+check(status == 200, "Link: GET /api/link-suggestions returns 200")
+check(isinstance(suggestions, list), "Link: suggestions is a list")
+
+# Idempotency: running auto-link again should not create duplicates
+status, link_res2 = api_post("/api/auto-link", {})
+check(status == 200, "Link: 2nd auto-link returns 200")
+# Check suggestions count didn't increase
+status, suggestions2 = api_get("/api/link-suggestions")
+check(len(suggestions2) == len(suggestions), f"Link: idempotent — same suggestion count ({len(suggestions)} = {len(suggestions2)})")
+
+# Manual link: create a link from the rent income to the real estate asset
+status, ml_resp = api_post("/api/transaction-links", {
+    "transaction_type": "income", "transaction_id": rent_inc_id,
+    "asset_id": asset_re_id
+})
+check(status == 200, f"Link: manual link returns 200 (got {status})")
+
+# Asset linked transactions should include our manual link
+status, linked_txns = api_get(f"/api/assets/{asset_re_id}/linked-transactions")
+check(status == 200, "Link: GET asset linked-transactions returns 200")
+check(isinstance(linked_txns, list), "Link: linked-transactions is a list")
+has_rent = any(t.get("transaction_id") == rent_inc_id for t in linked_txns)
+check(has_rent, "Link: manual link appears in asset linked-transactions")
+
+# Asset intelligence
+status, intel = api_get(f"/api/assets/{asset_re_id}/intelligence")
+check(status == 200, "Link: GET asset intelligence returns 200")
+check("declared" in intel, "Link: intelligence has declared section")
+check("actual" in intel, "Link: intelligence has actual section")
+check("variance" in intel, "Link: intelligence has variance section")
+check("pnl" in intel, "Link: intelligence has pnl section")
+check(intel["declared"]["income_monthly"] == 5000, f"Link: declared rent = 5000 (got {intel['declared'].get('income_monthly')})")
+
+# Actual vs declared dashboard
+status, avd = api_get("/api/intelligence/actual-vs-declared")
+check(status == 200, "Link: GET actual-vs-declared returns 200")
+check("declared_passive_total" in avd, "Link: avd has declared_passive_total")
+check("actual_passive_total" in avd, "Link: avd has actual_passive_total")
+check("by_asset" in avd, "Link: avd has by_asset list")
+
+# Net worth summary includes actual_passive_income
+status, nw3 = api_get("/api/net-worth/summary")
+check(status == 200, "Link: net worth summary returns 200")
+check("actual_passive_income" in nw3, "Link: summary includes actual_passive_income")
+check("pending_suggestions" in nw3, "Link: summary includes pending_suggestions")
+
+# Confirm a suggestion (if any exist)
+if suggestions:
+    first_sug = suggestions[0]
+    sug_id = first_sug["id"]
+    status, _ = api_put(f"/api/transaction-links/{sug_id}", {"status": "confirmed"})
+    check(status == 200, "Link: confirm suggestion returns 200")
+
+# Reject a suggestion
+status, sug3 = api_get("/api/link-suggestions")
+if sug3:
+    rej_id = sug3[0]["id"]
+    status, _ = api_put(f"/api/transaction-links/{rej_id}", {"status": "rejected"})
+    check(status == 200, "Link: reject suggestion returns 200")
+
+# Create always_link rule
+status, _ = api_post("/api/link-rules", {
+    "rule_type": "always_link",
+    "description_pattern": "שכירות תל אביב",
+    "target_type": "asset",
+    "target_id": asset_re_id
+})
+check(status == 200, "Link: create always_link rule returns 200")
+
+# List rules
+status, rules = api_get("/api/link-rules")
+check(status == 200, "Link: GET link-rules returns 200")
+check(len(rules) >= 1, f"Link: has at least 1 rule (got {len(rules)})")
+
+# Create never_suggest rule
+status, _ = api_post("/api/link-rules", {
+    "rule_type": "never_suggest",
+    "description_pattern": "false pattern",
+    "target_type": "asset",
+    "target_id": asset_re_id
+})
+check(status == 200, "Link: create never_suggest rule returns 200")
+
+# Delete a rule
+if rules:
+    status, _ = api_delete(f"/api/link-rules/{rules[0]['id']}")
+    check(status == 200, "Link: DELETE rule returns 200")
+
+# Delete a link
+status, linked2 = api_get(f"/api/assets/{asset_re_id}/linked-transactions")
+if linked2:
+    status, _ = api_delete(f"/api/transaction-links/{linked2[0]['id']}")
+    check(status == 200, "Link: DELETE transaction link returns 200")
+
+# Liability linked transactions
+status, liab_txns = api_get(f"/api/liabilities/{liab_id}/linked-transactions")
+check(status == 200, "Link: GET liability linked-transactions returns 200")
+check(isinstance(liab_txns, list), "Link: liability linked-transactions is a list")
+
+# Invalid link: missing fields
+status, _ = api_post("/api/transaction-links", {"transaction_type": "income"})
+check(status == 400, "Link: manual link with missing fields returns 400")
+
+# Invalid rule: bad type
+status, _ = api_post("/api/link-rules", {
+    "rule_type": "invalid", "description_pattern": "test",
+    "target_type": "asset", "target_id": 999
+})
+check(status == 400, "Link: invalid rule_type returns 400")
+
+# Auth: linking requires login
+api_post("/api/auth/logout")
+status, _ = api_get("/api/link-suggestions")
+check(status == 401, "Link: suggestions without auth returns 401")
+status, _ = api_post("/api/auto-link", {})
+check(status == 401, "Link: auto-link without auth returns 401")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+print("\n\U0001f539 38. Installment Detection Engine")
+# ====================================================================
+
+# Seed installment-like expenses: same vendor, same amount, 4 consecutive months, visa_import
+inst_det_ids = []
+for m in range(1, 5):
+    status, _ = api_post("/api/expenses", {
+        "date": f"2026-{m:02d}-05",
+        "category_id": "shopping",
+        "description": "\u05d0\u05d9\u05e7\u05d0\u05d4 \u05ea\u05e9\u05dc\u05d5\u05dd 3 \u05de\u05ea\u05d5\u05da 10",
+        "amount": 199.0,
+        "source": "visa_import",
+        "frequency": "once",
+    })
+    check(status == 200, f"InstDet: create expense month {m}")
+
+# Seed subscription-like expenses: Netflix, 12 months (should NOT be detected)
+for m in range(1, 13):
+    api_post("/api/expenses", {
+        "date": f"2026-{m:02d}-10",
+        "category_id": "entertainment",
+        "description": "NETFLIX",
+        "amount": 49.9,
+        "source": "visa_import",
+        "frequency": "once",
+    })
+
+# Seed housing category expenses (should NOT be detected)
+for m in range(1, 4):
+    api_post("/api/expenses", {
+        "date": f"2026-{m:02d}-01",
+        "category_id": "housing",
+        "description": "\u05d3\u05e1\u05e7 \u05de\u05e9\u05db\u05e0\u05ea\u05d0 \u05ea\u05e9\u05dc\u05d5\u05dd 2 \u05de\u05ea\u05d5\u05da 6",
+        "amount": 4500,
+        "source": "visa_import",
+        "frequency": "once",
+    })
+
+# Seed expenses with frequency='monthly' (should NOT be detected - already classified)
+for m in range(1, 4):
+    api_post("/api/expenses", {
+        "date": f"2026-{m:02d}-15",
+        "category_id": "food",
+        "description": "Monthly Food Delivery",
+        "amount": 300,
+        "source": "visa_import",
+        "frequency": "monthly",
+    })
+
+# T1: Scan detects the installment pattern
+status, scan_res = api_post("/api/installment-suggestions/scan", {})
+check(status == 200, "InstDet: scan returns 200")
+check(scan_res.get('total_found', 0) >= 1, f"InstDet: scan found >= 1 pattern (got {scan_res.get('total_found', 0)})")
+
+# T2: GET suggestions returns the detected pattern
+status, suggestions = api_get("/api/installment-suggestions")
+check(status == 200, "InstDet: GET suggestions returns 200")
+check(len(suggestions) >= 1, f"InstDet: has >= 1 suggestion (got {len(suggestions)})")
+
+# Verify suggestion structure
+if suggestions:
+    sug = suggestions[0]
+    check('confidence_score' in sug, "InstDet: suggestion has confidence_score")
+    check('detection_reasons' in sug, "InstDet: suggestion has detection_reasons")
+    check('expense_ids' in sug, "InstDet: suggestion has expense_ids")
+    check('months_seen' in sug, "InstDet: suggestion has months_seen")
+    check('vendor_display' in sug, "InstDet: suggestion has vendor_display")
+    check(sug['confidence_score'] >= 0.45, f"InstDet: confidence >= 0.45 (got {sug['confidence_score']:.2f})")
+
+    # T3: Check Netflix was NOT detected (subscription filter)
+    vendor_names = [s.get('vendor_normalized', '') for s in suggestions]
+    netflix_found = any('netflix' in v.lower() for v in vendor_names)
+    check(not netflix_found, "InstDet: Netflix NOT detected (subscription filter)")
+
+    # T4: Check housing category NOT detected
+    housing_found = any('\u05de\u05e9\u05db\u05e0\u05ea\u05d0' in (s.get('vendor_display', '') or '') for s in suggestions)
+    check(not housing_found, "InstDet: housing category NOT detected")
+
+# T5: Keyword detection - description has explicit count pattern
+ikea_sug = [s for s in suggestions if '\u05d0\u05d9\u05e7\u05d0\u05d4' in (s.get('vendor_display', '') or '') or '\u05d0\u05d9\u05e7\u05d0' in (s.get('vendor_normalized', '') or '')]
+if ikea_sug:
+    reasons = json.loads(ikea_sug[0].get('detection_reasons', '[]'))
+    has_keyword = any(r.startswith('keyword') for r in reasons)
+    has_explicit = any(r.startswith('explicit_count') for r in reasons)
+    check(has_keyword or has_explicit, f"InstDet: keyword/explicit signal fired (reasons: {reasons})")
+else:
+    check(False, "InstDet: IKEA suggestion found for keyword test")
+
+# T10: Idempotent rescan - no duplicates
+status, scan2 = api_post("/api/installment-suggestions/scan", {})
+check(status == 200, "InstDet: rescan returns 200")
+status, sug2 = api_get("/api/installment-suggestions")
+check(len(sug2) == len(suggestions), f"InstDet: idempotent rescan, no duplicates ({len(sug2)} == {len(suggestions)})")
+
+
+# ====================================================================
+print("\n\U0001f539 39. Installment Suggestion Lifecycle")
+# ====================================================================
+
+# Get first suggestion for confirm test
+status, all_sug = api_get("/api/installment-suggestions")
+if all_sug:
+    test_sug = all_sug[0]
+    sug_id = test_sug['id']
+    exp_ids = json.loads(test_sug['expense_ids'])
+
+    # T6: Confirm suggestion with overrides
+    status, confirm_res = api_put(f"/api/installment-suggestions/{sug_id}", {
+        "action": "confirm",
+        "overrides": {
+            "description": "Test IKEA Plan",
+            "store": "IKEA",
+            "total_payments": 10,
+            "payments_made": 4,
+            "start_date": "2026-01-05",
+            "card": "4580",
+        },
+        "selected_expense_ids": exp_ids,
+    })
+    check(status == 200, "InstDet: confirm suggestion returns 200")
+    check(confirm_res.get('installment_id') is not None, "InstDet: confirm returns installment_id")
+
+    inst_id = confirm_res.get('installment_id')
+
+    # T7: Verify installment was created with source='detected'
+    status, all_inst = api_get("/api/installments")
+    detected_inst = [i for i in all_inst if i.get('id') == inst_id]
+    if detected_inst:
+        check(detected_inst[0].get('source') == 'detected', "InstDet: installment source is 'detected'")
+        check(detected_inst[0].get('description') == 'Test IKEA Plan', "InstDet: installment uses override description")
+        check(detected_inst[0].get('linked_count', 0) > 0, f"InstDet: installment has linked transactions (got {detected_inst[0].get('linked_count', 0)})")
+    else:
+        check(False, "InstDet: created installment found in list")
+
+    # T12: GET linked-transactions for the confirmed plan
+    status, linked = api_get(f"/api/installments/{inst_id}/linked-transactions")
+    check(status == 200, "InstDet: GET linked-transactions returns 200")
+    check(isinstance(linked, list), "InstDet: linked-transactions is a list")
+    check(len(linked) > 0, f"InstDet: has linked transactions (got {len(linked)})")
+
+    # T13: Unlink a transaction
+    if linked:
+        expense_id = linked[0].get('expense_id')
+        status, _ = api_post(f"/api/installments/{inst_id}/unlink-transaction", {"expense_id": expense_id})
+        check(status == 200, "InstDet: unlink transaction returns 200")
+
+        # Verify payments_made decremented
+        status, all_inst2 = api_get("/api/installments")
+        det2 = [i for i in all_inst2 if i.get('id') == inst_id]
+        if det2 and detected_inst:
+            check(det2[0].get('linked_count', 0) < detected_inst[0].get('linked_count', 0),
+                  "InstDet: linked_count decremented after unlink")
+
+    # T14: Complete early
+    status, _ = api_put(f"/api/installments/{inst_id}/complete-early", {})
+    check(status == 200, "InstDet: complete-early returns 200")
+    status, all_inst3 = api_get("/api/installments")
+    det3 = [i for i in all_inst3 if i.get('id') == inst_id]
+    if det3:
+        check(det3[0].get('status') == 'completed', "InstDet: complete-early sets status=completed")
+
+    # T8: Verify suggestion is now 'confirmed', rescan skips it
+    status, scan3 = api_post("/api/installment-suggestions/scan", {})
+    status, sug_after = api_get("/api/installment-suggestions")
+    confirmed_in_pending = [s for s in sug_after if s['id'] == sug_id]
+    check(len(confirmed_in_pending) == 0, "InstDet: confirmed suggestion not in pending list")
+
+else:
+    check(False, "InstDet: no suggestions available for lifecycle tests")
+
+
+# ====================================================================
+print("\n\U0001f539 40. Installment Reject and Ignore Rules")
+# ====================================================================
+
+# Seed a new set of expenses for reject/ignore tests
+for m in range(1, 4):
+    api_post("/api/expenses", {
+        "date": f"2026-{m:02d}-12",
+        "category_id": "shopping",
+        "description": "ZARA payment plan",
+        "amount": 150.0,
+        "source": "visa_import",
+        "frequency": "once",
+    })
+
+# Re-scan to pick up new pattern
+api_post("/api/installment-suggestions/scan", {})
+status, sug_list = api_get("/api/installment-suggestions")
+zara_sug = [s for s in sug_list if 'zara' in (s.get('vendor_normalized', '') or '').lower()]
+
+if zara_sug:
+    zara_id = zara_sug[0]['id']
+
+    # T8b: Reject suggestion
+    status, _ = api_put(f"/api/installment-suggestions/{zara_id}", {"action": "reject"})
+    check(status == 200, "InstDet: reject suggestion returns 200")
+
+    # Rescan: rejected should not reappear
+    api_post("/api/installment-suggestions/scan", {})
+    status, sug_after_reject = api_get("/api/installment-suggestions")
+    zara_pending = [s for s in sug_after_reject if s['id'] == zara_id]
+    check(len(zara_pending) == 0, "InstDet: rejected suggestion stays rejected on rescan")
+else:
+    check(False, "InstDet: ZARA suggestion found for reject test")
+
+# Seed another pattern for ignore + rule test
+for m in range(1, 4):
+    api_post("/api/expenses", {
+        "date": f"2026-{m:02d}-20",
+        "category_id": "shopping",
+        "description": "H&M installments",
+        "amount": 89.0,
+        "source": "visa_import",
+        "frequency": "once",
+    })
+
+api_post("/api/installment-suggestions/scan", {})
+status, sug_list2 = api_get("/api/installment-suggestions")
+hm_sug = [s for s in sug_list2 if 'h&m' in (s.get('vendor_normalized', '') or '').lower() or 'h m' in (s.get('vendor_normalized', '') or '').lower()]
+
+if hm_sug:
+    hm_id = hm_sug[0]['id']
+
+    # T9: Ignore + create rule
+    status, _ = api_put(f"/api/installment-suggestions/{hm_id}", {"action": "ignore", "add_rule": True})
+    check(status == 200, "InstDet: ignore + rule returns 200")
+else:
+    # Even if H&M not detected (low score), test the rule CRUD directly
+    pass
+
+# T19: Ignore rules CRUD
+status, rules = api_get("/api/installment-ignore-rules")
+check(status == 200, "InstDet: GET ignore-rules returns 200")
+check(isinstance(rules, list), "InstDet: ignore-rules is a list")
+
+# Create a manual rule
+status, rule_res = api_post("/api/installment-ignore-rules", {
+    "rule_type": "never_suggest",
+    "rule_value": "test-vendor-ignore",
+    "reason": "test rule",
+})
+check(status == 200, "InstDet: create ignore rule returns 200")
+
+# Create always_installment rule
+status, rule_res2 = api_post("/api/installment-ignore-rules", {
+    "rule_type": "always_installment",
+    "rule_value": "test-vendor-always",
+    "reason": "always detect this vendor",
+})
+check(status == 200, "InstDet: create always_installment rule returns 200")
+
+# List rules
+status, rules2 = api_get("/api/installment-ignore-rules")
+check(len(rules2) >= 2, f"InstDet: has >= 2 rules after creation (got {len(rules2)})")
+
+# Delete a rule
+if rules2:
+    rule_id = rules2[-1]['id']
+    status, _ = api_delete(f"/api/installment-ignore-rules/{rule_id}")
+    check(status == 200, "InstDet: DELETE rule returns 200")
+
+
+# ====================================================================
+print("\n\U0001f539 41. Installment Detection Auth")
+# ====================================================================
+
+# Logout and verify all installment detection endpoints require auth
+api_post("/api/auth/logout")
+
+status, _ = api_post("/api/installment-suggestions/scan", {})
+check(status == 401, "InstDet: scan without auth returns 401")
+
+status, _ = api_get("/api/installment-suggestions")
+check(status == 401, "InstDet: GET suggestions without auth returns 401")
+
+status, _ = api_put("/api/installment-suggestions/1", {"action": "reject"})
+check(status == 401, "InstDet: PUT suggestion without auth returns 401")
+
+status, _ = api_get("/api/installment-ignore-rules")
+check(status == 401, "InstDet: GET ignore-rules without auth returns 401")
+
+status, _ = api_post("/api/installment-ignore-rules", {"rule_type": "never_suggest", "rule_value": "x"})
+check(status == 401, "InstDet: POST ignore-rule without auth returns 401")
+
+status, _ = api_delete("/api/installment-ignore-rules/1")
+check(status == 401, "InstDet: DELETE ignore-rule without auth returns 401")
+
+status, _ = api_get("/api/installments/1/linked-transactions")
+check(status == 401, "InstDet: GET linked-transactions without auth returns 401")
+
+status, _ = api_post("/api/installments/1/unlink-transaction", {"link_id": 1})
+check(status == 401, "InstDet: POST unlink without auth returns 401")
+
+status, _ = api_put("/api/installments/1/complete-early", {})
+check(status == 401, "InstDet: PUT complete-early without auth returns 401")
+
+# Re-login for cleanup
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+print("\n\U0001f539 42. Installment Insights & Safe-to-Spend Integration")
+# ====================================================================
+
+# First create a fresh active installment for insights testing
+api_post("/api/installments", {
+    "description": "Insight Test Plan",
+    "total_amount": 6000,
+    "num_payments": 10,
+    "start_date": "2026-03-01",
+    "card": "4580",
+})
+
+# GET installment-insights
+status, insights = api_get("/api/installment-insights")
+check(status == 200, "Insights: GET installment-insights returns 200")
+check('total_monthly_commitment' in insights, "Insights: has total_monthly_commitment")
+check('active_count' in insights, "Insights: has active_count")
+check('ending_soon' in insights, "Insights: has ending_soon list")
+check('recently_completed' in insights, "Insights: has recently_completed list")
+check('next_month_drop' in insights, "Insights: has next_month_drop")
+check('burden_pct' in insights, "Insights: has burden_pct")
+check('plans_summary' in insights, "Insights: has plans_summary")
+check('trend' in insights, "Insights: has trend")
+check(insights['trend'].get('direction') in ('improving', 'stable', 'increasing'), f"Insights: trend direction valid (got {insights['trend'].get('direction')})")
+check(isinstance(insights['ending_soon'], list), "Insights: ending_soon is a list")
+check(isinstance(insights['recently_completed'], list), "Insights: recently_completed is a list")
+check(insights['active_count'] >= 1, f"Insights: active_count >= 1 (got {insights['active_count']})")
+check(insights['total_monthly_commitment'] > 0, f"Insights: total_monthly > 0 (got {insights['total_monthly_commitment']})")
+
+# Verify ending_soon has correct structure if items present
+if insights['ending_soon']:
+    es = insights['ending_soon'][0]
+    check('days_until_end' in es, "Insights: ending_soon item has days_until_end")
+    check('description' in es, "Insights: ending_soon item has description")
+
+# GET safe-to-spend should include installment deduction
+status, safe = api_get("/api/safe-to-spend")
+check(status == 200 or (status == 200 and safe.get('available') is False), "Insights: GET safe-to-spend returns 200")
+if safe.get('available'):
+    check('installment_monthly' in safe, "Insights: safe-to-spend has installment_monthly")
+    if safe.get('why_inputs'):
+        check('installments' in safe['why_inputs'], "Insights: why_inputs has installments deduction")
+
+# Tips endpoint with installments present (must not crash)
+status, tips_data = api_get(f"/api/tips?month={month}")
+check(status == 200, "Insights: GET tips with installments returns 200")
+check(isinstance(tips_data, list), "Insights: tips is a list")
+
+# Auth check
+api_post("/api/auth/logout")
+status, _ = api_get("/api/installment-insights")
+check(status == 401, "Insights: installment-insights without auth returns 401")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+# 43. Smart Tips v2 — API Contract Validation
+# ====================================================================
+print("\n\U0001f539 43. Smart Tips v2 — API Contract")
+
+status, tips_v2 = api_get(f"/api/tips?month={month}")
+check(status == 200, "Tips v2: GET /api/tips returns 200")
+check(isinstance(tips_v2, list), "Tips v2: response is a list")
+
+if tips_v2:
+    # Structure checks on first tip
+    tip0 = tips_v2[0]
+    check('id' in tip0, "Tips v2: tip has 'id'")
+    check('category' in tip0, "Tips v2: tip has 'category'")
+    check('severity' in tip0, "Tips v2: tip has 'severity'")
+    check('score' in tip0, "Tips v2: tip has 'score'")
+    check('impact_amount' in tip0, "Tips v2: tip has 'impact_amount'")
+    check('impact_type' in tip0, "Tips v2: tip has 'impact_type'")
+    check('params' in tip0, "Tips v2: tip has 'params'")
+    check('action' in tip0, "Tips v2: tip has 'action'")
+    check('icon' in tip0, "Tips v2: tip has 'icon'")
+    check('color' in tip0, "Tips v2: tip has 'color'")
+
+    # Severity enum
+    valid_sev = {'important', 'watch', 'opportunity'}
+    for tip in tips_v2:
+        check(tip['severity'] in valid_sev, f"Tips v2: severity '{tip['severity']}' valid for tip '{tip['id']}'")
+
+    # Score bounds
+    for tip in tips_v2:
+        check(0 <= tip['score'] <= 1, f"Tips v2: score {tip['score']} in [0,1] for tip '{tip['id']}'")
+
+    # Sorted by score descending
+    scores = [t['score'] for t in tips_v2]
+    check(scores == sorted(scores, reverse=True), "Tips v2: tips sorted by score descending")
+
+    # Max 8 tips
+    check(len(tips_v2) <= 8, f"Tips v2: max 8 tips (got {len(tips_v2)})")
+
+    # No duplicate IDs
+    tip_ids = [t['id'] for t in tips_v2]
+    check(len(tip_ids) == len(set(tip_ids)), "Tips v2: no duplicate tip IDs")
+
+    # impact_amount numeric >= 0
+    for tip in tips_v2:
+        check(isinstance(tip['impact_amount'], (int, float)) and tip['impact_amount'] >= 0,
+              f"Tips v2: impact_amount >= 0 for '{tip['id']}'")
+
+    # impact_type valid
+    valid_types = {'yearly_cost', 'monthly_savings', 'risk', 'coverage'}
+    for tip in tips_v2:
+        check(tip['impact_type'] in valid_types, f"Tips v2: impact_type '{tip['impact_type']}' valid for '{tip['id']}'")
+
+    # Category cap: max 3 per category
+    cat_counts = {}
+    for tip in tips_v2:
+        cat_counts[tip['category']] = cat_counts.get(tip['category'], 0) + 1
+    for cat, cnt in cat_counts.items():
+        check(cnt <= 3, f"Tips v2: category '{cat}' has {cnt} tips (max 3)")
+
+    # Subsumption: negative_balance should suppress balance_decline
+    if 'negative_balance' in tip_ids:
+        check('balance_decline' not in tip_ids, "Tips v2: negative_balance subsumes balance_decline")
+    if 'installment_avoid' in tip_ids:
+        check('installment_burden' not in tip_ids, "Tips v2: installment_avoid subsumes installment_burden")
+
+    # Action label key present when action exists
+    for tip in tips_v2:
+        if tip.get('action'):
+            check('action_label_key' in tip and tip['action_label_key'],
+                  f"Tips v2: tip '{tip['id']}' with action has action_label_key")
+
+# Auth check: 401 when logged out
+api_post("/api/auth/logout")
+status, _ = api_get("/api/tips")
+check(status == 401, "Tips v2: GET /api/tips without auth returns 401")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+
+# ====================================================================
+# 44. Tips v2.1 — Config, Coordination, Analytics, Boost
+# ====================================================================
+print("\n\U0001f539 44. Tips v2.1 — Config, Coordination, Analytics, Boost")
+
+# T1: TIP_CONFIG exists and has expected keys
+from app import TIP_CONFIG
+expected_keys = ['w_severity', 'w_impact', 'w_urgency', 'w_confidence', 'w_recency', 'w_action_bonus',
+                 'sev_important', 'sev_watch', 'sev_opportunity', 'impact_cap',
+                 'max_per_category', 'max_total_tips', 'subsumption_rules',
+                 'overlap_penalty', 'boost_positive_traj', 'boost_mixed_traj', 'positive_tip_ids',
+                 'food_monthly_threshold', 'restaurant_ratio_threshold', 'entertainment_monthly_threshold',
+                 'cash_total_threshold', 'bit_total_threshold', 'savings_low_threshold', 'savings_good_threshold',
+                 'emergency_buffer_months', 'installment_burden_threshold', 'deficit_months_threshold',
+                 'fixed_ratio_threshold', 'category_spike_threshold', 'latte_min_vendors',
+                 'subscriptions_monthly_threshold', 'dining_out_monthly_threshold',
+                 'analytics_prune_days']
+for k in expected_keys:
+    check(k in TIP_CONFIG, f"TIP_CONFIG has key '{k}'")
+
+# T2: Scoring with overlap penalty lowers score
+from app import _score_tip
+sample_tip = {
+    'id': 'deficit_months', 'severity': 'important', 'impact_amount': 0,
+    'urgency': 0.7, 'confidence': 0.9, 'recency': 0.8, 'action': 'analysis',
+}
+score_normal = _score_tip(sample_tip)
+score_penalized = _score_tip(sample_tip, overlapping_ids={'deficit_months'})
+check(score_penalized < score_normal, f"Overlap penalty lowers score ({score_normal} -> {score_penalized})")
+check(score_penalized >= 0, "Penalized score stays >= 0")
+
+# T3: Trajectory param accepted by /api/tips
+status, tips_traj = api_get(f"/api/tips?month={month}&trajectory=positive&signals=traj_saving")
+check(status == 200, "Tips with trajectory param returns 200")
+check(isinstance(tips_traj, list), "Tips with trajectory param returns list")
+
+# T4: _boost_positive boosts positive tips when no important
+from app import _boost_positive
+pos_tips = [
+    {'id': 'good_savings_rate', 'severity': 'opportunity', 'score': 0.35, 'category': 'savings'},
+    {'id': 'food_spending', 'severity': 'watch', 'score': 0.50, 'category': 'spending'},
+]
+boosted = _boost_positive([dict(t) for t in pos_tips], 'positive')
+gs_tip = next(t for t in boosted if t['id'] == 'good_savings_rate')
+check(gs_tip['score'] == 0.55, f"Positive boost adds 0.20 (0.35 -> {gs_tip['score']})")
+
+# T5: _boost_positive does NOT boost when important tip exists
+mix_tips = [
+    {'id': 'negative_balance', 'severity': 'important', 'score': 0.85, 'category': 'debt'},
+    {'id': 'good_savings_rate', 'severity': 'opportunity', 'score': 0.35, 'category': 'savings'},
+]
+not_boosted = _boost_positive([dict(t) for t in mix_tips], 'positive')
+gs_tip2 = next(t for t in not_boosted if t['id'] == 'good_savings_rate')
+check(gs_tip2['score'] == 0.35, f"No boost when important exists (score stays {gs_tip2['score']})")
+
+# T6: POST /api/tip-events returns 200
+status, resp = api_post("/api/tip-events", {"events": [
+    {"tip_id": "test_tip", "event_type": "shown", "month": month},
+    {"tip_id": "test_tip", "event_type": "expanded", "month": month},
+]})
+check(status == 200, "POST /api/tip-events returns 200")
+check(resp.get('count') == 2, f"tip-events inserted 2 events (got {resp.get('count')})")
+
+# T7: POST /api/tip-events with empty list returns 200
+status, resp2 = api_post("/api/tip-events", {"events": []})
+check(status == 200, "POST /api/tip-events empty list returns 200")
+check(resp2.get('count') == 0, "tip-events empty returns count=0")
+
+# T8: POST /api/tip-events rejects invalid event_type
+status, resp3 = api_post("/api/tip-events", {"events": [
+    {"tip_id": "x", "event_type": "invalid_type", "month": month},
+]})
+check(status == 200, "POST /api/tip-events with invalid type returns 200")
+check(resp3.get('count') == 0, "tip-events filters out invalid event_type")
+
+# T9: POST /api/tip-events requires auth
+api_post("/api/auth/logout")
+status, _ = api_post("/api/tip-events", {"events": [{"tip_id": "x", "event_type": "shown"}]})
+check(status == 401, "POST /api/tip-events without auth returns 401")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# T10: tip_events table exists
+import sqlite3 as _sqlite3
+_tconn = _sqlite3.connect(tmp_db)
+_tcols = [r[1] for r in _tconn.execute("PRAGMA table_info(tip_events)").fetchall()]
+_tconn.close()
+check('user_id' in _tcols, "tip_events table has user_id column")
+check('tip_id' in _tcols, "tip_events table has tip_id column")
+check('event_type' in _tcols, "tip_events table has event_type column")
+check('action_target' in _tcols, "tip_events table has action_target column")
+check('created_at' in _tcols, "tip_events table has created_at column")
+
+# T11: Subsumption rules from TIP_CONFIG work
+from app import _deduplicate_tips
+test_tips_sub = [
+    {'id': 'negative_balance', 'category': 'debt', 'severity': 'important', 'score': 0.9},
+    {'id': 'balance_decline', 'category': 'debt', 'severity': 'watch', 'score': 0.6},
+    {'id': 'food_spending', 'category': 'spending', 'severity': 'watch', 'score': 0.5},
+]
+deduped = _deduplicate_tips([dict(t) for t in test_tips_sub])
+deduped_ids = {t['id'] for t in deduped}
+check('balance_decline' not in deduped_ids, "Config-driven subsumption removes balance_decline")
+check('negative_balance' in deduped_ids, "Config-driven subsumption keeps negative_balance")
+
+# T12: Max tips from TIP_CONFIG
+check(TIP_CONFIG['max_total_tips'] == 8, f"max_total_tips is 8 (got {TIP_CONFIG['max_total_tips']})")
+check(TIP_CONFIG['max_per_category'] == 3, f"max_per_category is 3 (got {TIP_CONFIG['max_per_category']})")
+
+# ====================================================================
+# Section 45 — Next Best Action, Vendor Normalization, Variants
+# ====================================================================
+print("\n--- 45. Next Best Action, Vendor Normalization, Tip Variants ---")
+
+# T1: /api/next-action returns 200
+r = client.get('/api/next-action?month=2025-01')
+check(r.status_code == 200, f"GET /api/next-action returns 200 (got {r.status_code})")
+# T2: response is null or valid object
+nba = r.get_json()
+check(nba is None or isinstance(nba, dict), f"/api/next-action returns null or dict (got {type(nba).__name__})")
+# T3: if dict, has required keys
+if isinstance(nba, dict):
+    for k in ['tip_id', 'action', 'score', 'params', 'reasons']:
+        check(k in nba, f"next-action has key '{k}'")
+    check(0 <= nba['score'] <= 1, f"next-action score in [0,1] (got {nba['score']})")
+    check(isinstance(nba['reasons'], list), f"next-action reasons is a list")
+    for reason in nba['reasons']:
+        check('key' in reason and 'params' in reason, f"reason chip has key and params")
+
+# T4: /api/next-action requires auth
+api_post("/api/auth/logout")
+status_na, _ = api_get("/api/next-action?month=2025-01")
+check(status_na == 401, f"/api/next-action without auth returns 401 (got {status_na})")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# T5: _normalize_subscription_desc merges variants
+from app import _normalize_subscription_desc
+pairs = [
+    ('NETFLIX', 'netflix'),
+    ('Netflix', 'netflix'),
+    ('APPLE.COM', 'apple'),
+    ('APPLE BILL', 'apple'),
+    ('GOOGLE *SERVICE', 'google'),
+    ('SPOTIFY SUBSCRIPTION', 'spotify'),
+    ('SPOTIFY', 'spotify'),
+    ('הוראת קבע נטפליקס 12345', 'נטפליקס'),
+]
+for raw, expected in pairs:
+    got = _normalize_subscription_desc(raw)
+    check(got == expected, f"_normalize_subscription_desc('{raw}') == '{expected}' (got '{got}')")
+
+# T6: Different vendors stay different
+check(_normalize_subscription_desc('NETFLIX') != _normalize_subscription_desc('SPOTIFY'),
+      "NETFLIX != SPOTIFY after normalization")
+
+# T7: _NBA_CANDIDATES set exists and has subscription/dining entries
+from app import _NBA_CANDIDATES
+check('subscriptions_cost' in _NBA_CANDIDATES, "NBA candidates includes subscriptions_cost")
+check('dining_out_high' in _NBA_CANDIDATES, "NBA candidates includes dining_out_high")
+check('subscriptions_growth' in _NBA_CANDIDATES, "NBA candidates includes subscriptions_growth")
+
+# T8: Tip variant params — subscriptions_cost with vs_avg > 10 gets _variant='up'
+from app import _tip_subscriptions_cost
+mock_ctx = {
+    'subscriptions_monthly': 500, 'subscriptions_this_month': 600,
+    'subscriptions_count': 7, 'subscriptions_count_this_month': 7,
+    'subscriptions_pct_of_income': 3.0, 'subscriptions_vs_avg_pct': 20,
+    'subscriptions_new_this_month': 0, 'subscription_concentration_pct': 0,
+    'subscription_top_vendors': [], 'inc_total': 15000,
+}
+tip = _tip_subscriptions_cost(mock_ctx)
+check(tip is not None, "subscriptions_cost fires with monthly=500")
+check(tip['params']['_variant'] == 'up', f"subscriptions_cost _variant='up' when vs_avg=20 (got '{tip['params']['_variant']}')")
+
+# T9: Tip variant — dining_out_high with vs_avg > 10 gets _variant='up'
+from app import _tip_dining_out_high
+mock_ctx2 = {
+    'dining_out_monthly': 1200, 'dining_out_this_month': 1500,
+    'dining_out_vs_avg_pct': 25, 'dining_out_pct_of_income': 8.0,
+    'inc_total': 15000,
+}
+tip2 = _tip_dining_out_high(mock_ctx2)
+check(tip2 is not None, "dining_out_high fires with monthly=1200")
+check(tip2['params']['_variant'] == 'up', f"dining_out_high _variant='up' when vs_avg=25 (got '{tip2['params']['_variant']}')")
+
+# T10: Concentration param appears when strong
+mock_ctx3 = dict(mock_ctx)
+mock_ctx3['subscription_concentration_pct'] = 75
+mock_ctx3['subscription_top_vendors'] = [('netflix', 3000), ('spotify', 1500), ('hbo', 500)]
+tip3 = _tip_subscriptions_cost(mock_ctx3)
+check(tip3['params']['concentration_pct'] == '75', f"concentration_pct=75 when top2=75% (got '{tip3['params']['concentration_pct']}')")
+check(tip3['params']['top_vendor'] == 'netflix', f"top_vendor=netflix (got '{tip3['params']['top_vendor']}')")
+
+# T11: Concentration param empty when below 60%
+mock_ctx4 = dict(mock_ctx)
+mock_ctx4['subscription_concentration_pct'] = 40
+mock_ctx4['subscription_top_vendors'] = [('a', 200), ('b', 150)]
+tip4 = _tip_subscriptions_cost(mock_ctx4)
+check(tip4['params']['concentration_pct'] == '', f"concentration_pct empty when <60% (got '{tip4['params']['concentration_pct']}')")
+
+# T12: Subsumption rule for subscriptions_cost > subscriptions_growth
+check(('subscriptions_cost', 'subscriptions_growth') in TIP_CONFIG['subsumption_rules'],
+      "Subsumption: subscriptions_cost subsumes subscriptions_growth")
+
+
+# ====================================================================
+# Section 46 — Salary Statements (Payslip PDF Import)
+# ====================================================================
+print("\n--- 46. Salary Statements ---")
+
+# Insert mock salary statements directly
+with budget_app.app.app_context():
+    conn = budget_app.get_db()
+    conn.execute("""
+        INSERT OR REPLACE INTO salary_statements
+        (user_id, person, month, company_name, gross_salary, net_salary,
+         income_tax, social_security, health_insurance,
+         pension_employee, pension_employer,
+         education_fund_employee, education_fund_employer,
+         severance_employer, bonus_amount, vacation_days, sick_days,
+         extraction_confidence, raw_text, source_filename)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (1, 'husband', '2026-01', 'Test Corp', 20000, 14000,
+          2800, 400, 200, 1200, 1400, 500, 1500, 1667, 0, 12.5, 8,
+          0.83, 'mock text', 'test1.pdf'))
+    conn.execute("""
+        INSERT OR REPLACE INTO salary_statements
+        (user_id, person, month, company_name, gross_salary, net_salary,
+         income_tax, social_security, health_insurance,
+         pension_employee, pension_employer,
+         education_fund_employee, education_fund_employer,
+         severance_employer, bonus_amount, vacation_days, sick_days,
+         extraction_confidence, raw_text, source_filename)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (1, 'husband', '2026-02', 'Test Corp', 30000, 20000,
+          4200, 600, 300, 1800, 2100, 750, 2250, 2500, 10000, 13, 8,
+          0.67, 'mock text bonus', 'test2.pdf'))
+    conn.commit()
+    conn.close()
+
+# T1: GET /api/salary-statements returns 200 + array
+r = client.get("/api/salary-statements")
+check(r.status_code == 200, "GET /api/salary-statements returns 200")
+data = json.loads(r.data)
+check(isinstance(data, list), "Salary statements returns array")
+check(len(data) >= 2, f"At least 2 salary statements ({len(data)} found)")
+
+# T2: Response includes computed fields
+if data:
+    check('true_compensation' in data[0], "Response includes true_compensation")
+    check('employer_contributions_total' in data[0], "Response includes employer_contributions_total")
+    check(data[0]['true_compensation'] > data[0]['gross_salary'], "true_compensation > gross_salary")
+
+# T3: GET /api/salary-statements/summary returns correct data
+r = client.get("/api/salary-statements/summary")
+check(r.status_code == 200, "GET /api/salary-statements/summary returns 200")
+summ = json.loads(r.data)
+check(summ.get('has_data') == True, "Summary has_data is True")
+check(summ.get('months_count') >= 2, f"months_count >= 2 (got {summ.get('months_count')})")
+check(summ.get('baseline_months', 0) >= 1, f"baseline_months >= 1 (got {summ.get('baseline_months')})")
+check(summ.get('latest_employer', {}).get('total', 0) > 0, "Employer total > 0")
+check(summ.get('latest_true_compensation', 0) > summ.get('latest_gross', 0), "true_compensation > gross")
+
+# T4: Baseline normalization — avg should exclude bonus month
+# Non-bonus month gross=20000, bonus month gross=30000. Baseline avg should be 20000.
+check(summ.get('avg_gross', 0) == 20000, f"Baseline avg_gross=20000 (non-bonus only), got {summ.get('avg_gross')}")
+
+# T5: POST /api/salary-statements (save new)
+r = client.post("/api/salary-statements", data=json.dumps({
+    'month': '2026-03', 'person': 'husband', 'company_name': 'Test Corp',
+    'gross_salary': 22000, 'net_salary': 15000,
+    'income_tax': 3000, 'social_security': 450, 'health_insurance': 220,
+    'pension_employee': 1300, 'pension_employer': 1540,
+    'education_fund_employee': 550, 'education_fund_employer': 1650,
+    'severance_employer': 1833, 'extraction_confidence': 0.83,
+}), content_type='application/json')
+check(r.status_code == 200, "POST /api/salary-statements returns 200")
+save_result = json.loads(r.data)
+check(save_result.get('true_compensation', 0) > 22000, "Saved true_compensation > gross")
+
+# T6: DELETE /api/salary-statements
+r_list = client.get("/api/salary-statements")
+all_stmts = json.loads(r_list.data)
+if all_stmts:
+    del_id = all_stmts[-1]['id']
+    r = client.delete(f"/api/salary-statements/{del_id}")
+    check(r.status_code == 200, f"DELETE /api/salary-statements/{del_id} returns 200")
+    del_data = json.loads(r.data)
+    check(del_data.get('deleted') == 1, f"deleted=1 (got {del_data.get('deleted')})")
+    r2 = client.get("/api/salary-statements")
+    check(len(json.loads(r2.data)) == len(all_stmts) - 1, "One fewer statement after delete")
+
+# T7: 401 when logged out
+api_post("/api/auth/logout")
+r = client.get("/api/salary-statements")
+check(r.status_code == 401, "GET /api/salary-statements returns 401 when logged out")
+r = client.get("/api/salary-statements/summary")
+check(r.status_code == 401, "GET /api/salary-statements/summary returns 401 when logged out")
+# Log back in
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# T8: Subsumption rule for true_savings_rate > low_savings_rate
+check(('true_savings_rate', 'low_savings_rate') in TIP_CONFIG['subsumption_rules'],
+      "Subsumption: true_savings_rate subsumes low_savings_rate")
+
+# T9: Salary tip generators exist in _TIP_GENERATORS
+from app import _TIP_GENERATORS, _NBA_CANDIDATES
+gen_names = [g.__name__ for g in _TIP_GENERATORS]
+for name in ['_tip_vacation_days_unused', '_tip_bonus_detected', '_tip_true_savings_rate', '_tip_employer_contributions_value']:
+    check(name in gen_names, f"{name} registered in _TIP_GENERATORS")
+
+# T10: Salary tip IDs in NBA candidates
+for tid in ['vacation_days_unused', 'bonus_detected', 'true_savings_rate', 'employer_contributions_value']:
+    check(tid in _NBA_CANDIDATES, f"{tid} in _NBA_CANDIDATES")
+
+
+# ====================================================================
+# Section 47 — Dashboard Salary Cards, NBA Salary Wording, Payslip Analytics
+# ====================================================================
+print("\n--- 47. Dashboard Salary Cards, NBA Wording, Payslip Analytics ---")
+
+# Ensure logged in
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# T1-T4: Salary tip generators return custom action_label_key (not generic)
+from app import _tip_vacation_days_unused, _tip_bonus_detected, _tip_true_savings_rate, _tip_employer_contributions_value
+mock_sal_ctx = {
+    'has_salary_data': True, 'sal_gross': 20000, 'sal_net': 14000,
+    'sal_employer_total': 4500, 'sal_true_comp': 24500,
+    'sal_vacation_days': 20, 'sal_bonus': 5000, 'sal_months_count': 3,
+}
+vac_tip = _tip_vacation_days_unused(mock_sal_ctx)
+check(vac_tip is not None and vac_tip['action_label_key'] == 'tip_action_check_vacation',
+      f"vacation tip has custom action_label_key (got {vac_tip['action_label_key'] if vac_tip else 'None'})")
+
+bonus_tip = _tip_bonus_detected(mock_sal_ctx)
+check(bonus_tip is not None and bonus_tip['action_label_key'] == 'tip_action_allocate_bonus',
+      f"bonus tip has custom action_label_key (got {bonus_tip['action_label_key'] if bonus_tip else 'None'})")
+
+low_rate_ctx = dict(mock_sal_ctx, sal_employer_total=800, sal_true_comp=20800)
+sav_tip = _tip_true_savings_rate(low_rate_ctx)
+check(sav_tip is not None and sav_tip['action_label_key'] == 'tip_action_review_hidden_savings',
+      f"savings rate tip has custom action_label_key (got {sav_tip['action_label_key'] if sav_tip else 'None'})")
+
+emp_tip = _tip_employer_contributions_value(mock_sal_ctx)
+check(emp_tip is not None and emp_tip['action_label_key'] == 'tip_action_review_hidden_savings',
+      f"employer tip has custom action_label_key (got {emp_tip['action_label_key'] if emp_tip else 'None'})")
+
+# T5: tip_events endpoint accepts payslip event types
+payslip_events = [
+    {'event_type': 'payslip_upload', 'tip_id': 'test.pdf', 'month': '2026-03'},
+    {'event_type': 'payslip_preview_shown', 'tip_id': '2026-03', 'month': '2026-03'},
+    {'event_type': 'payslip_field_edited', 'tip_id': '2026-03', 'action_target': 'gross_salary', 'month': '2026-03'},
+    {'event_type': 'payslip_saved', 'tip_id': '2026-03', 'month': '2026-03'},
+    {'event_type': 'payslip_cancelled', 'tip_id': '2026-04', 'month': '2026-04'},
+]
+sc, ev_result = api_post('/api/tip-events', {'events': payslip_events})
+check(sc == 200, f"POST /api/tip-events with payslip events returns 200 (got {sc})")
+check(ev_result and ev_result.get('count') == 5, f"All 5 payslip events accepted (got {ev_result.get('count') if ev_result else 'None'})")
+
+# T6: Payslip analytics endpoint
+r = client.get('/api/payslip-analytics')
+check(r.status_code == 200, f"GET /api/payslip-analytics returns 200 (got {r.status_code})")
+analytics = r.get_json() or {}
+check(analytics.get('uploads', 0) >= 1, f"Analytics shows uploads (got {analytics.get('uploads')})")
+check(analytics.get('saves', 0) >= 1, f"Analytics shows saves (got {analytics.get('saves')})")
+check('save_rate' in analytics, "Analytics includes save_rate")
+check('edit_rate' in analytics, "Analytics includes edit_rate")
+
+# T7: Income stability tip generators
+from app import _tip_income_stable, _tip_bonus_reliance, _tip_income_drop
+
+# income_stable fires for stable salary
+stable_ctx = {
+    'has_salary_data': True, 'sal_cv': 0.03, 'sal_months_count': 4,
+    'sal_bonus_share': 0.05,
+}
+stable_tip = _tip_income_stable(stable_ctx)
+check(stable_tip is not None and stable_tip['id'] == 'income_stable',
+      f"income_stable fires for stable salary (got {stable_tip['id'] if stable_tip else 'None'})")
+
+# income_stable suppressed when bonus share > 20%
+check(_tip_income_stable(dict(stable_ctx, sal_bonus_share=0.25)) is None,
+      "income_stable suppressed when bonus share > 20%")
+
+# bonus_reliance fires when share >= 15%
+bonus_rel_ctx = {
+    'has_salary_data': True, 'sal_bonus_share': 0.20, 'sal_months_count': 3,
+    'sal_bonus': 3000,
+}
+bonus_rel_tip = _tip_bonus_reliance(bonus_rel_ctx)
+check(bonus_rel_tip is not None and bonus_rel_tip['id'] == 'bonus_reliance',
+      f"bonus_reliance fires for high bonus share (got {bonus_rel_tip['id'] if bonus_rel_tip else 'None'})")
+
+# income_drop fires for 10%+ drop
+drop_ctx = {
+    'has_salary_data': True, 'sal_latest_vs_baseline': -15, 'sal_months_count': 3,
+    'sal_latest_gross': 17000, 'sal_gross': 20000,
+}
+drop_tip = _tip_income_drop(drop_ctx)
+check(drop_tip is not None and drop_tip['id'] == 'income_drop',
+      f"income_drop fires for salary drop (got {drop_tip['id'] if drop_tip else 'None'})")
+
+# income_drop does NOT fire for small drop
+check(_tip_income_drop(dict(drop_ctx, sal_latest_vs_baseline=-5)) is None,
+      "income_drop does not fire for small drop (-5%)")
+
+# T8: Bonus allocation params present
+bonus_alloc_ctx = {
+    'has_salary_data': True, 'sal_bonus': 10000,
+    'latest_balance': 5000, 'essential_monthly_avg': 8000,
+    'inst_monthly': 500, 'overdraft_total': 1000,
+    'savings_rate': 10,
+}
+alloc_tip = _tip_bonus_detected(bonus_alloc_ctx)
+check(alloc_tip is not None, "bonus_detected fires with allocation context")
+check('emergency' in alloc_tip['params'], "bonus allocation includes emergency param")
+check('debt' in alloc_tip['params'], "bonus allocation includes debt param")
+check('invest' in alloc_tip['params'], "bonus allocation includes invest param")
+check('enjoy' in alloc_tip['params'], "bonus allocation includes enjoy param")
+# Verify sequential allocation: amounts should sum to original bonus
+alloc_sum = sum(int(alloc_tip['params'][k].replace(',', '')) for k in ['emergency', 'debt', 'invest', 'enjoy'])
+check(alloc_sum == 10000, f"Allocation sums to original bonus (got {alloc_sum})")
+
+# T9: Payslip analytics includes field breakdown
+r = client.get('/api/payslip-analytics')
+analytics = r.get_json() or {}
+check('field_edits_by_field' in analytics, "Analytics includes field_edits_by_field")
+check('most_edited_field' in analytics, "Analytics includes most_edited_field")
+check('companies' in analytics, "Analytics includes companies list")
+
+# T10: Subsumption rules
+check(('income_drop', 'income_gap') in TIP_CONFIG['subsumption_rules'],
+      "income_drop subsumes income_gap in subsumption rules")
+
+# T11: New generators registered
+gen_names = [g.__name__ for g in _TIP_GENERATORS]
+for name in ['_tip_income_stable', '_tip_bonus_reliance', '_tip_income_drop']:
+    check(name in gen_names, f"{name} registered in _TIP_GENERATORS")
+
+# T12: NBA candidates
+for tid in ['bonus_reliance', 'income_drop']:
+    check(tid in _NBA_CANDIDATES, f"{tid} in _NBA_CANDIDATES")
+check('income_stable' not in _NBA_CANDIDATES, "income_stable NOT in _NBA_CANDIDATES (positive tip)")
+
+# T13: Version was 1.0.1000039 (now superseded by 1.0.1000040)
+
+# ====================================================================
+# Section 48 — Income Risk Score, Dashboard Income Status, Trajectory Signal F
+# ====================================================================
+print("\n--- 48. Income Risk Score, Dashboard Income Status, Trajectory Signal F ---")
+
+from app import _TRAJECTORY_TIP_OVERLAP
+
+# Clean up ALL existing salary data first so we have a controlled test environment
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+existing_sal = (client.get('/api/salary-statements').get_json() or [])
+for row in existing_sal:
+    client.delete(f"/api/salary-statements/{row['id']}")
+
+# T1: Insert 3 stable salary months and verify income_risk section
+test_months_risk = ['2026-01', '2026-02', '2026-03']
+for tm in test_months_risk:
+    sc, _ = api_post('/api/salary-statements', {
+        'month': tm, 'company_name': 'RiskTestCo', 'person': 'single',
+        'gross_salary': 15000, 'net_salary': 11000,
+        'pension_employer': 750, 'education_fund_employer': 375, 'severance_employer': 500,
+        'income_tax': 2000, 'social_security': 800, 'health_insurance': 200,
+    })
+
+r = client.get('/api/salary-statements/summary')
+summary_data = r.get_json() or {}
+check('income_risk' in summary_data, "Salary summary includes income_risk section")
+ir = summary_data.get('income_risk', {})
+for key in ['level', 'score', 'status_key', 'status_params', 'cv', 'bonus_share', 'latest_vs_baseline']:
+    check(key in ir, f"income_risk has '{key}' field")
+
+# T2: 3 identical months → low risk, stable status
+check(ir.get('level') == 'low', f"3 stable months → low risk (got {ir.get('level')})")
+check(ir.get('status_key') == 'income_status_stable', f"Status key = income_status_stable (got {ir.get('status_key')})")
+check(ir.get('cv') == 0, f"Identical salaries → CV=0 (got {ir.get('cv')})")
+check(0 <= (ir.get('score') or 0) <= 1.0, f"income_risk.score in [0,1] (got {ir.get('score')})")
+
+# T3: Add bonus-heavy months, verify bonus reliance detection
+# Need bonus_share >= 0.15. Add 2 months with bonuses.
+sc, _ = api_post('/api/salary-statements', {
+    'month': '2025-12', 'company_name': 'RiskTestCo', 'person': 'single',
+    'gross_salary': 15000, 'net_salary': 11000, 'bonus_amount': 5000,
+    'pension_employer': 750, 'education_fund_employer': 375, 'severance_employer': 500,
+    'income_tax': 2000, 'social_security': 800, 'health_insurance': 200,
+})
+sc, _ = api_post('/api/salary-statements', {
+    'month': '2025-11', 'company_name': 'RiskTestCo', 'person': 'single',
+    'gross_salary': 15000, 'net_salary': 11000, 'bonus_amount': 8000,
+    'pension_employer': 750, 'education_fund_employer': 375, 'severance_employer': 500,
+    'income_tax': 2000, 'social_security': 800, 'health_insurance': 200,
+})
+r = client.get('/api/salary-statements/summary')
+ir3 = (r.get_json() or {}).get('income_risk', {})
+# bonus_share = 13000 / 75000 ≈ 0.173 → >= 0.15 but no drop → bonus_reliance
+check(ir3.get('status_key') == 'income_status_bonus_reliance',
+      f"High bonus share → income_status_bonus_reliance (got {ir3.get('status_key')})")
+
+# T4: Add a dropped month (latest), verify income drop detection
+sc, _ = api_post('/api/salary-statements', {
+    'month': '2026-04', 'company_name': 'RiskTestCo', 'person': 'single',
+    'gross_salary': 10000, 'net_salary': 7500,
+    'pension_employer': 500, 'education_fund_employer': 250, 'severance_employer': 330,
+    'income_tax': 1200, 'social_security': 500, 'health_insurance': 200,
+})
+r = client.get('/api/salary-statements/summary')
+ir4 = (r.get_json() or {}).get('income_risk', {})
+# Latest = 2026-04 (10000). Baseline (non-bonus: 2026-01,02,03,04) avg = (15k*3+10k)/4 = 13750
+# latest_vs_baseline = (10000 - 13750)/13750 * 100 = -27.3% → income_drop priority
+check(ir4.get('status_key') == 'income_status_drop',
+      f"Big salary drop → income_status_drop (got {ir4.get('status_key')})")
+check(ir4.get('latest_vs_baseline') < -10, f"latest_vs_baseline < -10 (got {ir4.get('latest_vs_baseline')})")
+check(0 <= ir4.get('score', -1) <= 1.0, f"Risk score in [0,1] (got {ir4.get('score')})")
+
+# T5: Trajectory tip overlap entries
+check('traj_income_risk' in _TRAJECTORY_TIP_OVERLAP, "traj_income_risk in _TRAJECTORY_TIP_OVERLAP")
+check('traj_income_stable' in _TRAJECTORY_TIP_OVERLAP, "traj_income_stable in _TRAJECTORY_TIP_OVERLAP")
+check('income_drop' in _TRAJECTORY_TIP_OVERLAP['traj_income_risk'], "income_drop in traj_income_risk overlap")
+check('bonus_reliance' in _TRAJECTORY_TIP_OVERLAP['traj_income_risk'], "bonus_reliance in traj_income_risk overlap")
+check('income_stable' in _TRAJECTORY_TIP_OVERLAP['traj_income_stable'], "income_stable in traj_income_stable overlap")
+
+# T6: Trajectory endpoint works (doesn't crash with salary data)
+r = client.get('/api/trajectory')
+check(r.status_code == 200, f"GET /api/trajectory returns 200 (got {r.status_code})")
+
+# T7: Clean up test salary data
+rows = client.get('/api/salary-statements').get_json() or []
+for row in rows:
+    if row.get('company_name') == 'RiskTestCo':
+        client.delete(f"/api/salary-statements/{row['id']}")
+
+# T8: Version is 1.0.1000040
+check(budget_app.APP_VERSION == '1.0.1000040', f"Version is 1.0.1000040 (got {budget_app.APP_VERSION})")
+
+
+# ====================================================================
 # Cleanup
 # ====================================================================
 shutil.rmtree(tmp_dir, ignore_errors=True)
