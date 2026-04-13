@@ -2699,8 +2699,79 @@ for row in rows:
     if row.get('company_name') == 'RiskTestCo':
         client.delete(f"/api/salary-statements/{row['id']}")
 
-# T8: Version is 1.0.1000040
-check(budget_app.APP_VERSION == '1.0.1000040', f"Version is 1.0.1000040 (got {budget_app.APP_VERSION})")
+# T8: Version was 1.0.1000040 (superseded)
+
+# ====================================================================
+# Section 49 — Installment Status Recalculation on Edit
+# ====================================================================
+print("\n--- 49. Installment Status Recalculation on Edit ---")
+
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# T1: Create an installment, then complete it, then edit payments_made back
+sc, inst_res = api_post('/api/installments', {
+    'description': 'StatusTestInst', 'store': 'TestStore',
+    'total_amount': 6000, 'total_payments': 6, 'payments_made': 6,
+    'start_date': '2026-01-01',
+})
+check(sc == 200, f"POST /api/installments returns 200 (got {sc})")
+
+# Get the installment — it should be completed (6/6)
+r = client.get('/api/installments')
+inst_list = r.get_json() or []
+test_inst = next((i for i in inst_list if i['description'] == 'StatusTestInst'), None)
+check(test_inst is not None, "Test installment found")
+check(test_inst['status'] == 'completed', f"6/6 → status=completed (got {test_inst['status']})")
+check(test_inst['payments_remaining'] == 0, f"6/6 → remaining=0 (got {test_inst['payments_remaining']})")
+
+# T2: Edit payments_made to 3 — status should change to 'active'
+sc2, _ = api_post('/api/installments', {
+    'id': test_inst['id'], 'description': 'StatusTestInst', 'store': 'TestStore',
+    'total_amount': 6000, 'total_payments': 6, 'payments_made': 3,
+    'start_date': '2026-01-01',
+})
+check(sc2 == 200, f"Edit installment returns 200 (got {sc2})")
+r2 = client.get('/api/installments')
+inst_list2 = r2.get_json() or []
+test_inst2 = next((i for i in inst_list2 if i['description'] == 'StatusTestInst'), None)
+check(test_inst2 is not None, "Edited installment found")
+check(test_inst2['status'] == 'active', f"3/6 after edit → status=active (got {test_inst2['status']})")
+check(test_inst2['payments_remaining'] == 3, f"3/6 → remaining=3 (got {test_inst2['payments_remaining']})")
+check(test_inst2['remaining_amount'] == 3000, f"3/6 → remaining_amount=3000 (got {test_inst2['remaining_amount']})")
+
+# T3: Clean up
+client.delete(f"/api/installments/{test_inst['id']}")
+
+# T4: Ongoing installment (total_payments=0) stays active, never auto-completes
+sc3, _ = api_post('/api/installments', {
+    'description': 'OngoingTestInst', 'store': 'TestStore',
+    'total_amount': 1200, 'total_payments': 0, 'payments_made': 5,
+    'start_date': '2026-01-01',
+})
+check(sc3 == 200, f"POST ongoing installment returns 200 (got {sc3})")
+r3 = client.get('/api/installments')
+ongoing = next((i for i in (r3.get_json() or []) if i['description'] == 'OngoingTestInst'), None)
+check(ongoing is not None, "Ongoing installment found")
+check(ongoing['status'] == 'active', f"Ongoing → status=active (got {ongoing['status']})")
+check(ongoing.get('is_ongoing') == True, f"Ongoing flag is True (got {ongoing.get('is_ongoing')})")
+check(ongoing['payments_remaining'] == -1, f"Ongoing → remaining=-1 sentinel (got {ongoing['payments_remaining']})")
+
+# T5: Explicit completed checkbox overrides auto-status
+sc4, _ = api_post('/api/installments', {
+    'id': ongoing['id'], 'description': 'OngoingTestInst', 'store': 'TestStore',
+    'total_amount': 1200, 'total_payments': 0, 'payments_made': 5,
+    'start_date': '2026-01-01', 'status': 'completed',
+})
+check(sc4 == 200, f"Edit with completed flag returns 200 (got {sc4})")
+r4 = client.get('/api/installments')
+completed_ongoing = next((i for i in (r4.get_json() or []) if i['description'] == 'OngoingTestInst'), None)
+check(completed_ongoing['status'] == 'completed', f"Explicit completed flag sets status=completed (got {completed_ongoing['status']})")
+
+# T6: Clean up
+client.delete(f"/api/installments/{ongoing['id']}")
+
+# T7: Version is 1.0.1000041
+check(budget_app.APP_VERSION == '1.0.1000041', f"Version is 1.0.1000041 (got {budget_app.APP_VERSION})")
 
 
 # ====================================================================

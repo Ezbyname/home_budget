@@ -2567,7 +2567,7 @@
             </div>
             <div class="col-6">
                 <label class="form-label small fw-bold" data-t="inst_total_payments">מספר תשלומים</label>
-                <input type="number" class="form-control" id="instFormTotalPayments" min="1" dir="ltr" required>
+                <input type="number" class="form-control" id="instFormTotalPayments" min="0" dir="ltr" required>
             </div>
         </div>
         <div class="row g-2 mb-3">
@@ -2583,6 +2583,10 @@
         <div class="mb-3">
             <label class="form-label small fw-bold" data-t="inst_notes">הערות</label>
             <input type="text" class="form-control" id="instFormNotes">
+        </div>
+        <div class="mb-3 form-check" id="instCompletedRow" style="display:none">
+            <input class="form-check-input" type="checkbox" id="instFormCompleted">
+            <label class="form-check-label small fw-bold" for="instFormCompleted" data-t="inst_mark_completed">הושלם</label>
         </div>
     </div>
     <div class="modal-footer border-0 pt-0">
@@ -3668,7 +3672,9 @@ const I18N = {
     inst_remaining: 'נותר לשלם', inst_months_left: 'חודשים נותרים',
     inst_no_installments: 'אין תשלומים פעילים',
     inst_of: 'מתוך', inst_progress: '{0} מתוך {1}', inst_payments: 'תשלומים',
-    inst_completed: 'הושלם', inst_confirm_delete: 'למחוק תשלום זה?',
+    inst_completed: 'הושלם', inst_ongoing: 'שוטף', inst_no_end: 'ללא סיום',
+    inst_paid_count: '{0} שולמו', inst_mark_completed: 'הושלם',
+    inst_confirm_delete: 'למחוק תשלום זה?',
     inst_deleted: 'תשלום נמחק', inst_saved: 'תשלום נשמר בהצלחה!',
     inst_total_monthly: 'סה"כ חודשי', inst_total_remaining: 'סה"כ נותר',
     inst_card_select: 'בחר כרטיס...', inst_card_bank: 'חשבון בנק', inst_card_new: 'הוסף כרטיס חדש...',
@@ -4508,7 +4514,9 @@ const I18N = {
     inst_remaining: 'Remaining', inst_months_left: 'Months Left',
     inst_no_installments: 'No active installments',
     inst_of: 'of', inst_progress: '{0} of {1}', inst_payments: 'payments',
-    inst_completed: 'Completed', inst_confirm_delete: 'Delete this installment?',
+    inst_completed: 'Completed', inst_ongoing: 'Ongoing', inst_no_end: 'No end date',
+    inst_paid_count: '{0} paid', inst_mark_completed: 'Completed',
+    inst_confirm_delete: 'Delete this installment?',
     inst_deleted: 'Installment deleted', inst_saved: 'Installment saved!',
     inst_total_monthly: 'Total Monthly', inst_total_remaining: 'Total Remaining',
     inst_card_select: 'Select card...', inst_card_bank: 'Bank Account', inst_card_new: 'Add new card...',
@@ -8428,35 +8436,52 @@ async function loadInstallments() {
     }
 
     tbody.innerHTML = data.map(i => {
-        const done = i.payments_remaining <= 0 || i.status === 'completed';
-        const pct = Math.round((i.payments_made / i.total_payments) * 100);
+        const ongoing = i.is_ongoing || i.total_payments === 0;
+        const done = !ongoing && (i.payments_remaining <= 0 || i.status === 'completed');
+        const manualDone = ongoing && i.status === 'completed';
+        const isCompleted = done || manualDone;
+        const pct = !ongoing && i.total_payments > 0 ? Math.round((i.payments_made / i.total_payments) * 100) : 0;
         const srcIcon = i.source === 'detected' ? '<i class="bi bi-robot text-info" title="' + t('inst_source_detected') + '" style="font-size:.7rem"></i> ' : '';
         const linkedBadge = i.linked_count > 0 ? `<span class="badge bg-light text-dark" style="font-size:.6rem">${tParams('inst_linked', {'0': i.linked_count})}</span>` : '';
-        const endingSoonBadge = !done && endingSoonIds.has(i.id)
+        const endingSoonBadge = !isCompleted && !ongoing && endingSoonIds.has(i.id)
             ? `<span class="badge" style="background:rgba(5,150,105,0.15);color:#059669;font-size:.6rem"><i class="bi bi-hourglass-split"></i> ${t('inst_ending_soon')}</span>` : '';
-        return `<tr class="${done ? 'text-muted' : ''}">
+        const notesIcon = i.notes ? ` <span class="badge" style="background:#fff3cd;color:#856404;font-size:.65rem;font-weight:500;cursor:pointer;vertical-align:middle;border:1px solid #ffc107" title="${i.notes.replace(/"/g, '&quot;')}"><i class="bi bi-sticky-fill" style="margin-inline-end:3px"></i>${i.notes.length > 30 ? i.notes.substring(0, 30).replace(/"/g, '&quot;') + '…' : i.notes.replace(/"/g, '&quot;')}</span>` : '';
+        let remainingCol;
+        if (isCompleted) {
+            remainingCol = `<span class="badge bg-success">${t('inst_completed')}</span>`;
+        } else if (ongoing) {
+            remainingCol = `<span class="badge bg-info">${t('inst_ongoing')}</span>
+                <small class="text-muted d-block">${tParams('inst_paid_count', {'0': i.payments_made})}</small>`;
+        } else {
+            remainingCol = `<span>${i.payments_remaining}</span>
+                 <div class="progress mt-1" style="height:4px">
+                    <div class="progress-bar ${endingSoonIds.has(i.id) ? 'bg-success' : 'bg-primary'}" style="width:${pct}%"></div>
+                 </div>
+                 <small class="text-muted">${tParams('inst_progress', {'0': i.payments_made, '1': i.total_payments})}</small>`;
+        }
+        let balanceCol;
+        if (isCompleted) {
+            balanceCol = '-';
+        } else if (ongoing) {
+            balanceCol = `<span class="text-muted">${t('inst_no_end')}</span>`;
+        } else {
+            balanceCol = `<span class="text-danger">${fmt(i.remaining_amount)}</span>`;
+        }
+        return `<tr class="${isCompleted ? 'text-muted' : ''}">
             <td>
-                <div class="fw-bold">${srcIcon}${i.description}</div>
-                ${i.notes ? `<div class="small text-muted">${i.notes}</div>` : ''}
+                <div class="fw-bold">${srcIcon}${i.description}${notesIcon}</div>
                 <div class="d-flex gap-1 flex-wrap">${linkedBadge}${endingSoonBadge}</div>
             </td>
             <td>${i.store || '-'}</td>
             <td>${fmt(i.monthly_payment)}</td>
-            <td>
-                ${done ? `<span class="badge bg-success">${t('inst_completed')}</span>` :
-                `<span>${i.payments_remaining}</span>
-                 <div class="progress mt-1" style="height:4px">
-                    <div class="progress-bar ${endingSoonIds.has(i.id) ? 'bg-success' : 'bg-primary'}" style="width:${pct}%"></div>
-                 </div>
-                 <small class="text-muted">${tParams('inst_progress', {'0': i.payments_made, '1': i.total_payments})}</small>`}
-            </td>
-            <td class="fw-bold ${done ? '' : 'text-danger'}">${done ? '-' : fmt(i.remaining_amount)}</td>
+            <td>${remainingCol}</td>
+            <td class="fw-bold">${balanceCol}</td>
             <td>${i.card || '-'}</td>
             <td class="text-nowrap">
                 <button class="btn btn-sm btn-outline-primary me-1" onclick="openInstallmentForm(${JSON.stringify(i).replace(/"/g, '&quot;')})">
                     <i class="bi bi-pencil"></i>
                 </button>
-                ${!done ? `<button class="btn btn-sm btn-outline-warning me-1" onclick="completeInstallmentEarly(${i.id})" title="${t('inst_complete_early')}">
+                ${!isCompleted ? `<button class="btn btn-sm btn-outline-warning me-1" onclick="completeInstallmentEarly(${i.id})" title="${t('inst_complete_early')}">
                     <i class="bi bi-check-circle"></i>
                 </button>` : ''}
                 <button class="btn btn-sm btn-outline-danger" onclick="deleteInstallment(${i.id})">
@@ -8484,6 +8509,16 @@ async function openInstallmentForm(data) {
     document.getElementById('instFormPaymentsMade').value = isEdit ? data.payments_made : 0;
     document.getElementById('instFormStartDate').value = isEdit ? data.start_date : new Date().toISOString().slice(0, 10);
     document.getElementById('instFormNotes').value = isEdit ? (data.notes || '') : '';
+    // Completed checkbox — only visible when editing
+    const completedRow = document.getElementById('instCompletedRow');
+    const completedCb = document.getElementById('instFormCompleted');
+    if (isEdit) {
+        completedRow.style.display = '';
+        completedCb.checked = data.status === 'completed';
+    } else {
+        completedRow.style.display = 'none';
+        completedCb.checked = false;
+    }
 
     // Populate card dropdown from existing cards
     const cards = await api('/api/cards');
@@ -8534,8 +8569,8 @@ async function saveInstallment() {
     else if (cardSel === '__new__') card = cardCustom;
     else card = cardSel;
 
-    const totalPayments = parseInt(document.getElementById('instFormTotalPayments').value) || 1;
-    const paymentsMade = Math.min(parseInt(document.getElementById('instFormPaymentsMade').value) || 0, totalPayments);
+    const totalPayments = parseInt(document.getElementById('instFormTotalPayments').value) || 0;
+    const paymentsMade = totalPayments > 0 ? Math.min(parseInt(document.getElementById('instFormPaymentsMade').value) || 0, totalPayments) : parseInt(document.getElementById('instFormPaymentsMade').value) || 0;
 
     const payload = {
         description: document.getElementById('instFormDesc').value,
@@ -8547,6 +8582,9 @@ async function saveInstallment() {
         start_date: document.getElementById('instFormStartDate').value,
         notes: document.getElementById('instFormNotes').value,
     };
+    if (document.getElementById('instFormCompleted').checked) {
+        payload.status = 'completed';
+    }
     if (id) payload.id = parseInt(id);
     await api('/api/installments', {
         method: 'POST',

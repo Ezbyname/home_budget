@@ -28,7 +28,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.0.1000040'
+APP_VERSION = '1.0.1000041'
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -1906,7 +1906,7 @@ def safe_to_spend():
     ).fetchall()
     installment_monthly = sum(
         r['monthly_payment'] for r in inst_rows
-        if max(r['total_payments'] - r['payments_made'], 0) > 0 and dict(r).get('status') != 'completed'
+        if dict(r).get('status') != 'completed' and (r['total_payments'] == 0 or r['total_payments'] - r['payments_made'] > 0)
     )
 
     available = bank_balance - buffer - installment_monthly
@@ -3843,7 +3843,7 @@ def _build_tip_context(conn, uid, month):
     inst_rows = conn.execute(
         "SELECT monthly_payment, total_payments, payments_made, status, start_date, description, store FROM installments WHERE user_id=?", (uid,)
     ).fetchall()
-    active_insts = [r for r in inst_rows if max(r['total_payments'] - r['payments_made'], 0) > 0 and dict(r).get('status') != 'completed']
+    active_insts = [r for r in inst_rows if dict(r).get('status') != 'completed' and (r['total_payments'] == 0 or r['total_payments'] - r['payments_made'] > 0)]
     ctx['active_installments'] = active_insts
     ctx['inst_monthly'] = sum(r['monthly_payment'] for r in active_insts)
 
@@ -3857,10 +3857,10 @@ def _build_tip_context(conn, uid, month):
             end_year = start.year + (start.month - 1 + r['total_payments']) // 12
             end_month = (start.month - 1 + r['total_payments']) % 12 + 1
             end_d = date(end_year, end_month, min(start.day, 28))
-            if dict(r).get('status') != 'completed' and max(r['total_payments'] - r['payments_made'], 0) > 0:
+            if dict(r).get('status') != 'completed' and r['total_payments'] > 0 and r['total_payments'] - r['payments_made'] > 0:
                 if 0 < (end_d - today_d).days <= 60:
                     ending_soon += 1
-            if dict(r).get('status') == 'completed' or r['payments_made'] >= r['total_payments']:
+            if dict(r).get('status') == 'completed' or (r['total_payments'] > 0 and r['payments_made'] >= r['total_payments']):
                 if 0 <= (today_d - end_d).days <= 90:
                     recently_freed.append(r)
         except (ValueError, TypeError):
@@ -8123,7 +8123,7 @@ def run_installment_matching(uid, conn=None):
     plans = conn.execute("""
         SELECT * FROM installments
         WHERE user_id=? AND status='active'
-        AND (total_payments - payments_made) > 0
+        AND (total_payments = 0 OR (total_payments - payments_made) > 0)
     """, (uid,)).fetchall()
 
     if not plans:
@@ -8229,7 +8229,7 @@ def run_installment_matching(uid, conn=None):
 
             if status == 'auto_matched':
                 new_paid = best_plan['payments_made'] + 1
-                new_status = 'completed' if new_paid >= best_plan['total_payments'] else 'active'
+                new_status = 'completed' if best_plan['total_payments'] > 0 and new_paid >= best_plan['total_payments'] else 'active'
                 conn.execute("""
                     UPDATE installments SET payments_made=?, last_matched_date=?, status=?,
                     updated_at=CURRENT_TIMESTAMP WHERE id=?
@@ -8787,7 +8787,7 @@ def financial_trajectory():
     ).fetchall()
     inst_monthly = sum(
         r['monthly_payment'] for r in inst_rows
-        if max(r['total_payments'] - r['payments_made'], 0) > 0 and dict(r).get('status') != 'completed'
+        if dict(r).get('status') != 'completed' and (r['total_payments'] == 0 or r['total_payments'] - r['payments_made'] > 0)
     )
     if income_total > 0 and inst_monthly > 0:
         inst_pct = inst_monthly / income_total
@@ -8912,26 +8912,36 @@ def installment_insights():
     plans = []
     for r in rows:
         d = dict(r)
-        d['payments_remaining'] = max(d['total_payments'] - d['payments_made'], 0)
-        d['remaining_amount'] = round(d['monthly_payment'] * d['payments_remaining'], 2)
-        is_active = d['payments_remaining'] > 0 and d.get('status') != 'completed'
+        d['is_ongoing'] = d['total_payments'] == 0
+        if d['is_ongoing']:
+            d['payments_remaining'] = -1
+            d['remaining_amount'] = 0
+        else:
+            d['payments_remaining'] = max(d['total_payments'] - d['payments_made'], 0)
+            d['remaining_amount'] = round(d['monthly_payment'] * d['payments_remaining'], 2)
+        is_active = d.get('status') != 'completed' and (d['is_ongoing'] or d['payments_remaining'] > 0)
         d['is_active'] = is_active
 
         # Estimate end date from start_date + total_payments months
-        try:
-            start = datetime.strptime(d['start_date'], '%Y-%m-%d').date()
-            end_month_offset = d['total_payments']
-            end_year = start.year + (start.month - 1 + end_month_offset) // 12
-            end_month = (start.month - 1 + end_month_offset) % 12 + 1
-            import calendar
-            end_day = min(start.day, calendar.monthrange(end_year, end_month)[1])
-            d['estimated_end_date'] = date(end_year, end_month, end_day).isoformat()
-            d['days_until_end'] = (date(end_year, end_month, end_day) - today).days if is_active else 0
-            d['months_remaining'] = d['payments_remaining']
-        except (ValueError, TypeError):
+        if d['is_ongoing']:
             d['estimated_end_date'] = ''
             d['days_until_end'] = 0
-            d['months_remaining'] = d['payments_remaining']
+            d['months_remaining'] = -1
+        else:
+            try:
+                start = datetime.strptime(d['start_date'], '%Y-%m-%d').date()
+                end_month_offset = d['total_payments']
+                end_year = start.year + (start.month - 1 + end_month_offset) // 12
+                end_month = (start.month - 1 + end_month_offset) % 12 + 1
+                import calendar
+                end_day = min(start.day, calendar.monthrange(end_year, end_month)[1])
+                d['estimated_end_date'] = date(end_year, end_month, end_day).isoformat()
+                d['days_until_end'] = (date(end_year, end_month, end_day) - today).days if is_active else 0
+                d['months_remaining'] = d['payments_remaining']
+            except (ValueError, TypeError):
+                d['estimated_end_date'] = ''
+                d['days_until_end'] = 0
+                d['months_remaining'] = d['payments_remaining']
 
         plans.append(d)
 
@@ -9871,8 +9881,13 @@ def installments_list():
     result = []
     for r in rows:
         d = dict(r)
-        d['payments_remaining'] = max(d['total_payments'] - d['payments_made'], 0)
-        d['remaining_amount'] = round(d['monthly_payment'] * d['payments_remaining'], 2)
+        d['is_ongoing'] = d['total_payments'] == 0
+        if d['is_ongoing']:
+            d['payments_remaining'] = -1  # sentinel: ongoing, no end
+            d['remaining_amount'] = 0
+        else:
+            d['payments_remaining'] = max(d['total_payments'] - d['payments_made'], 0)
+            d['remaining_amount'] = round(d['monthly_payment'] * d['payments_remaining'], 2)
         d['linked_count'] = conn.execute(
             "SELECT COUNT(*) FROM installment_transaction_links WHERE installment_id=? AND user_id=? AND status IN ('confirmed','auto_matched')",
             (d['id'], uid)).fetchone()[0]
@@ -9890,35 +9905,50 @@ def installments_list():
 def installments_add():
     data = request.json
     total_amount = float(data.get('total_amount', 0))
-    total_payments = int(data.get('total_payments', 1))
+    total_payments = int(data.get('total_payments', 0))
     monthly_payment = round(total_amount / total_payments, 2) if total_payments > 0 else total_amount
     conn = get_db()
 
     uid = get_uid()
     if data.get('id'):
+        payments_made = int(data.get('payments_made', 0))
+        # Explicit completed checkbox from frontend takes priority
+        if data.get('status') == 'completed':
+            new_status = 'completed'
+        elif total_payments > 0 and payments_made >= total_payments:
+            new_status = 'completed'
+        else:
+            new_status = 'active'
         conn.execute("""
             UPDATE installments SET description=?, store=?, total_amount=?,
                 total_payments=?, payments_made=?, monthly_payment=?,
-                start_date=?, card=?, notes=?
+                start_date=?, card=?, notes=?, status=?
             WHERE id=? AND user_id=?
         """, (data['description'], data.get('store', ''), total_amount,
-              total_payments, int(data.get('payments_made', 0)), monthly_payment,
+              total_payments, payments_made, monthly_payment,
               data.get('start_date', ''), data.get('card', ''),
-              data.get('notes', ''), data['id'], uid))
+              data.get('notes', ''), new_status, data['id'], uid))
     else:
         source = data.get('source', 'manual')
         vendor_norm = data.get('vendor_normalized', '')
         if not vendor_norm and data.get('store'):
             vendor_norm = _normalize_vendor(data['store'])
+        init_paid = int(data.get('payments_made', 0))
+        if data.get('status') == 'completed':
+            init_status = 'completed'
+        elif total_payments > 0 and init_paid >= total_payments:
+            init_status = 'completed'
+        else:
+            init_status = 'active'
         cur = conn.execute("""
             INSERT INTO installments (description, store, total_amount, total_payments,
                 payments_made, monthly_payment, start_date, card, notes, user_id,
                 source, vendor_normalized, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (data['description'], data.get('store', ''), total_amount,
-              total_payments, int(data.get('payments_made', 0)), monthly_payment,
+              total_payments, init_paid, monthly_payment,
               data.get('start_date', ''), data.get('card', ''),
-              data.get('notes', ''), uid, source, vendor_norm))
+              data.get('notes', ''), uid, source, vendor_norm, init_status))
         new_id = cur.lastrowid
 
     conn.commit()
