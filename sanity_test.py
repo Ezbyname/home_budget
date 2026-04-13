@@ -2770,8 +2770,60 @@ check(completed_ongoing['status'] == 'completed', f"Explicit completed flag sets
 # T6: Clean up
 client.delete(f"/api/installments/{ongoing['id']}")
 
-# T7: Version is 1.0.1000041
-check(budget_app.APP_VERSION == '1.0.1000041', f"Version is 1.0.1000041 (got {budget_app.APP_VERSION})")
+# T7: Version check (updated in Section 50)
+
+# ====================================================================
+# Section 50 — Recurring Detection: Dismiss Persists as 'once'
+# ====================================================================
+print("\n--- 50. Recurring Detection Dismiss Persistence ---")
+
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# Clean up any leftover test expenses
+conn50 = budget_app.get_db()
+conn50.execute("DELETE FROM expenses WHERE description IN ('RecurTestVendor', 'RecurTestVendorB') AND user_id = (SELECT id FROM users WHERE username='testadmin')")
+conn50.commit()
+conn50.close()
+
+# T1: Insert expenses that form a recurring pattern (same desc, 2+ months, similar amounts)
+uid50_row = budget_app.get_db().execute("SELECT id FROM users WHERE username='testadmin'").fetchone()
+uid50 = uid50_row['id']
+conn50b = budget_app.get_db()
+conn50b.execute("INSERT INTO expenses (user_id, date, description, amount, category_id, source, frequency) VALUES (?, '2026-01-15', 'RecurTestVendor', 100, 'general', 'bank_csv', 'random')", (uid50,))
+conn50b.execute("INSERT INTO expenses (user_id, date, description, amount, category_id, source, frequency) VALUES (?, '2026-02-15', 'RecurTestVendor', 100, 'general', 'bank_csv', 'random')", (uid50,))
+conn50b.commit()
+conn50b.close()
+
+# T2: Detect recurring — should find RecurTestVendor
+sc50, det = api_post('/api/detect-recurring', {})
+check(sc50 == 200, f"detect-recurring returns 200 (got {sc50})")
+found = any(p['description'] == 'RecurTestVendor' for p in det)
+check(found, "RecurTestVendor detected as recurring pattern")
+
+# T3: Dismiss as one-time (set frequency='once')
+sc50b, _ = api_post('/api/expenses/set-recurring', {'description': 'RecurTestVendor', 'frequency': 'once'})
+check(sc50b == 200, f"set-recurring once returns 200 (got {sc50b})")
+
+# T4: Detect again — should NOT find RecurTestVendor anymore (frequency='once' excluded)
+sc50c, det2 = api_post('/api/detect-recurring', {})
+check(sc50c == 200, f"detect-recurring returns 200 (got {sc50c})")
+found2 = any(p['description'] == 'RecurTestVendor' for p in det2)
+check(not found2, "RecurTestVendor NOT detected after dismissal (frequency='once' excluded)")
+
+# T5: Only 'random' frequency is detected, not 'once'
+conn50c = budget_app.get_db()
+row50 = conn50c.execute("SELECT frequency FROM expenses WHERE description='RecurTestVendor' AND user_id=?", (uid50,)).fetchone()
+conn50c.close()
+check(row50 is not None and row50['frequency'] == 'once', f"Dismissed expense has frequency='once' (got {row50['frequency'] if row50 else 'None'})")
+
+# T6: Clean up
+conn50d = budget_app.get_db()
+conn50d.execute("DELETE FROM expenses WHERE description IN ('RecurTestVendor', 'RecurTestVendorB') AND user_id=?", (uid50,))
+conn50d.commit()
+conn50d.close()
+
+# T7: Version is 1.0.1000042
+check(budget_app.APP_VERSION == '1.0.1000042', f"Version is 1.0.1000042 (got {budget_app.APP_VERSION})")
 
 
 # ====================================================================

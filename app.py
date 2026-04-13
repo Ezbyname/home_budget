@@ -28,7 +28,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.0.1000041'
+APP_VERSION = '1.0.1000042'
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -3616,7 +3616,7 @@ def detect_recurring():
                GROUP_CONCAT(DISTINCT substr(date,1,7)) as months,
                GROUP_CONCAT(id) as expense_ids
         FROM expenses
-        WHERE user_id = ? AND frequency IN ('random', 'once')
+        WHERE user_id = ? AND frequency = 'random'
           AND description != '' AND source IN ('bank_csv', 'visa_import')
         GROUP BY description
         HAVING months_count >= 2

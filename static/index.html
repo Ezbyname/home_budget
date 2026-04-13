@@ -8246,14 +8246,20 @@ function renderRecurringItem() {
     document.getElementById('recurringFreqSelect').value = 'monthly';
 }
 
-function recurringConfirm(isRecurring) {
+async function recurringConfirm(isRecurring) {
     if (isRecurring) {
         // Show frequency/end date options
         document.getElementById('recurringOptions').style.display = '';
         document.getElementById('recurringFooter').style.display = 'none';
         document.getElementById('recurringApplyFooter').style.display = '';
     } else {
-        // Skip to next
+        // Mark as one-time so it won't be detected again
+        const p = recurringPatterns[recurringIndex];
+        await api('/api/expenses/set-recurring', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description: p.description, frequency: 'once' })
+        });
         recurringIndex++;
         if (recurringIndex < recurringPatterns.length) {
             renderRecurringItem();
