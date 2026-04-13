@@ -10469,21 +10469,28 @@ def chat_assistant():
             break
 
     # Simple search: remove common words, keep the rest
-    noise = {'כמה', 'הוצאתי', 'הוצאות', 'ההוצאות', 'תראה', 'תמצא', 'חפש', 'מצא',
+    _noise_base = {'כמה', 'הוצאתי', 'הוצאות', 'ההוצאות', 'תראה', 'תמצא', 'חפש', 'מצא',
              'לי', 'של', 'את', 'על', 'אני', 'כל', 'עם', 'גם', 'רק', 'יש', 'אין',
              'חודש', 'חודשים', 'אחרונים', 'אחרונות', 'האחרונה', 'האחרונים', 'האחרון',
              'השנה', 'החודש', 'שנה', 'חצי', 'בחצי',
              'expenses', 'show', 'find', 'me', 'the', 'last', 'my', 'how', 'much', 'spent', 'all',
              'הכי', 'גדולה', 'יקרה', 'הכנסות', 'הכנסה',
-             cat_name.lower()} if cat_name else {'כמה', 'הוצאתי', 'הוצאות', 'ההוצאות', 'תראה', 'תמצא', 'חפש', 'מצא',
-             'לי', 'של', 'את', 'על', 'אני', 'כל', 'עם', 'גם', 'רק', 'יש', 'אין',
-             'חודש', 'חודשים', 'אחרונים', 'אחרונות', 'האחרונה', 'האחרונים', 'האחרון',
-             'השנה', 'החודש', 'שנה', 'חצי', 'בחצי',
-             'expenses', 'show', 'find', 'me', 'the', 'last', 'my', 'how', 'much', 'spent', 'all',
-             'הכי', 'גדולה', 'יקרה', 'הכנסות', 'הכנסה'}
+             'כן', 'לא', 'אוקי', 'טוב', 'בסדר', 'תודה', 'נכון', 'בדיוק', 'ok', 'yes', 'no', 'thanks',
+             'sure', 'right', 'exactly', 'yeah', 'nope', 'okay'}
+    noise = _noise_base | {cat_name.lower()} if cat_name else _noise_base
     words = [w for w in _re.sub(r'[\d\-/]+', ' ', query_lower).split() if len(w) >= 2 and w not in noise]
 
     search_term = ' '.join(words).strip()
+
+    # If the entire query is just affirmative/filler words with no search content, give a helpful response
+    if not search_term and not cat_id:
+        orig_words = query_lower.split()
+        _filler = {'כן', 'לא', 'אוקי', 'טוב', 'בסדר', 'תודה', 'נכון', 'בדיוק', 'ok', 'yes', 'no', 'thanks', 'sure', 'okay', 'yeah', 'nope', 'right'}
+        if any(w in _filler for w in orig_words):
+            conn.close()
+            response['text'] = ('אשמח לעזור! נסו לשאול משהו כמו "כמה הוצאתי על אוכל החודש?" או "תראה לי הוצאות סופר"'
+                                if lang == 'he' else 'Happy to help! Try asking something like "how much did I spend on food?" or "show me grocery expenses"')
+            return jsonify(response)
 
     sql_where = "WHERE e.user_id = ? AND e.date >= ? AND e.date <= ?"
     params = [uid, from_date, to_date]
