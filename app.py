@@ -14,7 +14,7 @@ import threading
 import time as _time
 from datetime import datetime, date, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, make_response
 import xlrd
 import openpyxl
 
@@ -28,7 +28,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.0.1000042'
+APP_VERSION = '1.1.0'
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -1335,10 +1335,19 @@ def test_reminder(rid):
 
 
 # --- Static files ---
+@app.route('/api/version')
+def version():
+    return jsonify({"version": APP_VERSION})
+
 @app.route('/')
 def index():
-    resp = send_from_directory('static', 'index.html')
+    html_path = os.path.join(STATIC_DIR, 'index.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+    html = html.replace('</body>', '<script src="/static/update-checker.js"></script>\n</body>', 1)
+    resp = make_response(html)
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
     return resp
 
 
