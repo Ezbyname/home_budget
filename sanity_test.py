@@ -13,6 +13,7 @@ import shutil
 # ── Make sure app can be imported ──
 sys.path.insert(0, os.path.dirname(__file__))
 
+import core.db as _core_db
 import app as budget_app
 
 PASS = 0
@@ -44,7 +45,8 @@ def check(condition, label, detail=""):
 # ── Setup: temporary DB, Flask test client ──
 tmp_dir = tempfile.mkdtemp()
 tmp_db = os.path.join(tmp_dir, "test_budget.db")
-budget_app.DB_PATH = tmp_db
+_core_db.DB_PATH = tmp_db        # actual source of truth for get_db()
+budget_app.DB_PATH = tmp_db      # backward compat — some code may read this
 budget_app.app.config["TESTING"] = True
 budget_app.app.config["SECRET_KEY"] = "test-secret"
 client = budget_app.app.test_client()
@@ -73,23 +75,38 @@ with client.session_transaction() as sess:
     sess['username'] = 'testadmin'
 
 
+_csrf_token = ''
+
+def _refresh_csrf():
+    global _csrf_token
+    r = client.get('/api/csrf-token')
+    d = r.get_json()
+    _csrf_token = d.get('csrf_token', '')
+
+_refresh_csrf()
+
+
 def api_get(url):
     r = client.get(url)
     return r.status_code, r.get_json()
 
 
 def api_post(url, data=None):
-    r = client.post(url, json=data, content_type="application/json")
+    r = client.post(url, json=data, content_type="application/json",
+                    headers={'X-CSRF-Token': _csrf_token})
+    if ('/api/auth/login' in url or '/api/auth/signup' in url) and r.status_code == 200:
+        _refresh_csrf()
     return r.status_code, r.get_json()
 
 
 def api_delete(url):
-    r = client.delete(url)
+    r = client.delete(url, headers={'X-CSRF-Token': _csrf_token})
     return r.status_code, r.get_json()
 
 
 def api_put(url, data=None):
-    r = client.put(url, json=data, content_type="application/json")
+    r = client.put(url, json=data, content_type="application/json",
+                   headers={'X-CSRF-Token': _csrf_token})
     return r.status_code, r.get_json()
 
 
@@ -442,7 +459,7 @@ check(plan_keys[1]["lang"] != plan_keys[2]["lang"], "Plan 1 and 2 use different 
 # ====================================================================
 print("\n🔹 15. Import endpoint exists")
 # ====================================================================
-r = client.post("/api/import")
+r = client.post("/api/import", headers={'X-CSRF-Token': _csrf_token})
 check(r.status_code != 500, "POST /api/import does not crash", f"got {r.status_code}")
 
 
@@ -736,6 +753,12 @@ check(status == 200, "Chat: empty query returns 200 (graceful)")
 # Lang defaults to 'he'
 status, res = api_post("/api/chat", {"query": "expenses"})
 check(status == 200, "Chat: missing lang defaults gracefully")
+
+# Hebrew query with question mark — punctuation must be stripped from noise matching
+status, res = api_post("/api/chat", {"query": "כמה הוצאתי החודש?", "lang": "he"})
+check(status == 200, "Chat: Hebrew query with ? returns 200")
+check(res.get("data") is not None and res["data"].get("type") == "expenses",
+      "Chat: punctuated Hebrew query returns expense data")
 
 
 # ====================================================================
@@ -1278,7 +1301,7 @@ api_post("/api/auth/logout")
 api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
 
 with open(general_path, 'rb') as f:
-    r = client.post("/api/import", data={'file': (f, 'test_general_ins.xlsx')}, content_type='multipart/form-data')
+    r = client.post("/api/import", data={'file': (f, 'test_general_ins.xlsx')}, content_type='multipart/form-data', headers={'X-CSRF-Token': _csrf_token})
 check(r.status_code == 200, "Insurance import: general file returns 200")
 data = r.get_json()
 check(data.get('source') == 'insurance_portfolio', "Insurance import: source is insurance_portfolio")
@@ -1286,7 +1309,7 @@ check(data.get('imported') == 2, f"Insurance import: general imported 2 products
 
 # Test 3: Health file with aggregation (same policy number)
 with open(health_path, 'rb') as f:
-    r = client.post("/api/import", data={'file': (f, 'test_health_ins.xlsx')}, content_type='multipart/form-data')
+    r = client.post("/api/import", data={'file': (f, 'test_health_ins.xlsx')}, content_type='multipart/form-data', headers={'X-CSRF-Token': _csrf_token})
 check(r.status_code == 200, "Insurance import: health file returns 200")
 data = r.get_json()
 check(data.get('imported') == 1, f"Insurance import: health aggregated to 1 product (got {data.get('imported')})")
@@ -1297,7 +1320,7 @@ if data.get('products'):
 
 # Test 4: Re-import dedup (same policy numbers should be skipped)
 with open(general_path, 'rb') as f:
-    r = client.post("/api/import", data={'file': (f, 'test_general_ins.xlsx')}, content_type='multipart/form-data')
+    r = client.post("/api/import", data={'file': (f, 'test_general_ins.xlsx')}, content_type='multipart/form-data', headers={'X-CSRF-Token': _csrf_token})
 data = r.get_json()
 check(data.get('imported') == 0, f"Insurance import: re-import deduped (imported {data.get('imported')})")
 check(data.get('skipped', 0) >= 2, f"Insurance import: re-import skipped duplicates (got {data.get('skipped', 0)})")
@@ -2438,7 +2461,7 @@ r = client.post("/api/salary-statements", data=json.dumps({
     'pension_employee': 1300, 'pension_employer': 1540,
     'education_fund_employee': 550, 'education_fund_employer': 1650,
     'severance_employer': 1833, 'extraction_confidence': 0.83,
-}), content_type='application/json')
+}), content_type='application/json', headers={'X-CSRF-Token': _csrf_token})
 check(r.status_code == 200, "POST /api/salary-statements returns 200")
 save_result = json.loads(r.data)
 check(save_result.get('true_compensation', 0) > 22000, "Saved true_compensation > gross")
@@ -2448,7 +2471,7 @@ r_list = client.get("/api/salary-statements")
 all_stmts = json.loads(r_list.data)
 if all_stmts:
     del_id = all_stmts[-1]['id']
-    r = client.delete(f"/api/salary-statements/{del_id}")
+    r = client.delete(f"/api/salary-statements/{del_id}", headers={'X-CSRF-Token': _csrf_token})
     check(r.status_code == 200, f"DELETE /api/salary-statements/{del_id} returns 200")
     del_data = json.loads(r.data)
     check(del_data.get('deleted') == 1, f"deleted=1 (got {del_data.get('deleted')})")
@@ -2621,7 +2644,7 @@ from app import _TRAJECTORY_TIP_OVERLAP
 api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
 existing_sal = (client.get('/api/salary-statements').get_json() or [])
 for row in existing_sal:
-    client.delete(f"/api/salary-statements/{row['id']}")
+    client.delete(f"/api/salary-statements/{row['id']}", headers={'X-CSRF-Token': _csrf_token})
 
 # T1: Insert 3 stable salary months and verify income_risk section
 test_months_risk = ['2026-01', '2026-02', '2026-03']
@@ -2697,7 +2720,7 @@ check(r.status_code == 200, f"GET /api/trajectory returns 200 (got {r.status_cod
 rows = client.get('/api/salary-statements').get_json() or []
 for row in rows:
     if row.get('company_name') == 'RiskTestCo':
-        client.delete(f"/api/salary-statements/{row['id']}")
+        client.delete(f"/api/salary-statements/{row['id']}", headers={'X-CSRF-Token': _csrf_token})
 
 # T8: Version was 1.0.1000040 (superseded)
 
@@ -2740,7 +2763,7 @@ check(test_inst2['payments_remaining'] == 3, f"3/6 → remaining=3 (got {test_in
 check(test_inst2['remaining_amount'] == 3000, f"3/6 → remaining_amount=3000 (got {test_inst2['remaining_amount']})")
 
 # T3: Clean up
-client.delete(f"/api/installments/{test_inst['id']}")
+client.delete(f"/api/installments/{test_inst['id']}", headers={'X-CSRF-Token': _csrf_token})
 
 # T4: Ongoing installment (total_payments=0) stays active, never auto-completes
 sc3, _ = api_post('/api/installments', {
@@ -2768,7 +2791,7 @@ completed_ongoing = next((i for i in (r4.get_json() or []) if i['description'] =
 check(completed_ongoing['status'] == 'completed', f"Explicit completed flag sets status=completed (got {completed_ongoing['status']})")
 
 # T6: Clean up
-client.delete(f"/api/installments/{ongoing['id']}")
+client.delete(f"/api/installments/{ongoing['id']}", headers={'X-CSRF-Token': _csrf_token})
 
 # T7: Version check (updated in Section 50)
 
@@ -2823,7 +2846,404 @@ conn50d.commit()
 conn50d.close()
 
 # T7: Version is 1.0.1000042
-check(budget_app.APP_VERSION == '1.0.1000042', f"Version is 1.0.1000042 (got {budget_app.APP_VERSION})")
+check(budget_app.APP_VERSION == '1.0.1000048', f"Version is 1.0.1000048 (got {budget_app.APP_VERSION})")
+
+
+print("\n--- 51. Core Module Integration Seams ---")
+
+# T1: core/normalize.py functions are importable and produce correct types
+from core.normalize import _normalize_text, _normalize_vendor, _normalize_subscription_desc
+check(_normalize_text('  Hello WORLD! ') == 'hello world', "normalize_text strips and lowercases")
+check(_normalize_vendor('הו"ק הראל ביטוח 12345') != '', "normalize_vendor produces non-empty output")
+check(_normalize_subscription_desc('NETFLIX BILLING') != '', "normalize_subscription_desc produces non-empty output")
+
+# T2: core/linking.py functions are importable and produce correct types
+from core.linking import _score_transaction, _seed_link_keywords, run_linking_engine
+seed = _seed_link_keywords({'name': 'Test Asset', 'asset_type': 'cash', 'institution_name': 'Bank', 'link_keywords': '[]'}, 'asset')
+check(isinstance(seed, list) and len(seed) >= 1, f"seed_link_keywords returns list (got {type(seed).__name__}, len={len(seed)})")
+
+# T3: core/installments.py functions are importable and produce correct types
+from core.installments import _extract_installment_count, _is_subscription_vendor, _estimate_total_payments
+cur, tot = _extract_installment_count('תשלום 3 מתוך 10')
+check(cur == 3 and tot == 10, f"extract_installment_count parses Hebrew (got {cur}/{tot})")
+check(_is_subscription_vendor('נטפליקס') == True, "is_subscription_vendor detects Netflix HE")
+check(_is_subscription_vendor('random vendor xyz') == False, "is_subscription_vendor rejects unknown vendor")
+check(_estimate_total_payments({'2025-01', '2025-02', '2025-03'}) == 3, f"estimate_total_payments rounds to common count")
+
+# T4: core/insurance.py functions are importable and produce correct types
+from core.insurance import _detect_insurance_signals, _normalize_merchant_name
+txn = {'raw_description': 'הראל ביטוח חיים', 'subcategory': '', 'normalized_merchant': 'הראל ביטוח חיים',
+       'category_id': '', 'card': '', 'frequency': ''}
+conf, reasons, insurer, itype, market = _detect_insurance_signals(txn)
+check(conf > 0, f"detect_insurance_signals scores > 0 for insurer name (got {conf})")
+check(insurer != '', f"detect_insurance_signals identifies insurer (got '{insurer}')")
+
+# T5: core/tips.py re-export works and TIP_CONFIG is accessible
+from core.tips import TIP_CONFIG, _TIP_GENERATORS
+check(isinstance(TIP_CONFIG, dict) and 'w_severity' in TIP_CONFIG, "TIP_CONFIG accessible from core.tips")
+check(isinstance(_TIP_GENERATORS, list) and len(_TIP_GENERATORS) > 0, f"_TIP_GENERATORS has {len(_TIP_GENERATORS)} generators")
+
+# T6: core/parsers.py has direct imports (no injection stubs)
+import core.parsers as _cp
+check(_cp.run_linking_engine is run_linking_engine, "parsers.run_linking_engine is the real function (not None)")
+check(_cp.run_installment_matching is not None, "parsers.run_installment_matching is not None")
+check(not hasattr(_cp, 'get_uid') or _cp.__dict__.get('get_uid') is None,
+      "parsers has no get_uid injection (removed)")
+
+# T7: No circular imports — all core modules import cleanly
+import importlib
+all_clean = True
+for mod_name in ['core.db', 'core.normalize', 'core.linking', 'core.installments',
+                 'core.parsers', 'core.insurance', 'core.tips']:
+    try:
+        importlib.import_module(mod_name)
+    except ImportError as e:
+        all_clean = False
+        fail(f"Module {mod_name} import failed", str(e))
+if all_clean:
+    ok("All 7 core modules import without circular dependency errors")
+
+# T8: Re-exports in app.py still work (test backward compat)
+check(budget_app._normalize_text is _normalize_text, "app._normalize_text re-export works")
+check(budget_app.run_linking_engine is run_linking_engine, "app.run_linking_engine re-export works")
+check(budget_app.scan_installment_suggestions is not None, "app.scan_installment_suggestions re-export works")
+check(budget_app.scan_insurance_suggestions is not None, "app.scan_insurance_suggestions re-export works")
+
+
+# ------------------------------------------------------------------
+print("\n--- 52. Payslip PDF Parser Robustness ---")
+# ------------------------------------------------------------------
+from core.parsers import (
+    _extract_payslip_fields, _extract_payslip_fields_spatial,
+    _extract_payslip_month, _extract_company_name
+)
+
+# T1: Regex extraction — standard text-based payslip
+_ps_text1 = "שכר ברוטו: 15,000.00\nשכר נטו: 11,200\nמס הכנסה: 1,200\nביטוח לאומי: 800.00\nביטוח בריאות: 450\nפנסיה מעביד: 900\nקרן השתלמות מעביד: 375"
+_ps1 = _extract_payslip_fields(_ps_text1)
+check(_ps1.get('gross_salary') == 15000, f"Regex gross_salary (got {_ps1.get('gross_salary')})")
+check(_ps1.get('net_salary') == 11200, f"Regex net_salary (got {_ps1.get('net_salary')})")
+check(_ps1.get('income_tax') == 1200, f"Regex income_tax (got {_ps1.get('income_tax')})")
+check(_ps1.get('social_security') == 800, f"Regex social_security (got {_ps1.get('social_security')})")
+check(_ps1.get('health_insurance') == 450, f"Regex health_insurance (got {_ps1.get('health_insurance')})")
+check(_ps1.get('pension_employer') == 900, f"Regex pension_employer (got {_ps1.get('pension_employer')})")
+check(_ps1.get('education_fund_employer') == 375, f"Regex education_fund_employer (got {_ps1.get('education_fund_employer')})")
+
+# T2: Regex handles non-breaking spaces
+_ps_text2 = "שכר\xa0ברוטו:\xa015,500\nנטו\xa0לתשלום:\xa011,000"
+_ps2 = _extract_payslip_fields(_ps_text2)
+check(_ps2.get('gross_salary') == 15500, f"Regex handles NBSP in gross (got {_ps2.get('gross_salary')})")
+check(_ps2.get('net_salary') == 11000, f"Regex handles NBSP in net (got {_ps2.get('net_salary')})")
+
+# T3: Regex extracts bonus, travel, overtime, convalescence
+_ps_text3 = "בונוס: 3,000\nנסיעות: 500\nשעות נוספות: 1,200\nדמי הבראה: 800"
+_ps3 = _extract_payslip_fields(_ps_text3)
+check(_ps3.get('bonus_amount') == 3000, f"Regex bonus (got {_ps3.get('bonus_amount')})")
+check(_ps3.get('travel_allowance') == 500, f"Regex travel (got {_ps3.get('travel_allowance')})")
+check(_ps3.get('overtime_pay') == 1200, f"Regex overtime (got {_ps3.get('overtime_pay')})")
+check(_ps3.get('convalescence_pay') == 800, f"Regex convalescence (got {_ps3.get('convalescence_pay')})")
+
+# T4: Regex does NOT match ".חייב ב.ל" as social_security
+_ps_text4 = ".חייב ב.ל20,117\nביטוח לאומי\n"
+_ps4 = _extract_payslip_fields(_ps_text4)
+check(_ps4.get('social_security', 0) == 0 or _ps4.get('social_security') != 20117,
+      f"Regex does not pick up .חייב ב.ל as SS (got {_ps4.get('social_security', 0)})")
+
+# T5: Month extraction — various formats
+check(_extract_payslip_month("חודש 3/2026") == "2026-03", "Month MM/YYYY")
+check(_extract_payslip_month("2025-07 report") == "2025-07", "Month YYYY-MM")
+check(_extract_payslip_month("תקופה: 11.2025") == "2025-11", "Month MM.YYYY")
+check(_extract_payslip_month("לחודש 1 שנת 2026") == "2026-01", "Month Hebrew label")
+check(_extract_payslip_month("no date here") is None, "Month returns None when absent")
+
+# T6: Company name extraction — various suffixes
+check('בע"מ' in _extract_company_name("חברת טסט בע\"מ\nשורה 2"), "Company name with בע\"מ")
+check(_extract_company_name("TEST COMPANY Ltd.") != '', "English company Ltd")
+check(_extract_company_name("TEST COMPANY LTD") != '', "English company LTD")
+
+# T7: Spatial extraction — garbled font mapping
+_garbled_spans = [
+    ('ª»«¬ª\xa0»≈', 529, 508),      # income_tax label
+    ('1,825.00', 430, 508),             # income_tax value
+    ('¿≈º∑√\xa0æºø¿∏', 518, 520),    # social_security label
+    ('949.00', 438, 520),               # social_security value
+    ('"º∑¿–∏\xa0¿≈∫', 523, 532),     # health_insurance label
+    ('891.00', 438, 532),               # health_insurance value
+    ('ƒæ—\xa0–√º—ø√∑', 506, 544),    # pension_employee label
+    ('999.00', 438, 544),               # pension_employee value
+    ('√≈', 493, 556),                   # education_fund label (prefix)
+    ('\x9bº\xa0ª¿»«Ã\xa0√∑–ª', 505, 556),  # education_fund label (suffix)
+    ('393.00', 438, 556),               # education_fund value
+    ('סה"כ\xa0תשלומים', 93, 482),     # gross label
+    ('19,184.00', 38, 479),             # gross value
+    ('שכר\xa0נטו', 93, 582),           # net label
+    ('14,127.00', 38, 576),             # net value
+    ('סה"כ\xa0ניכויים', 93, 531),     # total_deductions label
+    ('5,057.00', 38, 529),              # total_deductions value
+]
+_sp = _extract_payslip_fields_spatial(_garbled_spans)
+check(_sp.get('income_tax') == 1825, f"Spatial garbled income_tax (got {_sp.get('income_tax')})")
+check(_sp.get('social_security') == 949, f"Spatial garbled social_security (got {_sp.get('social_security')})")
+check(_sp.get('health_insurance') == 891, f"Spatial garbled health_insurance (got {_sp.get('health_insurance')})")
+check(_sp.get('pension_employee') == 999, f"Spatial garbled pension_employee (got {_sp.get('pension_employee')})")
+check(_sp.get('education_fund_employee') == 393, f"Spatial garbled edu_fund (got {_sp.get('education_fund_employee')})")
+check(_sp.get('gross_salary') == 19184, f"Spatial gross_salary (got {_sp.get('gross_salary')})")
+check(_sp.get('net_salary') == 14127, f"Spatial net_salary (got {_sp.get('net_salary')})")
+
+# T8: Spatial deduction sum matches gross-net
+_sp_ded_sum = sum(_sp.get(f, 0) for f in ['income_tax', 'social_security', 'health_insurance', 'pension_employee', 'education_fund_employee'])
+check(abs(_sp_ded_sum - 5057) < 1, f"Spatial deductions sum = gross-net (got {_sp_ded_sum})")
+
+# T9: Key fields list covers essentials
+from core.parsers import _PAYSLIP_KEY_FIELDS
+for kf in ['gross_salary', 'net_salary', 'income_tax', 'social_security']:
+    check(kf in _PAYSLIP_KEY_FIELDS, f"{kf} in _PAYSLIP_KEY_FIELDS")
+
+# T10: US payslip regex extraction — ADP/Gusto/Paychex style
+_us_text1 = "Gross Pay: 5,200.00\nNet Pay: 3,850.50\nFederal Income Tax: 520.00\nSocial Security: 322.40\nMedicare: 75.40\nState Income Tax: 195.00\n401(k) Contribution: 312.00\nHealth Insurance: 150.00\nDental Insurance: 25.00\nVision: 10.00\nHSA: 100.00"
+_us1 = _extract_payslip_fields(_us_text1)
+check(_us1.get('gross_salary') == 5200, f"US gross_salary (got {_us1.get('gross_salary')})")
+check(_us1.get('net_salary') == 3850.5, f"US net_salary (got {_us1.get('net_salary')})")
+check(_us1.get('income_tax') == 520, f"US federal income tax (got {_us1.get('income_tax')})")
+check(_us1.get('social_security') == 322.40, f"US social security (got {_us1.get('social_security')})")
+check(_us1.get('medicare') == 75.40, f"US medicare (got {_us1.get('medicare')})")
+check(_us1.get('state_tax') == 195, f"US state tax (got {_us1.get('state_tax')})")
+check(_us1.get('pension_employee') == 312, f"US 401k as pension (got {_us1.get('pension_employee')})")
+check(_us1.get('health_insurance') == 150, f"US health insurance (got {_us1.get('health_insurance')})")
+check(_us1.get('dental_insurance') == 25, f"US dental (got {_us1.get('dental_insurance')})")
+check(_us1.get('vision_insurance') == 10, f"US vision (got {_us1.get('vision_insurance')})")
+check(_us1.get('hsa') == 100, f"US HSA (got {_us1.get('hsa')})")
+
+# T11: US abbreviation variants
+_us_text2 = "FIT: 480.00\nFICA-SS: 310.00\nFICA-Med: 72.50\nSIT: 180.00\nFSA: 50.00\nUnion Dues: 35.00"
+_us2 = _extract_payslip_fields(_us_text2)
+check(_us2.get('income_tax') == 480, f"US FIT abbreviation (got {_us2.get('income_tax')})")
+check(_us2.get('social_security') == 310, f"US FICA-SS (got {_us2.get('social_security')})")
+check(_us2.get('medicare') == 72.5, f"US FICA-Med (got {_us2.get('medicare')})")
+check(_us2.get('state_tax') == 180, f"US SIT (got {_us2.get('state_tax')})")
+check(_us2.get('fsa') == 50, f"US FSA (got {_us2.get('fsa')})")
+check(_us2.get('union_fees') == 35, f"US union dues (got {_us2.get('union_fees')})")
+
+# T12: US month extraction from pay date
+check(_extract_payslip_month("Pay Date: 03/15/2026") == "2026-03", "US Pay Date MM/DD/YYYY")
+check(_extract_payslip_month("Check Date: 01-31-2026") == "2026-01", "US Check Date MM-DD-YYYY")
+
+# T13: US company name extraction
+check(_extract_company_name("ACME Corp.") != '', "US company Corp")
+check(_extract_company_name("Big Solutions LLC") != '', "US company LLC")
+check('ACME' in _extract_company_name("Company Name: ACME Technologies"), "US Company Name label")
+
+# T14: Gross earnings aliases
+_us_text3 = "Gross Earnings: 4,800.00\nTake-Home Pay: 3,500.00\nOT Pay: 600.00"
+_us3 = _extract_payslip_fields(_us_text3)
+check(_us3.get('gross_salary') == 4800, f"US Gross Earnings (got {_us3.get('gross_salary')})")
+check(_us3.get('net_salary') == 3500, f"US Take-Home Pay (got {_us3.get('net_salary')})")
+check(_us3.get('overtime_pay') == 600, f"US OT Pay (got {_us3.get('overtime_pay')})")
+
+
+# ====================================================================
+# Section 53 — Auth Rate Limiting
+# ====================================================================
+print("\n--- 53. Auth Rate Limiting ---")
+
+from core.rate_limit import _limiter, check_rate_limit, reset_rate_limit
+
+# Clear all buckets so earlier test logins don't interfere
+_limiter._buckets.clear()
+
+# T1: RateLimiter unit test — basic sliding window
+_limiter._buckets.clear()
+for _i in range(5):
+    check_rate_limit('test_ep', 'user1', 5, 600)
+_t1_blocked = check_rate_limit('test_ep', 'user1', 5, 600)
+check(_t1_blocked is True, "RateLimiter blocks after max_attempts reached")
+
+# T2: Different key is not blocked
+_t2_ok = check_rate_limit('test_ep', 'user2', 5, 600)
+check(_t2_ok is False, "RateLimiter: different key is not blocked")
+
+# T3: Reset clears the counter
+reset_rate_limit('test_ep', 'user1')
+_t3_ok = check_rate_limit('test_ep', 'user1', 5, 600)
+check(_t3_ok is False, "RateLimiter: reset allows new attempts")
+
+_limiter._buckets.clear()
+
+# T4: Login endpoint returns 429 after 5 failed attempts
+_limiter._buckets.clear()
+for _i in range(5):
+    api_post("/api/auth/login", {"username": "noexist_rl", "password": "wrong"})
+_s4, _r4 = api_post("/api/auth/login", {"username": "noexist_rl", "password": "wrong"})
+check(_s4 == 429, f"Login rate-limited after 5 attempts (got {_s4})")
+check('error' in (_r4 or {}), "Login 429 response has 'error' key")
+
+_limiter._buckets.clear()
+
+# T5: Signup endpoint returns 429 after 5 attempts (use existing username → all fail with 409, still counted)
+_limiter._buckets.clear()
+for _i in range(5):
+    api_post("/api/auth/signup", {"username": "testadmin", "password": "password123", "email": "rl@x.com"})
+_s5, _r5 = api_post("/api/auth/signup", {"username": "testadmin", "password": "password123", "email": "rl@x.com"})
+check(_s5 == 429, f"Signup rate-limited after 5 attempts (got {_s5})")
+check(isinstance(_r5, dict) and 'error' in _r5, "Signup 429 has valid JSON error")
+
+_limiter._buckets.clear()
+
+# T6: OTP verify endpoint returns 429 after 5 attempts
+_limiter._buckets.clear()
+for _i in range(5):
+    api_post("/api/auth/verify", {"user_id": 99999, "code": "000000"})
+_s6, _r6 = api_post("/api/auth/verify", {"user_id": 99999, "code": "000000"})
+check(_s6 == 429, f"OTP verify rate-limited after 5 attempts (got {_s6})")
+
+_limiter._buckets.clear()
+
+# T7: OTP resend returns 429 after 3 attempts (stricter limit)
+_limiter._buckets.clear()
+for _i in range(3):
+    api_post("/api/auth/resend", {"user_id": 99999})
+_s7, _r7 = api_post("/api/auth/resend", {"user_id": 99999})
+check(_s7 == 429, f"OTP resend rate-limited after 3 attempts (got {_s7})")
+
+_limiter._buckets.clear()
+
+# T8: Window expiry — simulate by manipulating timestamps
+import time as _time_mod
+_limiter._buckets.clear()
+_test_key = "login:127.0.0.1:window_test"
+_now = _time_mod.monotonic()
+_limiter._buckets[_test_key] = [_now - 700] * 5  # 5 hits from 700s ago (outside 600s window)
+_t8_ok = _limiter.is_limited(_test_key, 5, 600)
+check(_t8_ok is False, "Rate limiter allows requests after window expires")
+
+_limiter._buckets.clear()
+
+# T9: Successful login resets limiter (normal auth still works)
+_limiter._buckets.clear()
+_s9, _r9 = api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+check(_s9 == 200, f"Normal login succeeds when not rate-limited (got {_s9})")
+
+# T10: After successful login, further attempts are allowed (counter was reset)
+_s10, _ = api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+check(_s10 == 200, "Login after reset still works (counter cleared on success)")
+
+_limiter._buckets.clear()
+
+# T11: prune() removes stale entries
+_limiter._buckets['stale_key'] = [_time_mod.monotonic() - 1000]
+_limiter.prune(max_age=900)
+check('stale_key' not in _limiter._buckets, "prune() removes entries older than max_age")
+
+# T12: 429 response JSON shape is consistent
+_limiter._buckets.clear()
+for _i in range(5):
+    api_post("/api/auth/login", {"username": "shape_test", "password": "wrong"})
+_s12, _r12 = api_post("/api/auth/login", {"username": "shape_test", "password": "wrong"})
+check(_s12 == 429, "429 for JSON shape test")
+check(isinstance(_r12, dict), "429 response is valid JSON dict")
+check(_r12.get('error') == 'Too many attempts. Please try again later.', f"429 error message matches (got {_r12.get('error', '')})")
+
+_limiter._buckets.clear()
+
+# Restore clean state for any subsequent operations
+_limiter._buckets.clear()
+
+
+# ====================================================================
+# Section 54 — CSRF Protection
+# ====================================================================
+print("\n--- 54. CSRF Protection ---")
+
+# Re-login with valid CSRF to start clean
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+
+# T1: GET /api/csrf-token returns a token
+_s54_1, _r54_1 = api_get("/api/csrf-token")
+check(_s54_1 == 200, "GET /api/csrf-token returns 200")
+check(isinstance(_r54_1, dict) and len(_r54_1.get('csrf_token', '')) == 64,
+      f"CSRF token is 64-char hex (got len={len(_r54_1.get('csrf_token', ''))})")
+
+# T2: POST without CSRF token → 403
+_r54_2 = client.post("/api/expenses", json={"description": "csrf-test", "amount": 1, "date": "2026-01-01"},
+                      content_type="application/json")
+check(_r54_2.status_code == 403, f"POST without CSRF token → 403 (got {_r54_2.status_code})")
+_d54_2 = _r54_2.get_json()
+check(_d54_2.get('error') == 'Invalid or missing CSRF token', f"403 error message correct (got {_d54_2.get('error', '')})")
+
+# T3: POST with invalid CSRF token → 403
+_r54_3 = client.post("/api/expenses", json={"description": "csrf-test", "amount": 1, "date": "2026-01-01"},
+                      content_type="application/json", headers={'X-CSRF-Token': 'bad-token-value'})
+check(_r54_3.status_code == 403, f"POST with invalid CSRF token → 403 (got {_r54_3.status_code})")
+
+# T4: POST with valid CSRF token → success
+_s54_4, _r54_4 = api_post("/api/categories", {"id": "csrf_test", "name_he": "csrf_test_cat", "color": "#123456"})
+check(_s54_4 == 200, f"POST with valid CSRF → 200 (got {_s54_4})")
+
+# T5: PUT protected the same way
+_r54_5 = client.put("/api/expenses/999999", json={"description": "x"}, content_type="application/json")
+check(_r54_5.status_code == 403, f"PUT without CSRF → 403 (got {_r54_5.status_code})")
+
+# T6: DELETE protected the same way
+_r54_6 = client.delete("/api/expenses/999999")
+check(_r54_6.status_code == 403, f"DELETE without CSRF → 403 (got {_r54_6.status_code})")
+
+# T7: GET endpoints work without CSRF token
+_r54_7 = client.get("/api/categories")
+check(_r54_7.status_code == 200, "GET /api/categories works without CSRF token")
+
+_r54_7b = client.get("/api/version")
+check(_r54_7b.status_code == 200, "GET /api/version works without CSRF token")
+
+# T8: Login (exempt) works without CSRF token
+_r54_8 = client.post("/api/auth/login", json={"username": "testadmin", "password": "testpass123"},
+                      content_type="application/json")
+check(_r54_8.status_code == 200, f"Login works without CSRF (exempt) (got {_r54_8.status_code})")
+_refresh_csrf()
+
+# T9: Signup (exempt) works without CSRF token
+_r54_9 = client.post("/api/auth/signup", json={"username": "csrftest_user", "password": "testpass123", "email": "csrf@test.com"},
+                      content_type="application/json")
+check(_r54_9.status_code in (200, 409), f"Signup works without CSRF (exempt) (got {_r54_9.status_code})")
+
+# T10: Token is stable within session (same token on repeated calls)
+_s54_10a, _r54_10a = api_get("/api/csrf-token")
+_s54_10b, _r54_10b = api_get("/api/csrf-token")
+check(_r54_10a['csrf_token'] == _r54_10b['csrf_token'], "CSRF token stable within session")
+
+# T11: After logout + re-login, new token is issued
+_old_token = _r54_10a['csrf_token']
+api_post("/api/auth/logout")
+api_post("/api/auth/login", {"username": "testadmin", "password": "testpass123"})
+_s54_11, _r54_11 = api_get("/api/csrf-token")
+check(_r54_11['csrf_token'] != _old_token, "CSRF token rotates after logout+login")
+
+_refresh_csrf()
+
+# T12: Upload endpoint requires CSRF
+import io
+_r54_12 = client.post("/api/import", data={'file': (io.BytesIO(b'test'), 'test.csv')},
+                       content_type='multipart/form-data')
+check(_r54_12.status_code == 403, f"Upload without CSRF → 403 (got {_r54_12.status_code})")
+
+# T13: Upload with valid CSRF passes through to normal validation
+_r54_13 = client.post("/api/import", data={'file': (io.BytesIO(b'test'), 'test.csv')},
+                       content_type='multipart/form-data', headers={'X-CSRF-Token': _csrf_token})
+check(_r54_13.status_code != 403, f"Upload with CSRF passes CSRF check (got {_r54_13.status_code})")
+
+# T14: 403 JSON shape is consistent
+_d54_14 = client.post("/api/expenses", json={}, content_type="application/json").get_json()
+check(isinstance(_d54_14, dict), "CSRF 403 response is valid JSON dict")
+check(list(_d54_14.keys()) == ['error'], f"CSRF 403 response has exactly 'error' key (got {list(_d54_14.keys())})")
+
+# T15: OTP verify (exempt) works without CSRF token
+_r54_15 = client.post("/api/auth/verify", json={"user_id": 99999, "code": "000000"},
+                       content_type="application/json")
+check(_r54_15.status_code != 403, f"OTP verify exempt from CSRF (got {_r54_15.status_code})")
+
+# T16: OTP resend (exempt) works without CSRF token
+_r54_16 = client.post("/api/auth/resend", json={"user_id": 99999},
+                       content_type="application/json")
+check(_r54_16.status_code != 403, f"OTP resend exempt from CSRF (got {_r54_16.status_code})")
 
 
 # ====================================================================
