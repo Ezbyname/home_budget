@@ -3289,6 +3289,7 @@ const I18N = {
     income_imported: 'הכנסות יובאו', visa_skipped: 'חיובי ויזה דולגו (כבר קיימים)',
     duplicates_skipped: 'כפילויות דולגו',
     records_imported: 'רשומות יובאו בהצלחה!', import_error: 'שגיאה',
+    import_no_rows_found: 'לא נמצאו שורות תואמות בקובץ - ייתכן שהפורמט אינו נתמך',
     processing: 'מעבד...',
     files_queued: 'קבצים בתור', upload_btn: 'העלה', clear_queue: 'נקה', remove_file: 'הסר',
     recurring_title: 'זיהוי הוצאות קבועות', recurring_freq: 'תדירות',
@@ -4131,6 +4132,7 @@ const I18N = {
     income_imported: 'income imported', visa_skipped: 'card charges skipped (already exist)',
     duplicates_skipped: 'duplicates skipped',
     records_imported: 'records imported successfully!', import_error: 'Error',
+    import_no_rows_found: 'No matching rows found in this file - the format may not be supported',
     processing: 'Processing...',
     files_queued: 'files queued', upload_btn: 'Upload', clear_queue: 'Clear', remove_file: 'Remove',
     recurring_title: 'Recurring Expense Detection', recurring_freq: 'Frequency',
@@ -7970,15 +7972,19 @@ async function uploadSingleFile(file, resultDiv) {
             trackTipEvent('payslip_upload', data.source_filename || file.name, null);
             flushTipEvents();
             openPayslipReviewModal(data);
-        } else {
+                } else {
             statusEl.className = '';
             const dupLine = data.skipped_duplicates ? `<br><i class="bi bi-copy text-muted"></i> ${data.skipped_duplicates} ${t('duplicates_skipped')}` : '';
             const sourceLabel = data.source === 'visa' ? t('ins_source_card') : 'XLS';
+            const noneImported = !data.imported && !data.skipped_duplicates;
+            const alertClass = noneImported ? 'alert-warning' : 'alert-success';
+            const icon = noneImported ? 'bi-exclamation-triangle' : 'bi-check-circle';
             statusEl.innerHTML = `
-                <div class="alert alert-success py-2 mb-2">
-                    <i class="bi bi-check-circle me-1"></i>
+                <div class="alert ${alertClass} py-2 mb-2">
+                    <i class="bi ${icon} me-1"></i>
                     <b>${file.name}</b> <span class="badge bg-secondary">${sourceLabel}</span> — ${data.imported} ${t('records_imported')}
                     ${data.month ? `(${monthDisplay(data.month)})` : ''}${dupLine}${data.inst_matched ? `<br><i class="bi bi-credit-card-2-front text-primary"></i> ${data.inst_matched} ${t('inst_matched_import')}` : ''}
+                    ${noneImported ? `<br><small>${t('import_no_rows_found')}</small>` : ''}
                 </div>`;
             refreshAll();
         }
