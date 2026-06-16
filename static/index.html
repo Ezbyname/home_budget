@@ -5764,15 +5764,16 @@ async function uploadSingleFile(file, resultDiv) {
         } else {
             statusEl.className = '';
             const dupLine = data.skipped_duplicates ? `<br><i class="bi bi-copy text-muted"></i> ${data.skipped_duplicates} ${t('duplicates_skipped')}` : '';
+            const incomeLine = data.imported_income ? `<br><i class="bi bi-arrow-down-circle text-success"></i> ${data.imported_income} ${t('income_imported')}` : '';
             const sourceLabel = data.source === 'visa' ? t('ins_source_card') : 'XLS';
-            const noneImported = !data.imported && !data.skipped_duplicates;
+            const noneImported = !data.imported && !data.skipped_duplicates && !data.imported_income;
             const alertClass = noneImported ? 'alert-warning' : 'alert-success';
             const icon = noneImported ? 'bi-exclamation-triangle' : 'bi-check-circle';
             statusEl.innerHTML = `
                 <div class="alert ${alertClass} py-2 mb-2">
                     <i class="bi ${icon} me-1"></i>
                     <b>${file.name}</b> <span class="badge bg-secondary">${sourceLabel}</span> — ${data.imported} ${t('records_imported')}
-                    ${data.month ? `(${monthDisplay(data.month)})` : ''}${dupLine}${data.inst_matched ? `<br><i class="bi bi-credit-card-2-front text-primary"></i> ${data.inst_matched} ${t('inst_matched_import')}` : ''}
+                    ${data.month ? `(${monthDisplay(data.month)})` : ''}${incomeLine}${dupLine}${data.inst_matched ? `<br><i class="bi bi-credit-card-2-front text-primary"></i> ${data.inst_matched} ${t('inst_matched_import')}` : ''}
                     ${noneImported ? `<br><small>${t('import_no_rows_found')}</small>` : ''}
                 </div>`;
             refreshAll();
