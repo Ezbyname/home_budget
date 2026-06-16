@@ -2634,8 +2634,72 @@ VISA_CATEGORY_MAP = {
 }
 
 
+def _parse_statement_date(val):
+    """Parse a transaction date cell that may be a real Excel date or a text date
+    like '16.06.26' / '16/06/2026' (common in AMEX/Visa exports). Returns 'YYYY-MM-DD' or None."""
+    import re
+    if not val:
+        return None
+    if hasattr(val, 'strftime'):
+        return val.strftime('%Y-%m-%d')
+    text = str(val).strip()
+    m = re.match(r'^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$', text)
+    if not m:
+        return None
+    day, month, year = m.groups()
+    day, month = int(day), int(month)
+    year = int(year)
+    if year < 100:
+        year += 2000
+    try:
+        return date(year, month, day).strftime('%Y-%m-%d')
+    except ValueError:
+        return None
+
+
+# Header keywords (any one of these in a row marks it as a column-header row)
+_STATEMENT_HEADER_MARKERS = ['תאריך']
+_STATEMENT_COL_ALIASES = {
+    'date': ['תאריך רכישה', 'תאריך עסקה', 'תאריך'],
+    'description': ['שם בית עסק', 'תיאור', 'בית עסק'],
+    'billing_amount': ['סכום חיוב'],
+    'amount': ['סכום עסקה', 'סכום'],
+    'category': ['ענף', 'קטגוריה'],
+}
+
+
+def _find_statement_blocks(sheet):
+    """Scan the whole sheet for header rows (any row containing a date-column marker)
+    and yield (column_map, data_row_range) for each table block found. Supports sheets
+    with multiple statement tables (e.g. 'not yet posted' + 'billed' sections)."""
+    max_row = sheet.max_row
+    max_col = sheet.max_column
+    header_rows = []
+    for row in range(1, max_row + 1):
+        row_vals = [str(sheet.cell(row, col).value or '').strip() for col in range(1, max_col + 1)]
+        if any(any(marker in v for marker in _STATEMENT_HEADER_MARKERS) for v in row_vals):
+            col_map = {}
+            for col, v in enumerate(row_vals, start=1):
+                for field, aliases in _STATEMENT_COL_ALIASES.items():
+                    if field in col_map:
+                        continue
+                    if any(alias in v for alias in aliases):
+                        col_map[field] = col
+                        break
+            if 'date' in col_map:
+                header_rows.append((row, col_map))
+
+    blocks = []
+    for i, (row, col_map) in enumerate(header_rows):
+        next_header_row = header_rows[i + 1][0] if i + 1 < len(header_rows) else max_row + 1
+        blocks.append((col_map, range(row + 1, next_header_row)))
+    return blocks
+
+
 def parse_visa_xlsx(filepath, user_id=None):
-    """Parse Visa credit card XLSX export and import expenses."""
+    """Parse a credit-card statement XLSX export (Visa/AMEX/etc.) and import expenses.
+    Designed to be format-tolerant: locates header rows anywhere in the sheet, supports
+    multiple tables per sheet, and accepts both native Excel dates and text dates."""
     import re
     wb = openpyxl.load_workbook(filepath)
     sheet = wb.active
@@ -2644,95 +2708,85 @@ def parse_visa_xlsx(filepath, user_id=None):
     imported = 0
     skipped = 0
 
-    # Detect card number from row 1 or filename
+    # Detect card label from the first few rows or filename (e.g. "...- 2918")
     card_label = ''
-    row1 = str(sheet.cell(1, 1).value or '')
-    card_match = re.search(r'(\d{4})\s*$', row1)
-    if card_match:
-        card_label = 'ויזה ' + card_match.group(1)
-    else:
+    for row in range(1, min(sheet.max_row + 1, 10)):
+        row_text = ' '.join(str(sheet.cell(row, col).value or '') for col in range(1, sheet.max_column + 1))
+        card_match = re.search(r'(\d{4})\s*$', row_text.strip())
+        if card_match:
+            card_label = 'כרטיס ' + card_match.group(1)
+            break
+    if not card_label:
         fname_match = re.search(r'(\d{4})', os.path.basename(filepath))
         if fname_match:
-            card_label = 'ויזה ' + fname_match.group(1)
+            card_label = 'כרטיס ' + fname_match.group(1)
 
-    # Find the header row (contains 'תאריך')
-    data_start = None
-    for row in range(1, min(sheet.max_row + 1, 10)):
-        val = str(sheet.cell(row, 1).value or '')
-        if 'תאריך' in val:
-            data_start = row + 1
-            break
+    blocks = _find_statement_blocks(sheet)
 
-    # If no header found, data likely starts at row 5 or 6
-    if data_start is None:
-        for row in range(4, 8):
-            val = sheet.cell(row, 1).value
-            if val and hasattr(val, 'strftime'):
-                data_start = row
-                break
+    for col_map, row_range in blocks:
+        date_col = col_map.get('date')
+        desc_col = col_map.get('description')
+        amount_col = col_map.get('billing_amount') or col_map.get('amount')
+        fallback_amount_col = col_map.get('amount')
+        category_col = col_map.get('category')
 
-    if data_start is None:
-        data_start = 6
-
-    for row in range(data_start, sheet.max_row + 1):
-        date_val = sheet.cell(row, 1).value
-        business = sheet.cell(row, 2).value
-        amount_val = sheet.cell(row, 4).value or sheet.cell(row, 3).value  # prefer charge amount
-        visa_category = str(sheet.cell(row, 6).value or '').strip()
-
-        if not date_val or not amount_val:
-            continue
-
-        # Parse date
-        if hasattr(date_val, 'strftime'):
-            expense_date = date_val.strftime('%Y-%m-%d')
-        else:
-            continue
-
-        # Parse amount
-        try:
-            amount = float(str(amount_val).replace(',', ''))
-            if amount <= 0:
+        for row in row_range:
+            date_val = sheet.cell(row, date_col).value if date_col else None
+            expense_date = _parse_statement_date(date_val)
+            if not expense_date:
                 continue
-        except (ValueError, TypeError):
-            continue
 
-        # Map visa category to our category
-        category_id = 'misc'
-        for visa_key, cat_id in VISA_CATEGORY_MAP.items():
-            if visa_key in visa_category:
-                category_id = cat_id
-                break
+            business = sheet.cell(row, desc_col).value if desc_col else None
+            amount_val = (sheet.cell(row, amount_col).value if amount_col else None) or \
+                         (sheet.cell(row, fallback_amount_col).value if fallback_amount_col else None)
+            visa_category = str(sheet.cell(row, category_col).value or '').strip() if category_col else ''
 
-        description = str(business or '').strip()
-        subcategory = visa_category
+            if amount_val is None:
+                continue
 
-        # If still misc, try to reclassify by description
-        if category_id == 'misc' and description:
-            for pattern, cat_id, subcat in VISA_DESCRIPTION_MAP:
-                if pattern in description:
+            try:
+                amount = float(str(amount_val).replace(',', ''))
+                if amount <= 0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            # Map statement category to our category
+            category_id = 'misc'
+            for visa_key, cat_id in VISA_CATEGORY_MAP.items():
+                if visa_key in visa_category:
                     category_id = cat_id
-                    subcategory = subcat
                     break
 
-        # Apply user's saved category/frequency rules
-        category_id, freq = apply_category_rule(conn, description, category_id, user_id=user_id)
+            description = str(business or '').strip()
+            subcategory = visa_category
 
-        # Skip duplicates (same date, description, amount, user)
-        dup = conn.execute(
-            "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-            (expense_date, description, amount, user_id)
-        ).fetchone()[0]
-        if dup:
-            skipped += 1
-            continue
+            # If still misc, try to reclassify by description
+            if category_id == 'misc' and description:
+                for pattern, cat_id, subcat in VISA_DESCRIPTION_MAP:
+                    if pattern in description:
+                        category_id = cat_id
+                        subcategory = subcat
+                        break
 
-        conn.execute(
-            """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency, user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (expense_date, category_id, subcategory, description, amount, 'visa_import', card_label, freq, user_id)
-        )
-        imported += 1
+            # Apply user's saved category/frequency rules
+            category_id, freq = apply_category_rule(conn, description, category_id, user_id=user_id)
+
+            # Skip duplicates (same date, description, amount, user)
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, amount, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, amount, 'visa_import', card_label, freq, user_id)
+            )
+            imported += 1
 
     conn.commit()
     # Auto-link imported transactions to assets/liabilities
@@ -3196,6 +3250,12 @@ def parse_payslip_pdf(filepath, user_id=None):
             full_text += page.get_text() + '\n'
     finally:
         doc.close()
+
+    # Don't assume every PDF is a payslip - check for payslip-identifying content first.
+    _PAYSLIP_MARKERS = ['תלוש שכר', 'תלוש משכורת', 'נטו לתשלום', 'שכר ברוטו', 'ניכויי חובה']
+    if not any(marker in full_text for marker in _PAYSLIP_MARKERS):
+        return {'error': 'not_a_payslip',
+                'message': 'הקובץ שהועלה אינו נראה כתלוש שכר. ייבוא PDF נתמך כרגע רק לתלושי שכר.'}
 
     month_str = _extract_payslip_month(full_text)  # None if not found
     company = _extract_company_name(full_text)
