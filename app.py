@@ -28,7 +28,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.1.0'
+APP_VERSION = '1.2.0'
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
