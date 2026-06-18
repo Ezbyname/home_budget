@@ -20,6 +20,15 @@ import openpyxl
 
 import sys
 
+# Financial Intelligence Engine (Phase 1b)
+try:
+    from intelligence.normalizer import resolve_merchant_key
+    from intelligence.income_normalizer import resolve_income_source, normalize_income_source
+    from intelligence.categorizer import resolve_category, CategoryResult
+    _INTELLIGENCE_AVAILABLE = True
+except ImportError:
+    _INTELLIGENCE_AVAILABLE = False
+
 # When running as a PyInstaller exe, use the exe's directory for data files
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -204,6 +213,76 @@ def apply_category_rule(conn, description, category_id, frequency='random', user
         if freq_row:
             frequency = freq_row['frequency']
     return category_id, frequency
+
+
+def smart_categorize(conn, description: str, amount: float, user_id: int,
+                     visa_category_map=None, bank_expense_patterns=None,
+                     visa_description_map=None) -> 'CategoryResult':
+    """
+    Phase 1b entry point for all importers.
+    Runs the full P1→P5 categorization engine when the intelligence flag is on.
+    Falls back to the legacy apply_category_rule path if the engine is unavailable
+    or the flag is disabled — guaranteeing no importer breaks.
+
+    Always returns a CategoryResult-compatible object. Callers save:
+      category_id, subcategory, frequency from the result
+      plus category_source, categorization_confidence, merchant_key to expenses.
+    """
+    if _INTELLIGENCE_AVAILABLE and is_flag_enabled('merchant_learning', user_id):
+        try:
+            from intelligence.merchant_seed_loader import ensure_seeded
+            ensure_seeded(user_id, conn)
+        except Exception:
+            pass
+        result = resolve_category(
+            description=description,
+            amount=amount,
+            user_id=user_id,
+            conn=conn,
+            visa_category_map=visa_category_map,
+            bank_expense_patterns=bank_expense_patterns,
+            visa_description_map=visa_description_map,
+            apply_legacy_rule_fn=apply_category_rule,
+        )
+        # Enqueue unresolved merchants for future AI review
+        if not result.is_resolved and description:
+            _enqueue_merchant_for_ai(conn, user_id, result.merchant_key, description, amount)
+        return result
+
+    # Legacy fallback — wrap in a CategoryResult-like object
+    cat, freq = apply_category_rule(conn, description, 'misc', 'random', user_id)
+    from types import SimpleNamespace
+    r = SimpleNamespace(
+        category_id=cat, source='legacy', confidence=None,
+        merchant_key='', subcategory='', frequency=freq, is_resolved=True
+    )
+    return r
+
+
+def _enqueue_merchant_for_ai(conn, user_id: int, merchant_key: str,
+                              description: str, amount: float) -> None:
+    """Add a merchant to the AI review queue if not already present and pending."""
+    if not merchant_key or merchant_key == 'UNKNOWN':
+        return
+    existing = conn.execute(
+        "SELECT id FROM ai_review_queue "
+        "WHERE user_id=? AND entity_type='merchant' AND "
+        "json_extract(payload_json,'$.merchant_key')=? AND status='pending'",
+        (user_id, merchant_key)
+    ).fetchone()
+    if existing:
+        return
+    import json as _json
+    conn.execute(
+        """INSERT INTO ai_review_queue
+           (user_id, entity_type, task_type, payload_json, status)
+           VALUES (?, 'merchant', 'categorize', ?, 'pending')""",
+        (user_id, _json.dumps({
+            'merchant_key': merchant_key,
+            'sample_description': description,
+            'sample_amount': amount,
+        }, ensure_ascii=False))
+    )
 
 
 def init_db():
@@ -688,6 +767,28 @@ def init_db():
     if 'is_unusual' not in exp_cols2:
         conn.execute("ALTER TABLE expenses ADD COLUMN is_unusual INTEGER DEFAULT 0")
         conn.commit()
+
+    # Phase 1b: add category source tracking columns to expenses
+    exp_cols3 = [r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()]
+    for col, typedef in [
+        ('category_source',              "TEXT DEFAULT 'legacy'"),
+        ('categorization_confidence',    'REAL DEFAULT NULL'),
+        ('merchant_key',                 "TEXT DEFAULT ''"),
+    ]:
+        if col not in exp_cols3:
+            conn.execute(f"ALTER TABLE expenses ADD COLUMN {col} {typedef}")
+    conn.commit()
+
+    # Phase 1b: add classification tracking columns to income
+    inc_cols = [r[1] for r in conn.execute("PRAGMA table_info(income)").fetchall()]
+    for col, typedef in [
+        ('source_key',                   "TEXT DEFAULT ''"),
+        ('classification_source',        "TEXT DEFAULT 'legacy'"),
+        ('classification_confidence',    'REAL DEFAULT NULL'),
+    ]:
+        if col not in inc_cols:
+            conn.execute(f"ALTER TABLE income ADD COLUMN {col} {typedef}")
+    conn.commit()
 
     # Migration: add new columns to insurance_suggestions for dual-market support
     ins_cols = [r[1] for r in conn.execute("PRAGMA table_info(insurance_suggestions)").fetchall()]
@@ -3175,7 +3276,16 @@ def parse_bank_statement_xls(filepath, user_id=None):
                 if pattern in description:
                     person, source, is_recurring = p, s, rec
                     break
-            if source == 'other' and 'משכורת' in description:
+            # Income intelligence layer
+            inc_source_key, inc_class_source, inc_confidence = '', 'legacy', None
+            if _INTELLIGENCE_AVAILABLE and is_flag_enabled('income_learning', user_id):
+                inc_type, inc_source_key, inc_confidence = resolve_income_source(
+                    description, user_id, conn)
+                if inc_type:
+                    source = inc_type
+                    inc_class_source = 'income_learning'
+                    is_recurring = 1 if inc_type in ('salary', 'pension', 'government') else is_recurring
+            elif source == 'other' and 'משכורת' in description:
                 source = 'salary'
                 is_recurring = 1
 
@@ -3188,20 +3298,23 @@ def parse_bank_statement_xls(filepath, user_id=None):
                 continue
 
             conn.execute(
-                """INSERT INTO income (date, person, source, amount, description, is_recurring, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, person, source, credit, description, is_recurring, user_id)
+                """INSERT INTO income
+                   (date, person, source, amount, description, is_recurring, user_id,
+                    source_key, classification_source, classification_confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, person, source, credit, description, is_recurring, user_id,
+                 inc_source_key, inc_class_source, inc_confidence)
             )
             imported_income += 1
 
         elif debit:
-            category_id, subcategory, frequency = 'misc', description, 'random'
-            for pattern, cat, subcat, freq in BANK_EXPENSE_PATTERNS:
-                if pattern in description:
-                    category_id, subcategory, frequency = cat, subcat, freq
-                    break
-
-            category_id, frequency = apply_category_rule(conn, description, category_id, frequency, user_id=user_id)
+            cat_result = smart_categorize(
+                conn, description, debit, user_id,
+                bank_expense_patterns=BANK_EXPENSE_PATTERNS,
+            )
+            category_id = cat_result.category_id
+            subcategory = cat_result.subcategory or description
+            frequency = cat_result.frequency or 'random'
 
             dup = conn.execute(
                 "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
@@ -3212,10 +3325,17 @@ def parse_bank_statement_xls(filepath, user_id=None):
                 continue
 
             conn.execute(
-                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, card, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, category_id, subcategory, description, debit, 'bank_xls_import', frequency, 'בנק', user_id)
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    frequency, card, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, debit,
+                 'bank_xls_import', frequency, 'בנק', user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
             )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
             imported_expenses += 1
 
     conn.commit()
@@ -3321,15 +3441,13 @@ def parse_card_statement_xls(filepath, user_id=None):
                 continue
 
             amount = amount_val
-            category_id = 'misc'
-            subcategory = ''
-            if description:
-                for pattern, cat_id, subcat in VISA_DESCRIPTION_MAP:
-                    if pattern in description:
-                        category_id, subcategory = cat_id, subcat
-                        break
-
-            category_id, freq = apply_category_rule(conn, description, category_id, user_id=user_id)
+            cat_result = smart_categorize(
+                conn, description, amount, user_id,
+                visa_description_map=VISA_DESCRIPTION_MAP,
+            )
+            category_id = cat_result.category_id
+            subcategory = cat_result.subcategory or ''
+            freq = cat_result.frequency or 'random'
 
             dup = conn.execute(
                 "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
@@ -3340,10 +3458,17 @@ def parse_card_statement_xls(filepath, user_id=None):
                 continue
 
             conn.execute(
-                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, category_id, subcategory, description, amount, 'card_xls_import', card_label, freq, user_id)
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    card, frequency, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, amount,
+                 'card_xls_import', card_label, freq, user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
             )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
             imported += 1
 
     conn.commit()
@@ -3520,20 +3645,18 @@ def parse_visa_xlsx(filepath, user_id=None):
                     break
 
             description = str(business or '').strip()
-            subcategory = visa_category
 
-            # If still misc, try to reclassify by description
-            if category_id == 'misc' and description:
-                for pattern, cat_id, subcat in VISA_DESCRIPTION_MAP:
-                    if pattern in description:
-                        category_id = cat_id
-                        subcategory = subcat
-                        break
+            cat_result = smart_categorize(
+                conn, description, amount, user_id,
+                visa_category_map=VISA_CATEGORY_MAP,
+                visa_description_map=VISA_DESCRIPTION_MAP,
+            )
+            # Prefer the card's own category label as subcategory if the engine didn't set one
+            subcategory = cat_result.subcategory or visa_category or ''
+            category_id = cat_result.category_id
+            freq = cat_result.frequency or 'random'
 
-            # Apply user's saved category/frequency rules
-            category_id, freq = apply_category_rule(conn, description, category_id, user_id=user_id)
-
-            # Skip duplicates (same date, description, amount, user)
+            # Skip duplicates
             dup = conn.execute(
                 "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
                 (expense_date, description, amount, user_id)
@@ -3543,10 +3666,17 @@ def parse_visa_xlsx(filepath, user_id=None):
                 continue
 
             conn.execute(
-                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, category_id, subcategory, description, amount, 'visa_import', card_label, freq, user_id)
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    card, frequency, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, amount,
+                 'visa_import', card_label, freq, user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
             )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
             imported += 1
 
     conn.commit()
@@ -3826,23 +3956,17 @@ def parse_bank_csv(filepath, user_id=None):
             subcategory = ''
             frequency = 'random'
 
-            matched = False
-            for pattern, cat, subcat, freq in BANK_EXPENSE_PATTERNS:
-                if pattern in description:
-                    category_id = cat
-                    subcategory = subcat
-                    frequency = freq
-                    matched = True
-                    break
-
-            if not matched:
-                subcategory = description
+            cat_result = smart_categorize(
+                conn, description, abs_amount, user_id,
+                bank_expense_patterns=BANK_EXPENSE_PATTERNS,
+            )
+            category_id = cat_result.category_id
+            subcategory = cat_result.subcategory or description
+            frequency = cat_result.frequency or 'random'
+            if cat_result.source == 'unresolved':
                 skipped_other += 1
 
-            # Apply user's saved category/frequency rules
-            category_id, frequency = apply_category_rule(conn, description, category_id, frequency, user_id=user_id)
-
-            # Skip duplicates (same date, description, amount, user)
+            # Skip duplicates
             dup = conn.execute(
                 "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
                 (expense_date, description, abs_amount, user_id)
@@ -3852,10 +3976,17 @@ def parse_bank_csv(filepath, user_id=None):
                 continue
 
             conn.execute(
-                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, card, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, category_id, subcategory, description, abs_amount, 'bank_csv', frequency, 'בנק דיסקונט', user_id)
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    frequency, card, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, abs_amount,
+                 'bank_csv', frequency, 'בנק דיסקונט', user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
             )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
             imported_expenses += 1
 
     # Store monthly closing balances
@@ -11225,6 +11356,74 @@ def get_audit_log():
 @login_required
 def get_schema_version_api():
     return jsonify({'schema_version': get_schema_version()})
+
+
+# ── Financial Intelligence: Status / Metrics Endpoint ────────────────────────
+
+@app.route('/api/intelligence/status', methods=['GET'])
+@login_required
+def intelligence_status():
+    uid = get_uid()
+    today = date.today().strftime('%Y-%m-%d')
+    conn = get_db()
+
+    merchant_learning_count = conn.execute(
+        "SELECT COUNT(*) FROM merchant_learning WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+
+    income_learning_count = conn.execute(
+        "SELECT COUNT(*) FROM income_learning WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+
+    categorized_today = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=? AND DATE(created_at)=? "
+        "AND category_source != 'legacy' AND category_id != 'misc'",
+        (uid, today)
+    ).fetchone()[0]
+
+    uncategorized_today = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=? AND DATE(created_at)=? "
+        "AND (category_id='misc' OR category_source='unresolved')",
+        (uid, today)
+    ).fetchone()[0]
+
+    # Coverage score: % of total expenses that are NOT misc/unresolved
+    total_expenses = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+    misc_expenses = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=? AND category_id='misc'",
+        (uid,)
+    ).fetchone()[0]
+    coverage_score = round(
+        ((total_expenses - misc_expenses) / total_expenses * 100) if total_expenses > 0 else 0, 1
+    )
+
+    ai_queue_pending = conn.execute(
+        "SELECT COUNT(*) FROM ai_review_queue WHERE user_id=? AND status='pending'",
+        (uid,)
+    ).fetchone()[0]
+
+    flags = {
+        flag: is_flag_enabled(flag, uid)
+        for flag in ['merchant_learning', 'income_learning', 'smart_cleanup',
+                     'document_intelligence', 'ai_review_queue']
+    }
+
+    conn.close()
+    return jsonify({
+        'merchant_learning_count': merchant_learning_count,
+        'income_learning_count':   income_learning_count,
+        'categorized_today':       categorized_today,
+        'uncategorized_today':     uncategorized_today,
+        'coverage_score':          coverage_score,
+        'total_expenses':          total_expenses,
+        'misc_expenses':           misc_expenses,
+        'ai_queue_pending':        ai_queue_pending,
+        'intelligence_available':  _INTELLIGENCE_AVAILABLE,
+        'schema_version':          get_schema_version(),
+        'feature_flags':           flags,
+    })
 
 def _ai_chat(query, lang, conn, uid=None):
     """Use Claude API to understand the query and generate a structured SQL response."""
