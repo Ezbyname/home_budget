@@ -36,6 +36,12 @@ subprocess.check_call([
     '--hidden-import', 'openpyxl',
     '--hidden-import', 'xlrd',
     '--hidden-import', 'fitz',
+    '--hidden-import', 'intelligence',
+    '--hidden-import', 'intelligence.normalizer',
+    '--hidden-import', 'intelligence.income_normalizer',
+    '--hidden-import', 'intelligence.categorizer',
+    '--hidden-import', 'intelligence.merchant_seed_loader',
+    '--add-data', f'intelligence{os.pathsep}intelligence',
     'app.py',
 ], cwd=BASE)
 
