@@ -2064,20 +2064,56 @@ def update_expense(expense_id):
     conn.execute(f"UPDATE expenses SET {','.join(fields)} WHERE id=? AND user_id=?", values)
 
     propagated = 0
-    # If category changed, update ALL expenses with the same description and save a rule
+    # If category changed, propagate to all expenses with same merchant_key OR description,
+    # and save to merchant_learning so future imports use P1 engine automatically.
     if 'category_id' in data:
-        exp = conn.execute("SELECT description FROM expenses WHERE id=? AND user_id=?", (expense_id, get_uid())).fetchone()
-        if exp and exp['description']:
-            desc = exp['description']
-            cur = conn.execute(
-                "UPDATE expenses SET category_id=? WHERE description=? AND user_id=? AND id!=?",
-                (data['category_id'], desc, get_uid(), expense_id)
-            )
-            propagated = cur.rowcount
-            conn.execute(
-                "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
-                (desc, data['category_id'])
-            )
+        exp = conn.execute(
+            "SELECT description, merchant_key FROM expenses WHERE id=? AND user_id=?",
+            (expense_id, get_uid())
+        ).fetchone()
+        if exp:
+            desc = exp['description'] or ''
+            mkey = exp['merchant_key'] or ''
+            new_cat = data['category_id']
+            uid_ = get_uid()
+
+            # ── 1. Propagate by merchant_key (catches case/spacing variants) ──
+            if mkey:
+                cur = conn.execute(
+                    "UPDATE expenses SET category_id=?, category_source='user' "
+                    "WHERE merchant_key=? AND user_id=? AND id!=?",
+                    (new_cat, mkey, uid_, expense_id)
+                )
+                propagated = cur.rowcount
+
+                # Write/update merchant_learning so ALL future imports use this correction at P1
+                conn.execute(
+                    """INSERT INTO merchant_learning
+                       (user_id, merchant_key, display_name, category_id, confidence, source)
+                       VALUES (?, ?, ?, ?, 0.95, 'user')
+                       ON CONFLICT(user_id, merchant_key)
+                       DO UPDATE SET category_id=excluded.category_id,
+                           confidence=0.95, source='user',
+                           updated_at=CURRENT_TIMESTAMP""",
+                    (uid_, mkey, desc, new_cat)
+                )
+
+            # ── 2. Also propagate by exact description (backward compat / no mkey) ──
+            if desc:
+                cur2 = conn.execute(
+                    "UPDATE expenses SET category_id=?, category_source='user' "
+                    "WHERE description=? AND user_id=? AND id!=? AND (merchant_key='' OR merchant_key IS NULL)",
+                    (new_cat, desc, uid_, expense_id)
+                )
+                propagated += cur2.rowcount
+                conn.execute(
+                    "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
+                    (desc, new_cat)
+                )
+
+            audit(conn, uid_, 'user_correction', 'expense', expense_id,
+                  None, {'category': new_cat, 'merchant_key': mkey, 'propagated': propagated},
+                  'user')
 
     # If frequency changed, update ALL expenses with the same description
     if 'frequency' in data:
@@ -3101,6 +3137,29 @@ def import_file():
         return jsonify({'error': str(e)}), 400
 
 
+def _is_expense_duplicate(conn, date, description, amount, user_id, merchant_key=''):
+    """Return True if this expense is already in the DB.
+
+    Checks by (date, description, amount) first.
+    If merchant_key is known, also checks (date, merchant_key, amount) to catch
+    case/spacing variants of the same merchant (e.g. Netflix.com vs NETFLIX.COM).
+    """
+    # Exact description match
+    if conn.execute(
+        "SELECT 1 FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=? LIMIT 1",
+        (date, description, amount, user_id)
+    ).fetchone():
+        return True
+    # Merchant-key match (catches NETFLIX.COM == Netflix.com)
+    if merchant_key:
+        if conn.execute(
+            "SELECT 1 FROM expenses WHERE date=? AND merchant_key=? AND amount=? AND user_id=? LIMIT 1",
+            (date, merchant_key, amount, user_id)
+        ).fetchone():
+            return True
+    return False
+
+
 def parse_budget_xls(filepath, user_id=None):
     """Parse the Hebrew budget XLS format and import expenses."""
     wb = xlrd.open_workbook(filepath)
@@ -3318,11 +3377,7 @@ def parse_bank_statement_xls(filepath, user_id=None):
             subcategory = cat_result.subcategory or description
             frequency = cat_result.frequency or 'random'
 
-            dup = conn.execute(
-                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-                (expense_date, description, debit, user_id)
-            ).fetchone()[0]
-            if dup:
+            if _is_expense_duplicate(conn, expense_date, description, debit, user_id, cat_result.merchant_key):
                 skipped_dup += 1
                 continue
 
@@ -3451,11 +3506,7 @@ def parse_card_statement_xls(filepath, user_id=None):
             subcategory = cat_result.subcategory or ''
             freq = cat_result.frequency or 'random'
 
-            dup = conn.execute(
-                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-                (expense_date, description, amount, user_id)
-            ).fetchone()[0]
-            if dup:
+            if _is_expense_duplicate(conn, expense_date, description, amount, user_id, cat_result.merchant_key):
                 skipped_dup += 1
                 continue
 
@@ -3659,12 +3710,8 @@ def parse_visa_xlsx(filepath, user_id=None):
             freq = cat_result.frequency or 'random'
 
             # Skip duplicates
-            dup = conn.execute(
-                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-                (expense_date, description, amount, user_id)
-            ).fetchone()[0]
-            if dup:
-                skipped += 1
+            if _is_expense_duplicate(conn, expense_date, description, amount, user_id, cat_result.merchant_key):
+                skipped_dup += 1
                 continue
 
             conn.execute(
@@ -3969,11 +4016,7 @@ def parse_bank_csv(filepath, user_id=None):
                 skipped_other += 1
 
             # Skip duplicates
-            dup = conn.execute(
-                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-                (expense_date, description, abs_amount, user_id)
-            ).fetchone()[0]
-            if dup:
+            if _is_expense_duplicate(conn, expense_date, description, abs_amount, user_id, cat_result.merchant_key):
                 skipped_dup += 1
                 continue
 
@@ -4391,11 +4434,7 @@ def parse_bank_statement_xlsx(filepath, user_id=None):
             if cat_result.source == 'unresolved':
                 skipped_other += 1
 
-            dup = conn.execute(
-                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-                (expense_date, description, abs_amount, user_id)
-            ).fetchone()[0]
-            if dup:
+            if _is_expense_duplicate(conn, expense_date, description, abs_amount, user_id, cat_result.merchant_key):
                 skipped_dup += 1
                 continue
 
