@@ -3083,9 +3083,11 @@ def import_file():
             else:
                 result = parse_budget_xls(filepath, uid)
         elif file.filename.endswith('.xlsx'):
-            # Auto-detect: insurance portfolio vs visa report
+            # Auto-detect: insurance portfolio → bank statement → visa/card
             if _is_insurance_portfolio_xlsx(filepath):
                 result = parse_insurance_portfolio_xlsx(filepath, uid)
+            elif _is_bank_statement_xlsx(filepath):
+                result = parse_bank_statement_xlsx(filepath, uid)
             else:
                 result = parse_visa_xlsx(filepath, uid)
         elif file.filename.endswith('.csv'):
@@ -4216,6 +4218,225 @@ INSURANCE_BRANCH_MAP = {
     'ביטוח עסק': 'general',
     'ביטוח תאונות אישיות': 'general',
 }
+
+
+def _is_bank_statement_xlsx(filepath):
+    """Detect an Israeli bank current-account (עובר ושב) XLSX export.
+
+    Markers: sheet named 'עובר ושב', or a header row containing 'תיאור התנועה'
+    together with 'זכות/חובה' or 'יתרה'.
+    """
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        ws = wb.active
+        if 'עובר ושב' in (ws.title or ''):
+            wb.close()
+            return True
+        # Scan first 10 rows for header markers
+        for row in ws.iter_rows(min_row=1, max_row=10, values_only=True):
+            text = ' '.join(str(v) for v in row if v)
+            if 'תיאור התנועה' in text and ('זכות' in text or 'יתרה' in text):
+                wb.close()
+                return True
+        wb.close()
+        return False
+    except Exception:
+        return False
+
+
+def parse_bank_statement_xlsx(filepath, user_id=None):
+    """Parse a bank current-account (עובר ושב) XLSX export.
+
+    Format (Bank Hapoalim / Leumi / Discount web export):
+      Header row: תאריך | יום ערך | תיאור התנועה | ₪ זכות/חובה | ₪ יתרה | ...
+      Positive amount → income
+      Negative amount → expense
+
+    Mirrors parse_bank_csv logic exactly — same skip patterns, same smart_categorize.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    ws = wb.active
+
+    conn = get_db()
+    imported_expenses = 0
+    imported_income = 0
+    skipped_visa = 0
+    skipped_dup = 0
+    skipped_other = 0
+    month_balances = {}
+
+    # Find header row (contains תיאור התנועה)
+    header_row = None
+    col_date = col_desc = col_amount = col_balance = None
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True), start=1):
+        row_text = [str(v).strip() if v is not None else '' for v in row]
+        if any('תיאור' in c and 'תנועה' in c for c in row_text):
+            header_row = r_idx
+            for ci, h in enumerate(row_text):
+                if 'תאריך' in h and col_date is None:
+                    col_date = ci
+                elif 'תיאור' in h and 'תנועה' in h:
+                    col_desc = ci
+                elif 'זכות' in h or 'חובה' in h:
+                    col_amount = ci
+                elif 'יתרה' in h:
+                    col_balance = ci
+            break
+
+    if header_row is None or col_desc is None or col_amount is None:
+        return {'error': 'Could not find data header row in bank XLSX — expected תיאור התנועה column'}
+
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        raw_date = row[col_date] if col_date is not None and len(row) > col_date else None
+        raw_desc = row[col_desc] if len(row) > col_desc else None
+        raw_amount = row[col_amount] if len(row) > col_amount else None
+        raw_balance = row[col_balance] if col_balance is not None and len(row) > col_balance else None
+
+        if not raw_desc or not raw_amount:
+            continue
+
+        # Parse date
+        try:
+            if hasattr(raw_date, 'strftime'):
+                expense_date = raw_date.strftime('%Y-%m-%d')
+            else:
+                date_str = str(raw_date).strip()[:10]
+                expense_date = date_str  # already YYYY-MM-DD from some exports
+            year, month_num = int(expense_date[:4]), int(expense_date[5:7])
+        except Exception:
+            continue
+
+        description = str(raw_desc).strip()
+
+        # Parse amount
+        try:
+            amount = float(str(raw_amount).replace(',', '').strip())
+        except (ValueError, TypeError):
+            continue
+
+        if amount == 0:
+            continue
+
+        # Track running balance for month-end closing
+        if raw_balance is not None:
+            try:
+                balance_val = float(str(raw_balance).replace(',', '').strip())
+                row_month = f"{year}-{month_num:02d}"
+                if row_month not in month_balances or expense_date >= month_balances[row_month][1]:
+                    month_balances[row_month] = (balance_val, expense_date)
+            except (ValueError, TypeError):
+                pass
+
+        # Skip credit-card charge summary lines (same as CSV parser)
+        should_skip = any(pat in description for pat in BANK_SKIP_PATTERNS)
+        if should_skip:
+            skipped_visa += 1
+            continue
+
+        # ── INCOME (positive) ────────────────────────────────────────────────
+        if amount > 0:
+            person = 'family'
+            source = 'other'
+            is_recurring = 0
+            for pattern, p, s, rec in BANK_INCOME_PATTERNS:
+                if pattern in description:
+                    person = p; source = s; is_recurring = rec
+                    break
+
+            # Intelligence engine — income classification
+            source_key = ''
+            classification_source = 'legacy'
+            classification_confidence = None
+            if _INTELLIGENCE_AVAILABLE:
+                try:
+                    from intelligence.income_normalizer import resolve_income_source
+                    inc_type, source_key, inc_conf = resolve_income_source(description, user_id, conn)
+                    if inc_type:
+                        source = inc_type
+                        classification_source = 'income_normalizer'
+                        classification_confidence = inc_conf
+                except Exception:
+                    pass
+
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM income WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, amount, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO income
+                   (date, person, source, amount, description, is_recurring, user_id,
+                    source_key, classification_source, classification_confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, person, source, amount, description, is_recurring, user_id,
+                 source_key, classification_source, classification_confidence)
+            )
+            audit(conn, user_id, 'import_income', 'income', None,
+                  None, {'source': source, 'amount': amount, 'description': description},
+                  'bank_xlsx')
+            imported_income += 1
+
+        # ── EXPENSE (negative) ───────────────────────────────────────────────
+        else:
+            abs_amount = abs(amount)
+            cat_result = smart_categorize(
+                conn, description, abs_amount, user_id,
+                bank_expense_patterns=BANK_EXPENSE_PATTERNS,
+            )
+            if cat_result.source == 'unresolved':
+                skipped_other += 1
+
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, abs_amount, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    frequency, card, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, cat_result.category_id, cat_result.subcategory or description,
+                 description, abs_amount, 'bank_xlsx', cat_result.frequency or 'random',
+                 'בנק', user_id, cat_result.source, cat_result.confidence, cat_result.merchant_key)
+            )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': cat_result.category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
+            imported_expenses += 1
+
+    # Save month-end balances
+    balances_saved = 0
+    for month_str, (balance, last_date) in month_balances.items():
+        conn.execute("""INSERT OR REPLACE INTO bank_balances
+            (user_id, account_name, month, closing_balance, last_transaction_date)
+            VALUES (?, 'main', ?, ?, ?)""", (user_id, month_str, balance, last_date))
+        balances_saved += 1
+
+    conn.commit()
+    link_result = run_linking_engine(user_id)
+    inst_match = run_installment_matching(user_id)
+    conn.close()
+    return {
+        'status': 'ok',
+        'imported_expenses': imported_expenses,
+        'imported_income': imported_income,
+        'skipped_visa': skipped_visa,
+        'skipped_duplicates': skipped_dup,
+        'balances_saved': balances_saved,
+        'auto_linked': link_result.get('auto_linked', 0),
+        'link_suggestions': link_result.get('suggested', 0),
+        'inst_matched': inst_match.get('auto_matched', 0),
+        'source': 'bank_xlsx'
+    }
 
 
 def _is_insurance_portfolio_xlsx(filepath):
