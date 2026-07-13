@@ -377,10 +377,41 @@
                 </div>
             </div>
 
-            <!-- Standing Orders -->
+            <!-- Fixed Expenses Summary Bar -->
+            <div class="card p-3 mb-3" id="fixedVariableBar" style="display:none">
+                <div class="section-title mb-2"><i class="bi bi-pie-chart-fill"></i><span data-t="fixed_var_title">הוצאות קבועות מול משתנות</span></div>
+                <div class="d-flex gap-3 flex-wrap align-items-center">
+                    <div class="text-center flex-fill">
+                        <div class="small text-muted" data-t="fixed_expenses">קבועות</div>
+                        <div class="fw-bold fs-5" id="fixedTotalAmount" style="color:#e67e22">—</div>
+                    </div>
+                    <div class="text-center flex-fill">
+                        <div class="small text-muted" data-t="variable_expenses">משתנות</div>
+                        <div class="fw-bold fs-5" id="variableTotalAmount" style="color:#3498db">—</div>
+                    </div>
+                    <div class="text-center flex-fill">
+                        <div class="small text-muted" data-t="th_total">סה"כ</div>
+                        <div class="fw-bold fs-5" id="totalExpenseAmount">—</div>
+                    </div>
+                </div>
+                <div class="mt-2" id="fixedVariableBar_progress">
+                    <div class="progress" style="height:10px;border-radius:6px">
+                        <div class="progress-bar" id="fixedProgressBar" role="progressbar"
+                             style="background:#e67e22;width:0%"></div>
+                        <div class="progress-bar" id="variableProgressBar" role="progressbar"
+                             style="background:#3498db;width:0%"></div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-1">
+                        <small class="text-muted" id="fixedPct"></small>
+                        <small class="text-muted" id="variablePct"></small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Fixed Expenses (הוצאות קבועות) -->
             <div class="card p-3 mb-4">
                 <div class="d-flex justify-content-between align-items-center mb-2">
-                    <div class="section-title mb-0"><i class="bi bi-arrow-repeat"></i><span data-t="so_title">הוראות קבע</span></div>
+                    <div class="section-title mb-0"><i class="bi bi-arrow-repeat"></i><span data-t="so_title">הוצאות קבועות</span></div>
                     <span id="standingOrdersBadge" class="badge bg-primary rounded-pill" style="display:none"></span>
                 </div>
                 <div class="small text-muted mb-2" data-t="so_desc">תשלומים חודשיים קבועים</div>
@@ -392,6 +423,7 @@
                                 <th data-t="th_category" data-sort="category_name" onclick="sortStandingOrders('category_name')">קטגוריה</th>
                                 <th data-t="th_amount" data-sort="amount" onclick="sortStandingOrders('amount')">סכום</th>
                                 <th data-t="inst_card" data-sort="card" onclick="sortStandingOrders('card')">כרטיס</th>
+                                <th data-t="so_months" style="min-width:60px">חודשים</th>
                             </tr>
                         </thead>
                         <tbody id="standingOrdersBody"></tbody>
@@ -2708,7 +2740,7 @@ const I18N = {
     tip_action_view_entertainment: 'צפה בבילויים', tip_action_view_installments: 'צפה בתשלומים',
     tip_action_view_insurance: 'בדוק ביטוחים', tip_action_view_income: 'צפה בהכנסות',
     tip_action_view_net_worth: 'צפה בנכסים', tip_action_view_bank: 'צפה ביתרות',
-    tip_action_run_analysis: 'הפעל ניתוח', tip_action_view_standing_orders: 'צפה בהוראות קבע',
+    tip_action_run_analysis: 'הפעל ניתוח', tip_action_view_standing_orders: 'צפה בהוצאות קבועות',
     tip_action_view_subscriptions: 'צפה במנויים', tip_action_view_dining_out: 'צפה באוכל בחוץ',
     tip_action_view_salary: 'צפו בתלושי שכר',
     tip_action_check_vacation: 'בדקו יתרת חופשה',
@@ -3017,9 +3049,9 @@ const I18N = {
     inst_trend_increasing: 'נוספו {count} תוכניות חדשות לאחרונה ({amount}/חודש)',
     // Standing Orders
     tip_collapse: 'סגור',
-    so_title: 'הוראות קבע', so_desc: 'תשלומים חודשיים קבועים',
-    so_no_orders: 'לא נמצאו הוראות קבע', so_total_monthly: 'סה"כ חודשי',
-    so_count: 'הוראות קבע',
+    so_title: 'הוצאות קבועות', so_desc: 'תשלומים חודשיים קבועים (זוהו אוטומטית + סומנו ידנית)',
+    so_no_orders: 'לא נמצאו הוצאות קבועות', so_total_monthly: 'סה"כ חודשי קבוע',
+    so_count: 'הוצאות קבועות', so_months: 'חודשים', fixed_var_title: 'קבועות מול משתנות',
     currency_label: 'מטבע:',
     // Tutorial
     tut_welcome_title: '!ברוכים הבאים',
@@ -3551,7 +3583,7 @@ const I18N = {
     tip_action_view_entertainment: 'View Entertainment', tip_action_view_installments: 'View Installments',
     tip_action_view_insurance: 'Check Insurance', tip_action_view_income: 'View Income',
     tip_action_view_net_worth: 'View Assets', tip_action_view_bank: 'View Balances',
-    tip_action_run_analysis: 'Run Analysis', tip_action_view_standing_orders: 'View Standing Orders',
+    tip_action_run_analysis: 'Run Analysis', tip_action_view_standing_orders: 'View Fixed Expenses',
     tip_action_view_subscriptions: 'View Subscriptions', tip_action_view_dining_out: 'View Dining Out',
     tip_action_view_salary: 'View Payslips',
     tip_action_check_vacation: 'Check vacation balance',
@@ -3860,9 +3892,9 @@ const I18N = {
     inst_trend_increasing: '{count} new plans added recently ({amount}/mo)',
     // Standing Orders
     tip_collapse: 'Collapse',
-    so_title: 'Standing Orders', so_desc: 'Fixed monthly payments',
-    so_no_orders: 'No standing orders found', so_total_monthly: 'Total Monthly',
-    so_count: 'Standing Orders',
+    so_title: 'Fixed Expenses', so_desc: 'Fixed monthly payments (auto-detected + manually marked)',
+    so_no_orders: 'No fixed expenses found', so_total_monthly: 'Total Fixed Monthly',
+    so_count: 'Fixed Expenses', so_months: 'Months', fixed_var_title: 'Fixed vs Variable',
     currency_label: 'Currency:',
     // Tutorial
     tut_welcome_title: 'Welcome!',
@@ -5276,6 +5308,22 @@ function renderTrustBanner(data) {
     // Fixed bills
     if (data.fixed_monthly_total > 0) {
         segments.push(`<i class="bi bi-receipt"></i> ${tParams('trust_fixed_bills', {amount: fmt(data.fixed_monthly_total)})}`);
+        // Update fixed/variable bar
+        const fixed = data.fixed_monthly_total || 0;
+        const variable = data.variable_monthly_total || 0;
+        const totalExp = fixed + variable;
+        if (totalExp > 0) {
+            const fxPct = Math.round(fixed / totalExp * 100);
+            const varPct = 100 - fxPct;
+            document.getElementById('fixedTotalAmount').textContent = fmt(fixed);
+            document.getElementById('variableTotalAmount').textContent = fmt(variable);
+            document.getElementById('totalExpenseAmount').textContent = fmt(totalExp);
+            document.getElementById('fixedProgressBar').style.width = fxPct + '%';
+            document.getElementById('variableProgressBar').style.width = varPct + '%';
+            document.getElementById('fixedPct').textContent = `קבועות ${fxPct}%`;
+            document.getElementById('variablePct').textContent = `משתנות ${varPct}%`;
+            document.getElementById('fixedVariableBar').style.display = '';
+        }
     }
 
     if (segments.length === 0) {
@@ -5447,7 +5495,7 @@ async function loadStandingOrders() {
     standingOrdersData = await api('/api/standing-orders') || [];
 
     if (!standingOrdersData.length) {
-        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted py-3">${t('so_no_orders')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-3">${t('so_no_orders')}</td></tr>`;
         tfoot.innerHTML = '';
         badge.style.display = 'none';
         return;
@@ -5463,15 +5511,18 @@ function renderStandingOrderRows(orders) {
     const badge = document.getElementById('standingOrdersBadge');
     const total = orders.reduce((s, o) => s + o.amount, 0);
 
+    const sourceIcon = src => src === 'monthly' ? '📌' : src === 'auto_category' ? '🔄' : '📊';
+
     tbody.innerHTML = orders.map(o => `
         <tr>
-            <td>${esc(o.description || '-')}</td>
+            <td>${esc(o.description || '-')} <span title="${esc(o.detection_source || '')}">${sourceIcon(o.detection_source)}</span></td>
             <td><span class="category-badge" style="background:${o.category_color}">${esc(o.category_name)}</span></td>
             <td class="amount">${fmtDecimal(o.amount)}</td>
             <td>${formatSource(o)}</td>
+            <td class="text-center text-muted small">${o.month_count || '—'}</td>
         </tr>`).join('');
 
-    tfoot.innerHTML = `<tr class="fw-bold"><td>${t('so_total_monthly')}</td><td></td><td class="amount">${fmtDecimal(total)}</td><td></td></tr>`;
+    tfoot.innerHTML = `<tr class="fw-bold"><td>${t('so_total_monthly')}</td><td></td><td class="amount">${fmtDecimal(total)}</td><td></td><td></td></tr>`;
 
     badge.textContent = `${orders.length} ${t('so_count')}`;
     badge.style.display = '';

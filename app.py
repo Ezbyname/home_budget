@@ -37,7 +37,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.4.1'
+APP_VERSION = '1.4.2'
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -1969,19 +1969,85 @@ def add_category():
 @app.route('/api/standing-orders', methods=['GET'])
 @login_required
 def get_standing_orders():
-    """Return latest occurrence of each monthly expense (grouped by description)."""
+    """
+    Return fixed (recurring) expenses: union of
+      1. Expenses explicitly marked frequency='monthly'
+      2. Expenses whose merchant_key appears in 2+ distinct months in the last 6 months
+         AND whose category is inherently fixed (communication, subscriptions, insurance,
+         mortgage, education, vehicle-recurring)
+      3. Any merchant_key that appears in 3+ distinct months regardless of category
+    Deduped by merchant_key (or description if no merchant_key).
+    """
+    uid = get_uid()
     conn = get_db()
-    rows = conn.execute("""
-        SELECT e.description, e.category_id, c.name_he as category_name,
-               c.color as category_color, e.card, e.amount, MAX(e.date) as last_date
+
+    # --- Set 1: explicitly marked monthly ---
+    marked = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(e.merchant_key,''), e.description) AS key,
+            e.description, e.category_id, c.name_he AS category_name,
+            c.color AS category_color, e.card,
+            AVG(e.amount) AS amount, MAX(e.date) AS last_date,
+            COUNT(DISTINCT substr(e.date,1,7)) AS month_count,
+            'monthly' AS detection_source
         FROM expenses e
         JOIN categories c ON e.category_id = c.id
         WHERE e.frequency = 'monthly' AND e.user_id = ?
-        GROUP BY e.description
-        ORDER BY e.amount DESC
-    """, (get_uid(),)).fetchall()
+        GROUP BY key
+    """, (uid,)).fetchall()
+
+    # --- Set 2: auto-detected by merchant_key recurrence (last 6 months) ---
+    # Categories that are inherently fixed: need 2+ months
+    fixed_cats = ('communication', 'subscriptions', 'insurance', 'mortgage', 'education')
+    fixed_cats_sql = ','.join('?' * len(fixed_cats))
+
+    auto_fixed_cat = conn.execute(f"""
+        SELECT
+            COALESCE(NULLIF(e.merchant_key,''), e.description) AS key,
+            e.description, e.category_id, c.name_he AS category_name,
+            c.color AS category_color, e.card,
+            AVG(e.amount) AS amount, MAX(e.date) AS last_date,
+            COUNT(DISTINCT substr(e.date,1,7)) AS month_count,
+            'auto_category' AS detection_source
+        FROM expenses e
+        JOIN categories c ON e.category_id = c.id
+        WHERE e.user_id = ?
+          AND e.category_id IN ({fixed_cats_sql})
+          AND e.date >= date('now','-6 months')
+        GROUP BY key
+        HAVING COUNT(DISTINCT substr(e.date,1,7)) >= 2
+    """, (uid, *fixed_cats)).fetchall()
+
+    # Any merchant appearing 3+ distinct months in last 6 months
+    auto_freq = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(e.merchant_key,''), e.description) AS key,
+            e.description, e.category_id, c.name_he AS category_name,
+            c.color AS category_color, e.card,
+            AVG(e.amount) AS amount, MAX(e.date) AS last_date,
+            COUNT(DISTINCT substr(e.date,1,7)) AS month_count,
+            'auto_freq' AS detection_source
+        FROM expenses e
+        JOIN categories c ON e.category_id = c.id
+        WHERE e.user_id = ?
+          AND e.date >= date('now','-6 months')
+          AND e.category_id != 'food'
+        GROUP BY key
+        HAVING COUNT(DISTINCT substr(e.date,1,7)) >= 3
+    """, (uid,)).fetchall()
+
     conn.close()
-    return jsonify([dict(r) for r in rows])
+
+    # Merge, dedup by key — prefer marked > auto_category > auto_freq
+    seen: dict = {}
+    for row in list(marked) + list(auto_fixed_cat) + list(auto_freq):
+        d = dict(row)
+        k = d['key']
+        if k not in seen:
+            seen[k] = d
+
+    result = sorted(seen.values(), key=lambda x: -x['amount'])
+    return jsonify(result)
 
 
 # --- Expenses API ---
@@ -2474,13 +2540,40 @@ def get_summary():
             sorted_d = sorted(sal_days)
             salary_day = sorted_d[len(sorted_d) // 2]
 
-    # Upcoming fixed expenses (monthly standing orders total)
-    fixed_total = conn.execute(
-        """SELECT COALESCE(SUM(amount), 0) FROM (
-            SELECT amount FROM expenses WHERE user_id=? AND frequency='monthly'
-            GROUP BY description)""",
-        (uid,)
-    ).fetchone()[0]
+    # Fixed vs variable split for the current month.
+    # Fixed = explicitly monthly + inherently fixed categories + appears 3+ months in last 6
+    _fixed_cats = ('communication', 'subscriptions', 'insurance', 'mortgage', 'education')
+    _fixed_cats_sql = ','.join('?' * len(_fixed_cats))
+
+    # Merchant keys that appear 3+ distinct months in last 6
+    recurring_keys_rows = conn.execute("""
+        SELECT COALESCE(NULLIF(merchant_key,''), description) AS key
+        FROM expenses
+        WHERE user_id=? AND date >= date('now','-6 months') AND category_id != 'food'
+        GROUP BY key
+        HAVING COUNT(DISTINCT substr(date,1,7)) >= 3
+    """, (uid,)).fetchall()
+    recurring_keys = {r['key'] for r in recurring_keys_rows}
+
+    # Fixed expenses this month: monthly-marked OR fixed-category OR recurring merchant
+    month_expenses_for_split = conn.execute(
+        "SELECT amount, category_id, frequency, COALESCE(NULLIF(merchant_key,''), description) AS key "
+        "FROM expenses WHERE user_id=? AND date LIKE ?",
+        (uid, month + '%')
+    ).fetchall()
+
+    fixed_total = 0.0
+    variable_total = 0.0
+    for row in month_expenses_for_split:
+        is_fixed = (
+            row['frequency'] == 'monthly'
+            or row['category_id'] in _fixed_cats
+            or row['key'] in recurring_keys
+        )
+        if is_fixed:
+            fixed_total += row['amount']
+        else:
+            variable_total += row['amount']
 
     conn.close()
     return jsonify({
@@ -2501,6 +2594,7 @@ def get_summary():
         'last_bank_import': last_bank_import,
         'salary_day': salary_day,
         'fixed_monthly_total': round(fixed_total, 0),
+        'variable_monthly_total': round(variable_total, 0),
     })
 
 
