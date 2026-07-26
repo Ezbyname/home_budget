@@ -7,3 +7,4 @@ build/
 .secret_key
 uploads/
 installer/
+GH_PAT.txt
