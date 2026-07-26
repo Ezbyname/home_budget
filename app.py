@@ -12181,12 +12181,21 @@ def admin_chat_satisfaction():
 
 if __name__ == '__main__':
     if getattr(sys, 'frozen', False):
-        import webbrowser
-        import threading
-        threading.Timer(1.5, lambda: webbrowser.open('http://127.0.0.1:5000')).start()
-        print('=== מעקב הוצאות משפחתי ===')
-        print('האפליקציה רצה בכתובת: http://127.0.0.1:5000')
-        print('לסגירה: סגרו חלון זה או לחצו Ctrl+C')
-        app.run(debug=False, port=5000)
+        import webview
+
+        server_thread = threading.Thread(
+            target=lambda: app.run(debug=False, port=5000, use_reloader=False),
+            daemon=True,
+        )
+        server_thread.start()
+
+        webview.create_window(
+            'מעקב הוצאות משפחתי',
+            'http://127.0.0.1:5000',
+            width=1280,
+            height=860,
+            min_size=(900, 600),
+        )
+        webview.start()
     else:
         app.run(debug=True, port=5000)
