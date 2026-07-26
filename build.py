@@ -29,7 +29,7 @@ subprocess.check_call([
     sys.executable, '-m', 'PyInstaller',
     '--noconfirm',
     '--onefile',
-    '--console',
+    '--windowed',
     '--name', EXE_NAME,
     '--icon', 'app.ico',
     '--add-data', f'static{os.pathsep}static',
@@ -41,6 +41,9 @@ subprocess.check_call([
     '--hidden-import', 'intelligence.income_normalizer',
     '--hidden-import', 'intelligence.categorizer',
     '--hidden-import', 'intelligence.merchant_seed_loader',
+    '--hidden-import', 'webview.platforms.edgechromium',
+    '--hidden-import', 'webview.platforms.winforms',
+    '--collect-data', 'webview',
     '--add-data', f'intelligence{os.pathsep}intelligence',
     'app.py',
 ], cwd=BASE)
