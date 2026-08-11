@@ -37,7 +37,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.4.3'
+APP_VERSION = '1.4.4'
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -1669,6 +1669,25 @@ def auth_login():
     session['user_id'] = user['id']
     session['username'] = user['username']
     return jsonify({'status': 'ok', 'username': user['username']})
+
+
+@app.route('/pywebview-start')
+def pywebview_start():
+    if not getattr(sys, 'frozen', False):
+        return '', 403
+    conn = get_db()
+    row = conn.execute("""
+        SELECT u.id, u.username FROM users u
+        LEFT JOIN expenses e ON e.user_id = u.id
+        GROUP BY u.id ORDER BY COUNT(e.id) DESC LIMIT 1
+    """).fetchone()
+    conn.close()
+    if row:
+        session.permanent = True
+        session['user_id'] = row['id']
+        session['username'] = row['username']
+    from flask import redirect
+    return redirect('/')
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -12191,7 +12210,7 @@ if __name__ == '__main__':
 
         webview.create_window(
             'מעקב הוצאות משפחתי',
-            'http://127.0.0.1:5000',
+            'http://127.0.0.1:5000/pywebview-start',
             width=1280,
             height=860,
             min_size=(900, 600),
