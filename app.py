@@ -30,14 +30,19 @@ except ImportError:
     _INTELLIGENCE_AVAILABLE = False
 
 # When running as a PyInstaller exe, use the exe's directory for data files
-if getattr(sys, 'frozen', False):
+_FROZEN = getattr(sys, 'frozen', False)
+if _FROZEN:
     BASE_DIR = os.path.dirname(sys.executable)
     STATIC_DIR = os.path.join(sys._MEIPASS, 'static')
 else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.4.4'
+APP_VERSION = '1.4.5'
+
+# In frozen (PyWebView) mode the app is single-user on a local machine.
+# Authentication adds no security value — auto-login as the user with most data.
+_PYWEBVIEW_AUTO_USER_ID = None   # resolved once on first request
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -1355,9 +1360,30 @@ def generate_otp():
     return str(random.randint(100000, 999999))
 
 
+def _get_pywebview_user_id():
+    """Return the default user id for PyWebView single-user mode."""
+    global _PYWEBVIEW_AUTO_USER_ID
+    if _PYWEBVIEW_AUTO_USER_ID is None:
+        conn = get_db()
+        row = conn.execute("""
+            SELECT u.id FROM users u
+            LEFT JOIN expenses e ON e.user_id = u.id
+            GROUP BY u.id ORDER BY COUNT(e.id) DESC LIMIT 1
+        """).fetchone()
+        conn.close()
+        _PYWEBVIEW_AUTO_USER_ID = row['id'] if row else 1
+    return _PYWEBVIEW_AUTO_USER_ID
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if _FROZEN:
+            # PyWebView single-user mode — no login needed
+            if 'user_id' not in session:
+                session['user_id'] = _get_pywebview_user_id()
+                session.permanent = True
+            return f(*args, **kwargs)
         if 'user_id' not in session:
             return jsonify({'error': 'Not authenticated'}), 401
         return f(*args, **kwargs)
@@ -1380,6 +1406,9 @@ def admin_required(f):
 
 def get_uid():
     """Return current user's id from session."""
+    if _FROZEN and 'user_id' not in session:
+        session['user_id'] = _get_pywebview_user_id()
+        session.permanent = True
     return session['user_id']
 
 
@@ -1505,14 +1534,22 @@ def auth_page():
 def auth_status():
     """Check if user is logged in and if any users exist."""
     has_users = has_any_users()
+    if _FROZEN and 'user_id' not in session:
+        uid = _get_pywebview_user_id()
+        session['user_id'] = uid
+        session.permanent = True
     logged_in = 'user_id' in session
     username = session.get('username', '')
     is_admin = False
     if logged_in:
         conn = get_db()
-        user = conn.execute("SELECT is_admin FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        user = conn.execute("SELECT username, is_admin FROM users WHERE id=?", (session['user_id'],)).fetchone()
         conn.close()
-        is_admin = bool(user and user['is_admin'])
+        if user:
+            is_admin = bool(user['is_admin'])
+            if not username:
+                username = user['username']
+                session['username'] = username
     return jsonify({
         'has_users': has_users,
         'logged_in': logged_in,
@@ -1671,29 +1708,38 @@ def auth_login():
     return jsonify({'status': 'ok', 'username': user['username']})
 
 
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    session.clear()
+    return jsonify({'status': 'ok'})
+
+
 @app.route('/pywebview-start')
 def pywebview_start():
+    """
+    Auto-login entry point for PyWebView (frozen exe only).
+    Logs in as the user with the most expenses, then redirects to the app.
+    This endpoint is ONLY reachable from within the PyWebView window (loopback).
+    """
     if not getattr(sys, 'frozen', False):
-        return '', 403
+        return '', 403  # block in dev mode
+
     conn = get_db()
+    # Pick user with most data; fall back to first user
     row = conn.execute("""
         SELECT u.id, u.username FROM users u
         LEFT JOIN expenses e ON e.user_id = u.id
         GROUP BY u.id ORDER BY COUNT(e.id) DESC LIMIT 1
     """).fetchone()
     conn.close()
+
     if row:
         session.permanent = True
         session['user_id'] = row['id']
         session['username'] = row['username']
+
     from flask import redirect
     return redirect('/')
-
-
-@app.route('/api/auth/logout', methods=['POST'])
-def auth_logout():
-    session.clear()
-    return jsonify({'status': 'ok'})
 
 
 @app.route('/api/reset-data', methods=['POST'])
@@ -12201,6 +12247,18 @@ def admin_chat_satisfaction():
 if __name__ == '__main__':
     if getattr(sys, 'frozen', False):
         import webview
+
+        # Clear stale WebView2 cache so old service workers don't block new HTML
+        import shutil
+        for _cache_path in [
+            os.path.join(os.environ.get('APPDATA', ''), 'pywebview'),
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'pywebview'),
+        ]:
+            if os.path.isdir(_cache_path):
+                try:
+                    shutil.rmtree(_cache_path)
+                except Exception:
+                    pass
 
         server_thread = threading.Thread(
             target=lambda: app.run(debug=False, port=5000, use_reloader=False),

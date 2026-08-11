@@ -8,6 +8,14 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <link href="/static/css/style.css" rel="stylesheet">
+    <script>
+    // Unregister any old service workers (from previous exe versions)
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(regs => {
+            regs.forEach(r => r.unregister());
+        });
+    }
+    </script>
 </head>
 <body>
 
@@ -16,7 +24,7 @@
     <div class="container">
         <div class="d-flex align-items-center gap-2">
             <span class="navbar-brand mb-0"><i class="bi bi-wallet2 me-2"></i><span data-t="app_title">ניהול תקציב משפחתי</span></span>
-            <span id="appVersion" class="text-white-50" style="font-size:.65rem;opacity:.5">v1.0.1000011</span>
+            <span id="appVersion" class="text-white-50" style="font-size:.85rem;opacity:.85;font-weight:500">v1.0.1000011</span>
         </div>
         <div class="d-flex align-items-center gap-3">
             <!-- Budget Plan Selector -->
@@ -80,7 +88,7 @@
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openAiSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f5f3ff;color:#8b5cf6;font-size:.9rem"><i class="bi bi-robot"></i></span><span data-t="nav_ai_settings">הגדרות AI</span></a></li>
                     <li id="navResetItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="resetAllData();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-arrow-counterclockwise"></i></span><span data-t="reset_data">איפוס נתונים</span></a></li>
                     <li id="navAuthItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="showAuthModal('login');return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#eef2ff;color:#4f46e5;font-size:.9rem"><i class="bi bi-box-arrow-in-left"></i></span><span data-t="auth_login">התחבר</span></a></li>
-                    <li id="navLogoutItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-box-arrow-left"></i></span><span data-t="nav_logout">יציאה</span></a></li>
+                    <li id="navLogoutItem"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-box-arrow-left"></i></span><span data-t="nav_logout">יציאה / החלף משתמש</span></a></li>
                 </ul>
             </div>
         </div>
