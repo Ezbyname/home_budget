@@ -20,15 +20,29 @@ import openpyxl
 
 import sys
 
+# Financial Intelligence Engine (Phase 1b)
+try:
+    from intelligence.normalizer import resolve_merchant_key
+    from intelligence.income_normalizer import resolve_income_source, normalize_income_source
+    from intelligence.categorizer import resolve_category, CategoryResult
+    _INTELLIGENCE_AVAILABLE = True
+except ImportError:
+    _INTELLIGENCE_AVAILABLE = False
+
 # When running as a PyInstaller exe, use the exe's directory for data files
-if getattr(sys, 'frozen', False):
+_FROZEN = getattr(sys, 'frozen', False)
+if _FROZEN:
     BASE_DIR = os.path.dirname(sys.executable)
     STATIC_DIR = os.path.join(sys._MEIPASS, 'static')
 else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.1.0'
+APP_VERSION = '1.4.5'
+
+# In frozen (PyWebView) mode the app is single-user on a local machine.
+# Authentication adds no security value — auto-login as the user with most data.
+_PYWEBVIEW_AUTO_USER_ID = None   # resolved once on first request
 
 # ---- Smart Tips Configuration ----
 TIP_CONFIG = {
@@ -204,6 +218,76 @@ def apply_category_rule(conn, description, category_id, frequency='random', user
         if freq_row:
             frequency = freq_row['frequency']
     return category_id, frequency
+
+
+def smart_categorize(conn, description: str, amount: float, user_id: int,
+                     visa_category_map=None, bank_expense_patterns=None,
+                     visa_description_map=None) -> 'CategoryResult':
+    """
+    Phase 1b entry point for all importers.
+    Runs the full P1→P5 categorization engine when the intelligence flag is on.
+    Falls back to the legacy apply_category_rule path if the engine is unavailable
+    or the flag is disabled — guaranteeing no importer breaks.
+
+    Always returns a CategoryResult-compatible object. Callers save:
+      category_id, subcategory, frequency from the result
+      plus category_source, categorization_confidence, merchant_key to expenses.
+    """
+    if _INTELLIGENCE_AVAILABLE and is_flag_enabled('merchant_learning', user_id):
+        try:
+            from intelligence.merchant_seed_loader import ensure_seeded
+            ensure_seeded(user_id, conn)
+        except Exception:
+            pass
+        result = resolve_category(
+            description=description,
+            amount=amount,
+            user_id=user_id,
+            conn=conn,
+            visa_category_map=visa_category_map,
+            bank_expense_patterns=bank_expense_patterns,
+            visa_description_map=visa_description_map,
+            apply_legacy_rule_fn=apply_category_rule,
+        )
+        # Enqueue unresolved merchants for future AI review
+        if not result.is_resolved and description:
+            _enqueue_merchant_for_ai(conn, user_id, result.merchant_key, description, amount)
+        return result
+
+    # Legacy fallback — wrap in a CategoryResult-like object
+    cat, freq = apply_category_rule(conn, description, 'misc', 'random', user_id)
+    from types import SimpleNamespace
+    r = SimpleNamespace(
+        category_id=cat, source='legacy', confidence=None,
+        merchant_key='', subcategory='', frequency=freq, is_resolved=True
+    )
+    return r
+
+
+def _enqueue_merchant_for_ai(conn, user_id: int, merchant_key: str,
+                              description: str, amount: float) -> None:
+    """Add a merchant to the AI review queue if not already present and pending."""
+    if not merchant_key or merchant_key == 'UNKNOWN':
+        return
+    existing = conn.execute(
+        "SELECT id FROM ai_review_queue "
+        "WHERE user_id=? AND entity_type='merchant' AND "
+        "json_extract(payload_json,'$.merchant_key')=? AND status='pending'",
+        (user_id, merchant_key)
+    ).fetchone()
+    if existing:
+        return
+    import json as _json
+    conn.execute(
+        """INSERT INTO ai_review_queue
+           (user_id, entity_type, task_type, payload_json, status)
+           VALUES (?, 'merchant', 'categorize', ?, 'pending')""",
+        (user_id, _json.dumps({
+            'merchant_key': merchant_key,
+            'sample_description': description,
+            'sample_amount': amount,
+        }, ensure_ascii=False))
+    )
 
 
 def init_db():
@@ -689,6 +773,28 @@ def init_db():
         conn.execute("ALTER TABLE expenses ADD COLUMN is_unusual INTEGER DEFAULT 0")
         conn.commit()
 
+    # Phase 1b: add category source tracking columns to expenses
+    exp_cols3 = [r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()]
+    for col, typedef in [
+        ('category_source',              "TEXT DEFAULT 'legacy'"),
+        ('categorization_confidence',    'REAL DEFAULT NULL'),
+        ('merchant_key',                 "TEXT DEFAULT ''"),
+    ]:
+        if col not in exp_cols3:
+            conn.execute(f"ALTER TABLE expenses ADD COLUMN {col} {typedef}")
+    conn.commit()
+
+    # Phase 1b: add classification tracking columns to income
+    inc_cols = [r[1] for r in conn.execute("PRAGMA table_info(income)").fetchall()]
+    for col, typedef in [
+        ('source_key',                   "TEXT DEFAULT ''"),
+        ('classification_source',        "TEXT DEFAULT 'legacy'"),
+        ('classification_confidence',    'REAL DEFAULT NULL'),
+    ]:
+        if col not in inc_cols:
+            conn.execute(f"ALTER TABLE income ADD COLUMN {col} {typedef}")
+    conn.commit()
+
     # Migration: add new columns to insurance_suggestions for dual-market support
     ins_cols = [r[1] for r in conn.execute("PRAGMA table_info(insurance_suggestions)").fetchall()]
     for col, default in [('currency', "'ILS'"), ('normalized_merchant', "''"), ('dedupe_key', "''"), ('suggested_market', "''")]:
@@ -744,10 +850,494 @@ def init_db():
                 (cat_id, name_he, color, i)
             )
     conn.commit()
+
+    # ── Phase 1a: Financial Intelligence Platform ────────────────────────────
+    # All blocks use IF NOT EXISTS / column-exists checks — safe on existing DBs.
+
+    # 1. categories: add parent_id for hierarchy support
+    cat_cols = [r[1] for r in conn.execute("PRAGMA table_info(categories)").fetchall()]
+    if 'parent_id' not in cat_cols:
+        conn.execute("ALTER TABLE categories ADD COLUMN parent_id TEXT DEFAULT NULL")
+        conn.commit()
+
+    # 2. schema_version — tracks migration state
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            version INTEGER NOT NULL DEFAULT 0,
+            applied_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            description TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        INSERT OR IGNORE INTO schema_version (id, version, description)
+        VALUES (1, 1, 'phase_1a_financial_intelligence')
+    """)
+
+    # 3. feature_flags — gates all new intelligence code paths
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feature_flags (
+            flag_name TEXT NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT -1,  -- -1 = global default, otherwise user id
+            is_enabled INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (flag_name, user_id)
+        )
+    """)
+    # Seed global defaults (user_id=-1 means global) — all OFF until explicitly enabled
+    default_flags = [
+        ('merchant_learning',       0),
+        ('income_learning',         0),
+        ('smart_cleanup',           0),
+        ('document_intelligence',   0),
+        ('ai_review_queue',         0),
+        ('financial_health_score',  0),
+    ]
+    for flag, enabled in default_flags:
+        conn.execute(
+            "INSERT OR IGNORE INTO feature_flags (flag_name, user_id, is_enabled) VALUES (?, -1, ?)",
+            (flag, enabled)
+        )
+
+    # 4. audit_log — immutable record of every mutation
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT,
+            old_value TEXT,
+            new_value TEXT,
+            source TEXT DEFAULT 'user',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_user_time ON audit_log(user_id, created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id)")
+
+    # 5. financial_entities — canonical registry for employers, funds, insurers, etc.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS financial_entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,                      -- NULL = system/seed entity
+            entity_type TEXT NOT NULL,            -- employer|pension_fund|insurer|bank|landlord|government
+            canonical_name TEXT NOT NULL,
+            normalized_key TEXT NOT NULL,
+            confidence REAL DEFAULT 1.0,
+            source TEXT DEFAULT 'user',           -- user|document|seed
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, normalized_key)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fe_user_type ON financial_entities(user_id, entity_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_fe_key ON financial_entities(normalized_key)")
+
+    # 6. merchant_learning — per-user learned merchant→category mappings
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_learning (
+            user_id INTEGER NOT NULL,
+            merchant_key TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            category_id TEXT NOT NULL,
+            confidence REAL DEFAULT 0.5,
+            times_confirmed INTEGER DEFAULT 0,
+            times_rejected INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'learned',        -- learned|user|ai|rule|document
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, merchant_key),
+            FOREIGN KEY (category_id) REFERENCES categories(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ml_category ON merchant_learning(user_id, category_id)")
+
+    # 7. merchant_aliases — raw text → canonical merchant_key, per user
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_aliases (
+            user_id INTEGER NOT NULL,
+            raw_text TEXT NOT NULL,
+            merchant_key TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, raw_text)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ma_key ON merchant_aliases(user_id, merchant_key)")
+
+    # 8. merchant_fingerprints — keyword + amount + timing patterns per merchant
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS merchant_fingerprints (
+            user_id INTEGER NOT NULL,
+            merchant_key TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            amount_min REAL,
+            amount_max REAL,
+            category_id TEXT NOT NULL,
+            weight REAL DEFAULT 1.0,
+            typical_day_of_month INTEGER,         -- 1–31, NULL = no pattern
+            frequency_pattern TEXT DEFAULT NULL,  -- monthly|weekly|annual|irregular
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, merchant_key, keyword),
+            FOREIGN KEY (category_id) REFERENCES categories(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mfp_key ON merchant_fingerprints(user_id, merchant_key)")
+
+    # 9. income_learning — per-user learned income source→type mappings
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS income_learning (
+            user_id INTEGER NOT NULL,
+            source_key TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            income_type TEXT NOT NULL,
+            -- salary|business|rental|investment|pension|government|
+            -- tax_refund|insurance_claim|gift|internal|other_income
+            confidence REAL DEFAULT 0.5,
+            times_confirmed INTEGER DEFAULT 0,
+            times_rejected INTEGER DEFAULT 0,
+            source TEXT DEFAULT 'learned',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, source_key)
+        )
+    """)
+
+    # 10. income_aliases — raw text → canonical source_key, per user
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS income_aliases (
+            user_id INTEGER NOT NULL,
+            raw_text TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, raw_text)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_key ON income_aliases(user_id, source_key)")
+
+    # 11. document_archive — permanent store of every uploaded file
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS document_archive (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            original_filename TEXT,
+            file_hash TEXT NOT NULL,
+            stored_path TEXT NOT NULL,
+            mime_type TEXT,
+            document_family TEXT,
+            document_type TEXT,
+            institution TEXT,
+            classification_confidence REAL,
+            uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_processed_at TEXT,
+            reprocess_count INTEGER DEFAULT 0,
+            UNIQUE(user_id, file_hash)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_da_user ON document_archive(user_id, uploaded_at)")
+
+    # 12. document_fingerprints — cache successful classifications for instant future lookup
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS document_fingerprints (
+            fingerprint_hash TEXT PRIMARY KEY,    -- hash of normalized header+structure signals
+            document_family TEXT NOT NULL,
+            document_type TEXT,
+            institution TEXT,
+            confidence REAL NOT NULL DEFAULT 0.9,
+            times_matched INTEGER DEFAULT 1,
+            last_matched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 13. document_entity_signals — entities extracted from documents
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS document_entity_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_archive_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            entity_type TEXT NOT NULL,            -- employer|insurer|pension_fund|landlord|government
+            entity_value TEXT NOT NULL,
+            normalized_key TEXT,
+            income_type TEXT,
+            confidence REAL DEFAULT 0.9,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (document_archive_id) REFERENCES document_archive(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_des_doc ON document_entity_signals(document_archive_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_des_user ON document_entity_signals(user_id, entity_type)")
+
+    # 14. import_staging — universal pre-import buffer for all entity types
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS import_staging (
+            id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            source_document_id TEXT,
+            document_family TEXT,
+            entity_type TEXT NOT NULL,            -- transaction|salary|pension|insurance|loan
+            semantic_contract TEXT,               -- ledger_transaction_v1|payslip_v1|...
+            extraction_method TEXT DEFAULT 'deterministic',
+            confidence TEXT DEFAULT 'high',       -- high|medium|low
+            confidence_score REAL DEFAULT 1.0,
+            payload TEXT NOT NULL,                -- JSON
+            status TEXT DEFAULT 'pending',        -- pending|approved|edited|rejected
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_is_batch ON import_staging(batch_id, user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_is_status ON import_staging(user_id, status)")
+
+    # 15. entity_field_definitions — metadata-driven review UI field rendering
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS entity_field_definitions (
+            entity_type TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            label_he TEXT,
+            label_en TEXT,
+            field_type TEXT DEFAULT 'text',       -- date|amount|text|enum|boolean
+            is_required INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            PRIMARY KEY (entity_type, field_name)
+        )
+    """)
+    # Seed field definitions for known entity types
+    field_defs = [
+        ('transaction', 'date',        'תאריך',       'Date',         'date',   1, 1),
+        ('transaction', 'description', 'תיאור',       'Description',  'text',   1, 2),
+        ('transaction', 'amount',      'סכום',        'Amount',       'amount', 1, 3),
+        ('transaction', 'direction',   'סוג',         'Type',         'enum',   1, 4),
+        ('transaction', 'category',    'קטגוריה',     'Category',     'enum',   1, 5),
+        ('salary',      'month',       'חודש',        'Month',        'text',   1, 1),
+        ('salary',      'employer',    'מעסיק',       'Employer',     'text',   1, 2),
+        ('salary',      'gross',       'ברוטו',       'Gross',        'amount', 1, 3),
+        ('salary',      'net',         'נטו',         'Net',          'amount', 1, 4),
+        ('salary',      'tax',         'מס הכנסה',   'Income Tax',   'amount', 0, 5),
+        ('salary',      'pension_employee', 'פנסיה עובד', 'Pension Employee', 'amount', 0, 6),
+        ('pension',     'fund_name',   'שם הקרן',     'Fund Name',    'text',   1, 1),
+        ('pension',     'statement_date', 'תאריך דוח', 'Statement Date', 'date', 1, 2),
+        ('pension',     'balance',     'יתרה',        'Balance',      'amount', 1, 3),
+        ('pension',     'employee_contribution', 'הפקדת עובד', 'Employee Contribution', 'amount', 0, 4),
+        ('pension',     'employer_contribution', 'הפקדת מעסיק', 'Employer Contribution', 'amount', 0, 5),
+        ('insurance',   'insurer',     'חברת ביטוח',  'Insurer',      'text',   1, 1),
+        ('insurance',   'policy_number', 'מספר פוליסה', 'Policy Number', 'text', 0, 2),
+        ('insurance',   'coverage_type', 'סוג כיסוי', 'Coverage Type', 'text',  1, 3),
+        ('insurance',   'monthly_premium', 'פרמיה חודשית', 'Monthly Premium', 'amount', 1, 4),
+        ('insurance',   'renewal_date', 'תאריך חידוש', 'Renewal Date', 'date',  0, 5),
+    ]
+    for fd in field_defs:
+        conn.execute(
+            "INSERT OR IGNORE INTO entity_field_definitions "
+            "(entity_type, field_name, label_he, label_en, field_type, is_required, sort_order) "
+            "VALUES (?,?,?,?,?,?,?)", fd
+        )
+
+    # 16. reclassification_jobs + undo snapshots
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reclassification_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            entity_class TEXT DEFAULT 'expense',  -- expense|income
+            merchant_key TEXT,
+            source_key TEXT,
+            from_category_id TEXT,                -- NULL = any
+            to_category_id TEXT NOT NULL,
+            affected_count INTEGER DEFAULT 0,
+            executed_count INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',        -- pending|executed|rolled_back
+            trigger_source TEXT DEFAULT 'user',   -- user|auto_engine|document_import
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            executed_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rcj_user ON reclassification_jobs(user_id, status)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reclassification_undo (
+            job_id INTEGER NOT NULL,
+            table_name TEXT NOT NULL,             -- expenses|income
+            row_id INTEGER NOT NULL,
+            original_category_id TEXT,
+            original_subcategory TEXT,
+            original_income_type TEXT,
+            PRIMARY KEY (job_id, table_name, row_id),
+            FOREIGN KEY (job_id) REFERENCES reclassification_jobs(id)
+        )
+    """)
+
+    # 17. ai_review_queue — generic queue for all future AI tasks
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_review_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            entity_type TEXT NOT NULL,            -- merchant|income_source|document|transaction
+            task_type TEXT NOT NULL,              -- categorize|classify|detect_anomaly|extract
+            payload_json TEXT NOT NULL,           -- full context sent to AI
+            suggested_value TEXT,                 -- AI suggested result
+            confidence REAL,
+            reasoning TEXT,
+            status TEXT DEFAULT 'pending',        -- pending|approved|rejected|changed
+            reviewed_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_arq_user_status ON ai_review_queue(user_id, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_arq_entity ON ai_review_queue(user_id, entity_type, task_type)")
+
+    # 18. Seed canonical category hierarchy (parent_id for new subcategories)
+    # Existing top-level IDs are preserved exactly. Only new child IDs are inserted.
+    subcategory_seed = [
+        # (id, name_he, color, parent_id, sort_order)
+        ('mortgage',       'משכנתא',                   '#4e79a7', 'housing',      10),
+        ('rent',           'שכר דירה',                 '#4e79a7', 'housing',      11),
+        ('electricity',    'חשמל',                     '#4e79a7', 'housing',      12),
+        ('arnona',         'ארנונה ומים',               '#4e79a7', 'housing',      13),
+        ('gas_home',       'גז',                       '#4e79a7', 'housing',      14),
+        ('vaad_bayit',     'ועד בית',                  '#4e79a7', 'housing',      15),
+        ('fuel',           'דלק',                      '#76b7b2', 'vehicle',      10),
+        ('vehicle_maint',  'אחזקת רכב',               '#76b7b2', 'vehicle',      11),
+        ('vehicle_ins',    'ביטוח רכב',               '#76b7b2', 'vehicle',      12),
+        ('parking',        'חניה וכבישי אגרה',         '#76b7b2', 'vehicle',      13),
+        ('public_transit', 'תחבורה ציבורית',            '#76b7b2', 'vehicle',      14),
+        ('mobile',         'טלפון נייד',               '#59a14f', 'communication', 10),
+        ('internet',       'אינטרנט',                  '#59a14f', 'communication', 11),
+        ('tv_cable',       'טלוויזיה וכבלים',          '#59a14f', 'communication', 12),
+        ('health_ins',     'ביטוח בריאות',             '#ff9da7', 'insurance',    10),
+        ('life_ins',       'ביטוח חיים',               '#ff9da7', 'insurance',    11),
+        ('home_ins',       'ביטוח דירה',               '#ff9da7', 'insurance',    12),
+        ('dental',         'שיניים',                   '#b07aa1', 'medical',      10),
+        ('pharmacy',       'תרופות ובית מרקחת',         '#b07aa1', 'medical',      11),
+        ('alt_medicine',   'רפואה משלימה',             '#b07aa1', 'medical',      12),
+        ('savings_general','חסכון כללי',               '#4dc9f6', 'savings',      10),
+        ('savings_housing','חסכון לדירה',              '#4dc9f6', 'savings',      11),
+        ('savings_vehicle','חסכון לרכב',               '#4dc9f6', 'savings',      12),
+        ('pension_contrib','הפקדות פנסיה',             '#4dc9f6', 'savings',      13),
+    ]
+    existing_cats = {r[0] for r in conn.execute("SELECT id FROM categories").fetchall()}
+    for cat_id, name_he, color, parent_id, sort_order in subcategory_seed:
+        if cat_id not in existing_cats:
+            conn.execute(
+                "INSERT INTO categories (id, name_he, color, parent_id, sort_order) VALUES (?,?,?,?,?)",
+                (cat_id, name_he, color, parent_id, sort_order)
+            )
+
+    conn.commit()
     conn.close()
 
 
 init_db()
+
+
+# ── Financial Intelligence: Feature Flag Service ─────────────────────────────
+
+_flag_cache: dict = {}
+
+def is_flag_enabled(flag_name: str, user_id: int = None) -> bool:
+    """
+    Check whether a feature flag is enabled.
+    Resolution order: user-specific override → global default → False.
+    user_id=None checks the global default only.
+    Results are in-process cached (cleared on set_flag).
+    """
+    cache_key = (flag_name, user_id)
+    if cache_key in _flag_cache:
+        return _flag_cache[cache_key]
+
+    conn = get_db()
+    result = False
+    try:
+        if user_id is not None:
+            # User-specific override takes precedence
+            row = conn.execute(
+                "SELECT is_enabled FROM feature_flags WHERE flag_name=? AND user_id=?",
+                (flag_name, user_id)
+            ).fetchone()
+            if row is not None:
+                result = bool(row['is_enabled'])
+                _flag_cache[cache_key] = result
+                return result
+        # Global default (user_id = -1)
+        row = conn.execute(
+            "SELECT is_enabled FROM feature_flags WHERE flag_name=? AND user_id=-1",
+            (flag_name,)
+        ).fetchone()
+        result = bool(row['is_enabled']) if row else False
+    finally:
+        conn.close()
+
+    _flag_cache[cache_key] = result
+    return result
+
+
+def set_flag(flag_name: str, enabled: bool, user_id: int = None) -> None:
+    """Set a feature flag and clear the relevant cache entries."""
+    db_uid = user_id if user_id is not None else -1
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO feature_flags (flag_name, user_id, is_enabled, updated_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(flag_name, user_id)
+           DO UPDATE SET is_enabled=excluded.is_enabled, updated_at=excluded.updated_at""",
+        (flag_name, db_uid, 1 if enabled else 0)
+    )
+    conn.commit()
+    conn.close()
+    _flag_cache.pop((flag_name, user_id), None)
+    _flag_cache.pop((flag_name, None), None)
+
+
+# ── Financial Intelligence: Audit Log Service ────────────────────────────────
+
+def audit(conn, user_id: int, action_type: str, entity_type: str,
+          entity_id: str = None, old_value=None, new_value=None,
+          source: str = 'user') -> None:
+    """
+    Write one immutable audit record.
+    Call inside any transaction that mutates financial data.
+
+    action_type examples:
+        category_changed, ai_approved, ai_rejected,
+        reclassification_executed, reclassification_rolled_back,
+        income_type_changed, merchant_learned, merchant_deleted,
+        flag_changed, migration_applied
+    """
+    import json as _json
+    conn.execute(
+        """INSERT INTO audit_log
+           (user_id, action_type, entity_type, entity_id, old_value, new_value, source)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            user_id,
+            action_type,
+            entity_type,
+            str(entity_id) if entity_id is not None else None,
+            _json.dumps(old_value, ensure_ascii=False) if old_value is not None else None,
+            _json.dumps(new_value, ensure_ascii=False) if new_value is not None else None,
+            source,
+        )
+    )
+
+
+# ── Financial Intelligence: Schema Version Helper ────────────────────────────
+
+def get_schema_version() -> int:
+    conn = get_db()
+    row = conn.execute("SELECT version FROM schema_version WHERE id=1").fetchone()
+    conn.close()
+    return row['version'] if row else 0
+
+
+def bump_schema_version(new_version: int, description: str = '') -> None:
+    conn = get_db()
+    conn.execute(
+        """UPDATE schema_version SET version=?, applied_at=CURRENT_TIMESTAMP, description=?
+           WHERE id=1""",
+        (new_version, description)
+    )
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
@@ -770,9 +1360,30 @@ def generate_otp():
     return str(random.randint(100000, 999999))
 
 
+def _get_pywebview_user_id():
+    """Return the default user id for PyWebView single-user mode."""
+    global _PYWEBVIEW_AUTO_USER_ID
+    if _PYWEBVIEW_AUTO_USER_ID is None:
+        conn = get_db()
+        row = conn.execute("""
+            SELECT u.id FROM users u
+            LEFT JOIN expenses e ON e.user_id = u.id
+            GROUP BY u.id ORDER BY COUNT(e.id) DESC LIMIT 1
+        """).fetchone()
+        conn.close()
+        _PYWEBVIEW_AUTO_USER_ID = row['id'] if row else 1
+    return _PYWEBVIEW_AUTO_USER_ID
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if _FROZEN:
+            # PyWebView single-user mode — no login needed
+            if 'user_id' not in session:
+                session['user_id'] = _get_pywebview_user_id()
+                session.permanent = True
+            return f(*args, **kwargs)
         if 'user_id' not in session:
             return jsonify({'error': 'Not authenticated'}), 401
         return f(*args, **kwargs)
@@ -795,6 +1406,9 @@ def admin_required(f):
 
 def get_uid():
     """Return current user's id from session."""
+    if _FROZEN and 'user_id' not in session:
+        session['user_id'] = _get_pywebview_user_id()
+        session.permanent = True
     return session['user_id']
 
 
@@ -920,14 +1534,22 @@ def auth_page():
 def auth_status():
     """Check if user is logged in and if any users exist."""
     has_users = has_any_users()
+    if _FROZEN and 'user_id' not in session:
+        uid = _get_pywebview_user_id()
+        session['user_id'] = uid
+        session.permanent = True
     logged_in = 'user_id' in session
     username = session.get('username', '')
     is_admin = False
     if logged_in:
         conn = get_db()
-        user = conn.execute("SELECT is_admin FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        user = conn.execute("SELECT username, is_admin FROM users WHERE id=?", (session['user_id'],)).fetchone()
         conn.close()
-        is_admin = bool(user and user['is_admin'])
+        if user:
+            is_admin = bool(user['is_admin'])
+            if not username:
+                username = user['username']
+                session['username'] = username
     return jsonify({
         'has_users': has_users,
         'logged_in': logged_in,
@@ -1090,6 +1712,34 @@ def auth_login():
 def auth_logout():
     session.clear()
     return jsonify({'status': 'ok'})
+
+
+@app.route('/pywebview-start')
+def pywebview_start():
+    """
+    Auto-login entry point for PyWebView (frozen exe only).
+    Logs in as the user with the most expenses, then redirects to the app.
+    This endpoint is ONLY reachable from within the PyWebView window (loopback).
+    """
+    if not getattr(sys, 'frozen', False):
+        return '', 403  # block in dev mode
+
+    conn = get_db()
+    # Pick user with most data; fall back to first user
+    row = conn.execute("""
+        SELECT u.id, u.username FROM users u
+        LEFT JOIN expenses e ON e.user_id = u.id
+        GROUP BY u.id ORDER BY COUNT(e.id) DESC LIMIT 1
+    """).fetchone()
+    conn.close()
+
+    if row:
+        session.permanent = True
+        session['user_id'] = row['id']
+        session['username'] = row['username']
+
+    from flask import redirect
+    return redirect('/')
 
 
 @app.route('/api/reset-data', methods=['POST'])
@@ -1384,19 +2034,85 @@ def add_category():
 @app.route('/api/standing-orders', methods=['GET'])
 @login_required
 def get_standing_orders():
-    """Return latest occurrence of each monthly expense (grouped by description)."""
+    """
+    Return fixed (recurring) expenses: union of
+      1. Expenses explicitly marked frequency='monthly'
+      2. Expenses whose merchant_key appears in 2+ distinct months in the last 6 months
+         AND whose category is inherently fixed (communication, subscriptions, insurance,
+         mortgage, education, vehicle-recurring)
+      3. Any merchant_key that appears in 3+ distinct months regardless of category
+    Deduped by merchant_key (or description if no merchant_key).
+    """
+    uid = get_uid()
     conn = get_db()
-    rows = conn.execute("""
-        SELECT e.description, e.category_id, c.name_he as category_name,
-               c.color as category_color, e.card, e.amount, MAX(e.date) as last_date
+
+    # --- Set 1: explicitly marked monthly ---
+    marked = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(e.merchant_key,''), e.description) AS key,
+            e.description, e.category_id, c.name_he AS category_name,
+            c.color AS category_color, e.card,
+            AVG(e.amount) AS amount, MAX(e.date) AS last_date,
+            COUNT(DISTINCT substr(e.date,1,7)) AS month_count,
+            'monthly' AS detection_source
         FROM expenses e
         JOIN categories c ON e.category_id = c.id
         WHERE e.frequency = 'monthly' AND e.user_id = ?
-        GROUP BY e.description
-        ORDER BY e.amount DESC
-    """, (get_uid(),)).fetchall()
+        GROUP BY key
+    """, (uid,)).fetchall()
+
+    # --- Set 2: auto-detected by merchant_key recurrence (last 6 months) ---
+    # Categories that are inherently fixed: need 2+ months
+    fixed_cats = ('communication', 'subscriptions', 'insurance', 'mortgage', 'education')
+    fixed_cats_sql = ','.join('?' * len(fixed_cats))
+
+    auto_fixed_cat = conn.execute(f"""
+        SELECT
+            COALESCE(NULLIF(e.merchant_key,''), e.description) AS key,
+            e.description, e.category_id, c.name_he AS category_name,
+            c.color AS category_color, e.card,
+            AVG(e.amount) AS amount, MAX(e.date) AS last_date,
+            COUNT(DISTINCT substr(e.date,1,7)) AS month_count,
+            'auto_category' AS detection_source
+        FROM expenses e
+        JOIN categories c ON e.category_id = c.id
+        WHERE e.user_id = ?
+          AND e.category_id IN ({fixed_cats_sql})
+          AND e.date >= date('now','-6 months')
+        GROUP BY key
+        HAVING COUNT(DISTINCT substr(e.date,1,7)) >= 2
+    """, (uid, *fixed_cats)).fetchall()
+
+    # Any merchant appearing 3+ distinct months in last 6 months
+    auto_freq = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(e.merchant_key,''), e.description) AS key,
+            e.description, e.category_id, c.name_he AS category_name,
+            c.color AS category_color, e.card,
+            AVG(e.amount) AS amount, MAX(e.date) AS last_date,
+            COUNT(DISTINCT substr(e.date,1,7)) AS month_count,
+            'auto_freq' AS detection_source
+        FROM expenses e
+        JOIN categories c ON e.category_id = c.id
+        WHERE e.user_id = ?
+          AND e.date >= date('now','-6 months')
+          AND e.category_id != 'food'
+        GROUP BY key
+        HAVING COUNT(DISTINCT substr(e.date,1,7)) >= 3
+    """, (uid,)).fetchall()
+
     conn.close()
-    return jsonify([dict(r) for r in rows])
+
+    # Merge, dedup by key — prefer marked > auto_category > auto_freq
+    seen: dict = {}
+    for row in list(marked) + list(auto_fixed_cat) + list(auto_freq):
+        d = dict(row)
+        k = d['key']
+        if k not in seen:
+            seen[k] = d
+
+    result = sorted(seen.values(), key=lambda x: -x['amount'])
+    return jsonify(result)
 
 
 # --- Expenses API ---
@@ -1479,20 +2195,56 @@ def update_expense(expense_id):
     conn.execute(f"UPDATE expenses SET {','.join(fields)} WHERE id=? AND user_id=?", values)
 
     propagated = 0
-    # If category changed, update ALL expenses with the same description and save a rule
+    # If category changed, propagate to all expenses with same merchant_key OR description,
+    # and save to merchant_learning so future imports use P1 engine automatically.
     if 'category_id' in data:
-        exp = conn.execute("SELECT description FROM expenses WHERE id=? AND user_id=?", (expense_id, get_uid())).fetchone()
-        if exp and exp['description']:
-            desc = exp['description']
-            cur = conn.execute(
-                "UPDATE expenses SET category_id=? WHERE description=? AND user_id=? AND id!=?",
-                (data['category_id'], desc, get_uid(), expense_id)
-            )
-            propagated = cur.rowcount
-            conn.execute(
-                "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
-                (desc, data['category_id'])
-            )
+        exp = conn.execute(
+            "SELECT description, merchant_key FROM expenses WHERE id=? AND user_id=?",
+            (expense_id, get_uid())
+        ).fetchone()
+        if exp:
+            desc = exp['description'] or ''
+            mkey = exp['merchant_key'] or ''
+            new_cat = data['category_id']
+            uid_ = get_uid()
+
+            # ── 1. Propagate by merchant_key (catches case/spacing variants) ──
+            if mkey:
+                cur = conn.execute(
+                    "UPDATE expenses SET category_id=?, category_source='user' "
+                    "WHERE merchant_key=? AND user_id=? AND id!=?",
+                    (new_cat, mkey, uid_, expense_id)
+                )
+                propagated = cur.rowcount
+
+                # Write/update merchant_learning so ALL future imports use this correction at P1
+                conn.execute(
+                    """INSERT INTO merchant_learning
+                       (user_id, merchant_key, display_name, category_id, confidence, source)
+                       VALUES (?, ?, ?, ?, 0.95, 'user')
+                       ON CONFLICT(user_id, merchant_key)
+                       DO UPDATE SET category_id=excluded.category_id,
+                           confidence=0.95, source='user',
+                           updated_at=CURRENT_TIMESTAMP""",
+                    (uid_, mkey, desc, new_cat)
+                )
+
+            # ── 2. Also propagate by exact description (backward compat / no mkey) ──
+            if desc:
+                cur2 = conn.execute(
+                    "UPDATE expenses SET category_id=?, category_source='user' "
+                    "WHERE description=? AND user_id=? AND id!=? AND (merchant_key='' OR merchant_key IS NULL)",
+                    (new_cat, desc, uid_, expense_id)
+                )
+                propagated += cur2.rowcount
+                conn.execute(
+                    "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
+                    (desc, new_cat)
+                )
+
+            audit(conn, uid_, 'user_correction', 'expense', expense_id,
+                  None, {'category': new_cat, 'merchant_key': mkey, 'propagated': propagated},
+                  'user')
 
     # If frequency changed, update ALL expenses with the same description
     if 'frequency' in data:
@@ -1853,13 +2605,40 @@ def get_summary():
             sorted_d = sorted(sal_days)
             salary_day = sorted_d[len(sorted_d) // 2]
 
-    # Upcoming fixed expenses (monthly standing orders total)
-    fixed_total = conn.execute(
-        """SELECT COALESCE(SUM(amount), 0) FROM (
-            SELECT amount FROM expenses WHERE user_id=? AND frequency='monthly'
-            GROUP BY description)""",
-        (uid,)
-    ).fetchone()[0]
+    # Fixed vs variable split for the current month.
+    # Fixed = explicitly monthly + inherently fixed categories + appears 3+ months in last 6
+    _fixed_cats = ('communication', 'subscriptions', 'insurance', 'mortgage', 'education')
+    _fixed_cats_sql = ','.join('?' * len(_fixed_cats))
+
+    # Merchant keys that appear 3+ distinct months in last 6
+    recurring_keys_rows = conn.execute("""
+        SELECT COALESCE(NULLIF(merchant_key,''), description) AS key
+        FROM expenses
+        WHERE user_id=? AND date >= date('now','-6 months') AND category_id != 'food'
+        GROUP BY key
+        HAVING COUNT(DISTINCT substr(date,1,7)) >= 3
+    """, (uid,)).fetchall()
+    recurring_keys = {r['key'] for r in recurring_keys_rows}
+
+    # Fixed expenses this month: monthly-marked OR fixed-category OR recurring merchant
+    month_expenses_for_split = conn.execute(
+        "SELECT amount, category_id, frequency, COALESCE(NULLIF(merchant_key,''), description) AS key "
+        "FROM expenses WHERE user_id=? AND date LIKE ?",
+        (uid, month + '%')
+    ).fetchall()
+
+    fixed_total = 0.0
+    variable_total = 0.0
+    for row in month_expenses_for_split:
+        is_fixed = (
+            row['frequency'] == 'monthly'
+            or row['category_id'] in _fixed_cats
+            or row['key'] in recurring_keys
+        )
+        if is_fixed:
+            fixed_total += row['amount']
+        else:
+            variable_total += row['amount']
 
     conn.close()
     return jsonify({
@@ -1880,6 +2659,7 @@ def get_summary():
         'last_bank_import': last_bank_import,
         'salary_day': salary_day,
         'fixed_monthly_total': round(fixed_total, 0),
+        'variable_monthly_total': round(variable_total, 0),
     })
 
 
@@ -2490,11 +3270,19 @@ def import_file():
     try:
         uid = get_uid()
         if file.filename.endswith('.xls'):
-            result = parse_budget_xls(filepath, uid)
+            xls_format = detect_xls_format(filepath)
+            if xls_format == 'bank_statement':
+                result = parse_bank_statement_xls(filepath, uid)
+            elif xls_format == 'card_statement':
+                result = parse_card_statement_xls(filepath, uid)
+            else:
+                result = parse_budget_xls(filepath, uid)
         elif file.filename.endswith('.xlsx'):
-            # Auto-detect: insurance portfolio vs visa report
+            # Auto-detect: insurance portfolio → bank statement → visa/card
             if _is_insurance_portfolio_xlsx(filepath):
                 result = parse_insurance_portfolio_xlsx(filepath, uid)
+            elif _is_bank_statement_xlsx(filepath):
+                result = parse_bank_statement_xlsx(filepath, uid)
             else:
                 result = parse_visa_xlsx(filepath, uid)
         elif file.filename.endswith('.csv'):
@@ -2506,6 +3294,29 @@ def import_file():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+def _is_expense_duplicate(conn, date, description, amount, user_id, merchant_key=''):
+    """Return True if this expense is already in the DB.
+
+    Checks by (date, description, amount) first.
+    If merchant_key is known, also checks (date, merchant_key, amount) to catch
+    case/spacing variants of the same merchant (e.g. Netflix.com vs NETFLIX.COM).
+    """
+    # Exact description match
+    if conn.execute(
+        "SELECT 1 FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=? LIMIT 1",
+        (date, description, amount, user_id)
+    ).fetchone():
+        return True
+    # Merchant-key match (catches NETFLIX.COM == Netflix.com)
+    if merchant_key:
+        if conn.execute(
+            "SELECT 1 FROM expenses WHERE date=? AND merchant_key=? AND amount=? AND user_id=? LIMIT 1",
+            (date, merchant_key, amount, user_id)
+        ).fetchone():
+            return True
+    return False
 
 
 def parse_budget_xls(filepath, user_id=None):
@@ -2596,6 +3407,293 @@ def parse_budget_xls(filepath, user_id=None):
     return {'status': 'ok', 'imported': imported, 'month': month_str}
 
 
+def _xls_find_header(sheet, required_markers):
+    """Scan an xlrd sheet for a row whose cells contain all required marker substrings.
+    Returns (row_index, {marker: col_index}) or (None, {}) if not found."""
+    for row in range(sheet.nrows):
+        row_vals = [str(sheet.cell_value(row, col)).strip() for col in range(sheet.ncols)]
+        col_map = {}
+        for marker in required_markers:
+            for col, v in enumerate(row_vals):
+                if marker in v:
+                    col_map[marker] = col
+                    break
+        if len(col_map) == len(required_markers):
+            return row, col_map
+    return None, {}
+
+
+def detect_xls_format(filepath):
+    """Detect which XLS layout we're dealing with: a current-account bank statement
+    (זכות/חובה columns), a credit-card statement (תאריך עסקה/סכום חיוב), or the
+    legacy weekly budget sheet."""
+    wb = xlrd.open_workbook(filepath)
+    sheet = wb.sheets()[0]
+    row, _ = _xls_find_header(sheet, ['תאריך', 'זכות', 'חובה'])
+    if row is not None:
+        return 'bank_statement'
+    row, _ = _xls_find_header(sheet, ['תאריך עסקה', 'סכום חיוב'])
+    if row is not None:
+        return 'card_statement'
+    row, _ = _xls_find_header(sheet, ['תאריך עסקה', 'סכום עסקה'])
+    if row is not None:
+        return 'card_statement'
+    return 'budget_weekly'
+
+
+def parse_bank_statement_xls(filepath, user_id=None):
+    """Parse an Israeli current-account statement XLS (e.g. Fibi/Discount 'תנועות בחשבון')
+    and import both expenses (חובה) and income (זכות)."""
+    wb = xlrd.open_workbook(filepath)
+    sheet = wb.sheets()[0]
+    header_row, col_map = _xls_find_header(sheet, ['תאריך', 'זכות', 'חובה'])
+    if header_row is None:
+        return {'error': 'unrecognized_format', 'imported_expenses': 0, 'imported_income': 0}
+
+    # Find the description column (the row right after header may help identify it precisely)
+    desc_col = None
+    for col in range(sheet.ncols):
+        header_val = str(sheet.cell_value(header_row, col)).strip()
+        if header_val in ('תיאור', 'פירוט'):
+            desc_col = col
+            break
+
+    date_col = col_map['תאריך']
+    credit_col = col_map['זכות']
+    debit_col = col_map['חובה']
+
+    conn = get_db()
+    imported_expenses = 0
+    imported_income = 0
+    skipped_visa = 0
+    skipped_dup = 0
+
+    for row in range(header_row + 1, sheet.nrows):
+        date_val = sheet.cell_value(row, date_col)
+        description = str(sheet.cell_value(row, desc_col)).strip() if desc_col is not None else ''
+
+        if not description or description == 'יתרת פתיחה' or not isinstance(date_val, (int, float)) or date_val <= 0:
+            continue
+
+        try:
+            expense_date = xlrd.xldate_as_datetime(date_val, wb.datemode).strftime('%Y-%m-%d')
+        except (ValueError, OverflowError):
+            continue
+
+        credit_val = sheet.cell_value(row, credit_col)
+        debit_val = sheet.cell_value(row, debit_col)
+        credit = credit_val if isinstance(credit_val, (int, float)) and credit_val > 0 else 0
+        debit = debit_val if isinstance(debit_val, (int, float)) and debit_val > 0 else 0
+
+        # Skip card-bill summary lines - the real transactions come from the card statement import
+        if any(pattern in description for pattern in BANK_SKIP_PATTERNS):
+            skipped_visa += 1
+            continue
+
+        if credit:
+            person, source, is_recurring = 'family', 'other', 0
+            for pattern, p, s, rec in BANK_INCOME_PATTERNS:
+                if pattern in description:
+                    person, source, is_recurring = p, s, rec
+                    break
+            # Income intelligence layer
+            inc_source_key, inc_class_source, inc_confidence = '', 'legacy', None
+            if _INTELLIGENCE_AVAILABLE and is_flag_enabled('income_learning', user_id):
+                inc_type, inc_source_key, inc_confidence = resolve_income_source(
+                    description, user_id, conn)
+                if inc_type:
+                    source = inc_type
+                    inc_class_source = 'income_learning'
+                    is_recurring = 1 if inc_type in ('salary', 'pension', 'government') else is_recurring
+            elif source == 'other' and 'משכורת' in description:
+                source = 'salary'
+                is_recurring = 1
+
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM income WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, credit, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO income
+                   (date, person, source, amount, description, is_recurring, user_id,
+                    source_key, classification_source, classification_confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, person, source, credit, description, is_recurring, user_id,
+                 inc_source_key, inc_class_source, inc_confidence)
+            )
+            imported_income += 1
+
+        elif debit:
+            cat_result = smart_categorize(
+                conn, description, debit, user_id,
+                bank_expense_patterns=BANK_EXPENSE_PATTERNS,
+            )
+            category_id = cat_result.category_id
+            subcategory = cat_result.subcategory or description
+            frequency = cat_result.frequency or 'random'
+
+            if _is_expense_duplicate(conn, expense_date, description, debit, user_id, cat_result.merchant_key):
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    frequency, card, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, debit,
+                 'bank_xls_import', frequency, 'בנק', user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
+            )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
+            imported_expenses += 1
+
+    conn.commit()
+    link_result = run_linking_engine(user_id)
+    conn.close()
+    return {'status': 'ok', 'imported_expenses': imported_expenses, 'imported_income': imported_income,
+            'skipped_visa': skipped_visa, 'skipped_duplicates': skipped_dup,
+            'auto_linked': link_result.get('auto_linked', 0),
+            'link_suggestions': link_result.get('suggested', 0), 'source': 'bank_csv'}
+
+
+def _xls_card_statement_blocks(sheet):
+    """Scan the whole sheet for every header row containing 'תאריך עסקה' (a credit-card
+    statement can have multiple tables - e.g. billed vs. not-yet-billed transactions -
+    each with its own column order) and return [(col_map, row_range), ...]."""
+    header_rows = []
+    for row in range(sheet.nrows):
+        row_vals = [str(sheet.cell_value(row, col)).strip() for col in range(sheet.ncols)]
+        if not any('תאריך עסקה' in v for v in row_vals):
+            continue
+        col_map = {}
+        for col, header_val in enumerate(row_vals):
+            if 'תאריך עסקה' in header_val:
+                col_map['date'] = col
+            elif header_val in ('שם  העסק', 'שם העסק', 'תיאור'):
+                col_map['description'] = col
+            elif header_val == 'סכום חיוב':
+                col_map['billing_amount'] = col
+            elif header_val == 'סכום עסקה':
+                col_map['amount'] = col
+        header_rows.append((row, col_map))
+
+    blocks = []
+    for i, (row, col_map) in enumerate(header_rows):
+        next_header_row = header_rows[i + 1][0] if i + 1 < len(header_rows) else sheet.nrows
+        blocks.append((col_map, range(row + 1, next_header_row)))
+    return blocks
+
+
+def parse_card_statement_xls(filepath, user_id=None):
+    """Parse an Israeli credit-card statement XLS (e.g. Isracard/Cal 'עסקאות בשקלים').
+    Negative amounts (credits/refunds) are imported as income, not expenses."""
+    import re
+    wb = xlrd.open_workbook(filepath)
+    sheet = wb.sheets()[0]
+    blocks = _xls_card_statement_blocks(sheet)
+    if not blocks:
+        return {'error': 'unrecognized_format', 'imported': 0}
+
+    header_row = next(r.start - 1 for _, r in blocks)
+
+    # Detect card label from rows above the first header (e.g. "כרטיס:7408 - ישראכרט")
+    card_label = ''
+    for row in range(header_row):
+        row_text = ' '.join(str(sheet.cell_value(row, col)) for col in range(sheet.ncols))
+        m = re.search(r'(\d{4})', row_text)
+        if m:
+            card_label = 'כרטיס ' + m.group(1)
+            break
+
+    conn = get_db()
+    imported = 0
+    imported_income = 0
+    skipped_dup = 0
+
+    for col_map, row_range in blocks:
+        date_col = col_map.get('date')
+        desc_col = col_map.get('description')
+        final_amount_col = col_map.get('billing_amount', col_map.get('amount'))
+        if date_col is None or final_amount_col is None:
+            continue
+
+        for row in row_range:
+            date_val = sheet.cell_value(row, date_col)
+            if not isinstance(date_val, (int, float)) or date_val <= 0:
+                continue
+            try:
+                expense_date = xlrd.xldate_as_datetime(date_val, wb.datemode).strftime('%Y-%m-%d')
+            except (ValueError, OverflowError):
+                continue
+
+            description = str(sheet.cell_value(row, desc_col)).strip() if desc_col is not None else ''
+            amount_val = sheet.cell_value(row, final_amount_col)
+            if not isinstance(amount_val, (int, float)) or amount_val == 0:
+                continue
+
+            if amount_val < 0:
+                # Refund/credit - record as income rather than a negative expense
+                amount = abs(amount_val)
+                dup = conn.execute(
+                    "SELECT COUNT(*) FROM income WHERE date=? AND description=? AND amount=? AND user_id=?",
+                    (expense_date, description, amount, user_id)
+                ).fetchone()[0]
+                if dup:
+                    skipped_dup += 1
+                    continue
+                conn.execute(
+                    """INSERT INTO income (date, person, source, amount, description, is_recurring, user_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (expense_date, 'family', 'other', amount, f'זיכוי: {description}', 0, user_id)
+                )
+                imported_income += 1
+                continue
+
+            amount = amount_val
+            cat_result = smart_categorize(
+                conn, description, amount, user_id,
+                visa_description_map=VISA_DESCRIPTION_MAP,
+            )
+            category_id = cat_result.category_id
+            subcategory = cat_result.subcategory or ''
+            freq = cat_result.frequency or 'random'
+
+            if _is_expense_duplicate(conn, expense_date, description, amount, user_id, cat_result.merchant_key):
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    card, frequency, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, amount,
+                 'card_xls_import', card_label, freq, user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
+            )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
+            imported += 1
+
+    conn.commit()
+    link_result = run_linking_engine(user_id)
+    inst_match = run_installment_matching(user_id)
+    conn.close()
+    return {'status': 'ok', 'imported': imported, 'imported_income': imported_income,
+            'skipped_duplicates': skipped_dup,
+            'auto_linked': link_result.get('auto_linked', 0),
+            'link_suggestions': link_result.get('suggested', 0),
+            'inst_matched': inst_match.get('auto_matched', 0), 'source': 'visa'}
+
+
 # Visa category (ענף) to our category mapping
 VISA_CATEGORY_MAP = {
     'מזון ומשקאות': 'food',
@@ -2634,8 +3732,72 @@ VISA_CATEGORY_MAP = {
 }
 
 
+def _parse_statement_date(val):
+    """Parse a transaction date cell that may be a real Excel date or a text date
+    like '16.06.26' / '16/06/2026' (common in AMEX/Visa exports). Returns 'YYYY-MM-DD' or None."""
+    import re
+    if not val:
+        return None
+    if hasattr(val, 'strftime'):
+        return val.strftime('%Y-%m-%d')
+    text = str(val).strip()
+    m = re.match(r'^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$', text)
+    if not m:
+        return None
+    day, month, year = m.groups()
+    day, month = int(day), int(month)
+    year = int(year)
+    if year < 100:
+        year += 2000
+    try:
+        return date(year, month, day).strftime('%Y-%m-%d')
+    except ValueError:
+        return None
+
+
+# Header keywords (any one of these in a row marks it as a column-header row)
+_STATEMENT_HEADER_MARKERS = ['תאריך']
+_STATEMENT_COL_ALIASES = {
+    'date': ['תאריך רכישה', 'תאריך עסקה', 'תאריך'],
+    'description': ['שם בית עסק', 'תיאור', 'בית עסק'],
+    'billing_amount': ['סכום חיוב'],
+    'amount': ['סכום עסקה', 'סכום'],
+    'category': ['ענף', 'קטגוריה'],
+}
+
+
+def _find_statement_blocks(sheet):
+    """Scan the whole sheet for header rows (any row containing a date-column marker)
+    and yield (column_map, data_row_range) for each table block found. Supports sheets
+    with multiple statement tables (e.g. 'not yet posted' + 'billed' sections)."""
+    max_row = sheet.max_row
+    max_col = sheet.max_column
+    header_rows = []
+    for row in range(1, max_row + 1):
+        row_vals = [str(sheet.cell(row, col).value or '').strip() for col in range(1, max_col + 1)]
+        if any(any(marker in v for marker in _STATEMENT_HEADER_MARKERS) for v in row_vals):
+            col_map = {}
+            for col, v in enumerate(row_vals, start=1):
+                for field, aliases in _STATEMENT_COL_ALIASES.items():
+                    if field in col_map:
+                        continue
+                    if any(alias in v for alias in aliases):
+                        col_map[field] = col
+                        break
+            if 'date' in col_map:
+                header_rows.append((row, col_map))
+
+    blocks = []
+    for i, (row, col_map) in enumerate(header_rows):
+        next_header_row = header_rows[i + 1][0] if i + 1 < len(header_rows) else max_row + 1
+        blocks.append((col_map, range(row + 1, next_header_row)))
+    return blocks
+
+
 def parse_visa_xlsx(filepath, user_id=None):
-    """Parse Visa credit card XLSX export and import expenses."""
+    """Parse a credit-card statement XLSX export (Visa/AMEX/etc.) and import expenses.
+    Designed to be format-tolerant: locates header rows anywhere in the sheet, supports
+    multiple tables per sheet, and accepts both native Excel dates and text dates."""
     import re
     wb = openpyxl.load_workbook(filepath)
     sheet = wb.active
@@ -2644,95 +3806,86 @@ def parse_visa_xlsx(filepath, user_id=None):
     imported = 0
     skipped = 0
 
-    # Detect card number from row 1 or filename
+    # Detect card label from the first few rows or filename (e.g. "...- 2918")
     card_label = ''
-    row1 = str(sheet.cell(1, 1).value or '')
-    card_match = re.search(r'(\d{4})\s*$', row1)
-    if card_match:
-        card_label = 'ויזה ' + card_match.group(1)
-    else:
+    for row in range(1, min(sheet.max_row + 1, 10)):
+        row_text = ' '.join(str(sheet.cell(row, col).value or '') for col in range(1, sheet.max_column + 1))
+        card_match = re.search(r'(\d{4})\s*$', row_text.strip())
+        if card_match:
+            card_label = 'כרטיס ' + card_match.group(1)
+            break
+    if not card_label:
         fname_match = re.search(r'(\d{4})', os.path.basename(filepath))
         if fname_match:
-            card_label = 'ויזה ' + fname_match.group(1)
+            card_label = 'כרטיס ' + fname_match.group(1)
 
-    # Find the header row (contains 'תאריך')
-    data_start = None
-    for row in range(1, min(sheet.max_row + 1, 10)):
-        val = str(sheet.cell(row, 1).value or '')
-        if 'תאריך' in val:
-            data_start = row + 1
-            break
+    blocks = _find_statement_blocks(sheet)
 
-    # If no header found, data likely starts at row 5 or 6
-    if data_start is None:
-        for row in range(4, 8):
-            val = sheet.cell(row, 1).value
-            if val and hasattr(val, 'strftime'):
-                data_start = row
-                break
+    for col_map, row_range in blocks:
+        date_col = col_map.get('date')
+        desc_col = col_map.get('description')
+        amount_col = col_map.get('billing_amount') or col_map.get('amount')
+        fallback_amount_col = col_map.get('amount')
+        category_col = col_map.get('category')
 
-    if data_start is None:
-        data_start = 6
-
-    for row in range(data_start, sheet.max_row + 1):
-        date_val = sheet.cell(row, 1).value
-        business = sheet.cell(row, 2).value
-        amount_val = sheet.cell(row, 4).value or sheet.cell(row, 3).value  # prefer charge amount
-        visa_category = str(sheet.cell(row, 6).value or '').strip()
-
-        if not date_val or not amount_val:
-            continue
-
-        # Parse date
-        if hasattr(date_val, 'strftime'):
-            expense_date = date_val.strftime('%Y-%m-%d')
-        else:
-            continue
-
-        # Parse amount
-        try:
-            amount = float(str(amount_val).replace(',', ''))
-            if amount <= 0:
+        for row in row_range:
+            date_val = sheet.cell(row, date_col).value if date_col else None
+            expense_date = _parse_statement_date(date_val)
+            if not expense_date:
                 continue
-        except (ValueError, TypeError):
-            continue
 
-        # Map visa category to our category
-        category_id = 'misc'
-        for visa_key, cat_id in VISA_CATEGORY_MAP.items():
-            if visa_key in visa_category:
-                category_id = cat_id
-                break
+            business = sheet.cell(row, desc_col).value if desc_col else None
+            amount_val = (sheet.cell(row, amount_col).value if amount_col else None) or \
+                         (sheet.cell(row, fallback_amount_col).value if fallback_amount_col else None)
+            visa_category = str(sheet.cell(row, category_col).value or '').strip() if category_col else ''
 
-        description = str(business or '').strip()
-        subcategory = visa_category
+            if amount_val is None:
+                continue
 
-        # If still misc, try to reclassify by description
-        if category_id == 'misc' and description:
-            for pattern, cat_id, subcat in VISA_DESCRIPTION_MAP:
-                if pattern in description:
+            try:
+                amount = float(str(amount_val).replace(',', ''))
+                if amount <= 0:
+                    continue
+            except (ValueError, TypeError):
+                continue
+
+            # Map statement category to our category
+            category_id = 'misc'
+            for visa_key, cat_id in VISA_CATEGORY_MAP.items():
+                if visa_key in visa_category:
                     category_id = cat_id
-                    subcategory = subcat
                     break
 
-        # Apply user's saved category/frequency rules
-        category_id, freq = apply_category_rule(conn, description, category_id, user_id=user_id)
+            description = str(business or '').strip()
 
-        # Skip duplicates (same date, description, amount, user)
-        dup = conn.execute(
-            "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-            (expense_date, description, amount, user_id)
-        ).fetchone()[0]
-        if dup:
-            skipped += 1
-            continue
+            cat_result = smart_categorize(
+                conn, description, amount, user_id,
+                visa_category_map=VISA_CATEGORY_MAP,
+                visa_description_map=VISA_DESCRIPTION_MAP,
+            )
+            # Prefer the card's own category label as subcategory if the engine didn't set one
+            subcategory = cat_result.subcategory or visa_category or ''
+            category_id = cat_result.category_id
+            freq = cat_result.frequency or 'random'
 
-        conn.execute(
-            """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, card, frequency, user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (expense_date, category_id, subcategory, description, amount, 'visa_import', card_label, freq, user_id)
-        )
-        imported += 1
+            # Skip duplicates
+            if _is_expense_duplicate(conn, expense_date, description, amount, user_id, cat_result.merchant_key):
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    card, frequency, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, amount,
+                 'visa_import', card_label, freq, user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
+            )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
+            imported += 1
 
     conn.commit()
     # Auto-link imported transactions to assets/liabilities
@@ -2766,6 +3919,11 @@ BANK_SKIP_PATTERNS = [
     'CREDIT CARD PAYMENT',
     'CARD PAYMENT',
     'PAYMENT - THANK YOU',
+    # Bank-statement card-bill summary lines (individual transactions come from card import)
+    'כרטיסי אשראי',
+    'ישראכרט בע',
+    'אמריקן אקספרס',
+    'הרשאה כאל',
 ]
 
 # Income patterns: (pattern_in_description, person, source, is_recurring)
@@ -3006,36 +4164,33 @@ def parse_bank_csv(filepath, user_id=None):
             subcategory = ''
             frequency = 'random'
 
-            matched = False
-            for pattern, cat, subcat, freq in BANK_EXPENSE_PATTERNS:
-                if pattern in description:
-                    category_id = cat
-                    subcategory = subcat
-                    frequency = freq
-                    matched = True
-                    break
-
-            if not matched:
-                subcategory = description
+            cat_result = smart_categorize(
+                conn, description, abs_amount, user_id,
+                bank_expense_patterns=BANK_EXPENSE_PATTERNS,
+            )
+            category_id = cat_result.category_id
+            subcategory = cat_result.subcategory or description
+            frequency = cat_result.frequency or 'random'
+            if cat_result.source == 'unresolved':
                 skipped_other += 1
 
-            # Apply user's saved category/frequency rules
-            category_id, frequency = apply_category_rule(conn, description, category_id, frequency, user_id=user_id)
-
-            # Skip duplicates (same date, description, amount, user)
-            dup = conn.execute(
-                "SELECT COUNT(*) FROM expenses WHERE date=? AND description=? AND amount=? AND user_id=?",
-                (expense_date, description, abs_amount, user_id)
-            ).fetchone()[0]
-            if dup:
+            # Skip duplicates
+            if _is_expense_duplicate(conn, expense_date, description, abs_amount, user_id, cat_result.merchant_key):
                 skipped_dup += 1
                 continue
 
             conn.execute(
-                """INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, card, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (expense_date, category_id, subcategory, description, abs_amount, 'bank_csv', frequency, 'בנק דיסקונט', user_id)
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    frequency, card, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, category_id, subcategory, description, abs_amount,
+                 'bank_csv', frequency, 'בנק דיסקונט', user_id,
+                 cat_result.source, cat_result.confidence, cat_result.merchant_key)
             )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
             imported_expenses += 1
 
     # Store monthly closing balances
@@ -3197,6 +4352,12 @@ def parse_payslip_pdf(filepath, user_id=None):
     finally:
         doc.close()
 
+    # Don't assume every PDF is a payslip - check for payslip-identifying content first.
+    _PAYSLIP_MARKERS = ['תלוש שכר', 'תלוש משכורת', 'נטו לתשלום', 'שכר ברוטו', 'ניכויי חובה']
+    if not any(marker in full_text for marker in _PAYSLIP_MARKERS):
+        return {'error': 'not_a_payslip',
+                'message': 'הקובץ שהועלה אינו נראה כתלוש שכר. ייבוא PDF נתמך כרגע רק לתלושי שכר.'}
+
     month_str = _extract_payslip_month(full_text)  # None if not found
     company = _extract_company_name(full_text)
     fields = _extract_payslip_fields(full_text)
@@ -3259,6 +4420,221 @@ INSURANCE_BRANCH_MAP = {
     'ביטוח עסק': 'general',
     'ביטוח תאונות אישיות': 'general',
 }
+
+
+def _is_bank_statement_xlsx(filepath):
+    """Detect an Israeli bank current-account (עובר ושב) XLSX export.
+
+    Markers: sheet named 'עובר ושב', or a header row containing 'תיאור התנועה'
+    together with 'זכות/חובה' or 'יתרה'.
+    """
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        ws = wb.active
+        if 'עובר ושב' in (ws.title or ''):
+            wb.close()
+            return True
+        # Scan first 10 rows for header markers
+        for row in ws.iter_rows(min_row=1, max_row=10, values_only=True):
+            text = ' '.join(str(v) for v in row if v)
+            if 'תיאור התנועה' in text and ('זכות' in text or 'יתרה' in text):
+                wb.close()
+                return True
+        wb.close()
+        return False
+    except Exception:
+        return False
+
+
+def parse_bank_statement_xlsx(filepath, user_id=None):
+    """Parse a bank current-account (עובר ושב) XLSX export.
+
+    Format (Bank Hapoalim / Leumi / Discount web export):
+      Header row: תאריך | יום ערך | תיאור התנועה | ₪ זכות/חובה | ₪ יתרה | ...
+      Positive amount → income
+      Negative amount → expense
+
+    Mirrors parse_bank_csv logic exactly — same skip patterns, same smart_categorize.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    ws = wb.active
+
+    conn = get_db()
+    imported_expenses = 0
+    imported_income = 0
+    skipped_visa = 0
+    skipped_dup = 0
+    skipped_other = 0
+    month_balances = {}
+
+    # Find header row (contains תיאור התנועה)
+    header_row = None
+    col_date = col_desc = col_amount = col_balance = None
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True), start=1):
+        row_text = [str(v).strip() if v is not None else '' for v in row]
+        if any('תיאור' in c and 'תנועה' in c for c in row_text):
+            header_row = r_idx
+            for ci, h in enumerate(row_text):
+                if 'תאריך' in h and col_date is None:
+                    col_date = ci
+                elif 'תיאור' in h and 'תנועה' in h:
+                    col_desc = ci
+                elif 'זכות' in h or 'חובה' in h:
+                    col_amount = ci
+                elif 'יתרה' in h:
+                    col_balance = ci
+            break
+
+    if header_row is None or col_desc is None or col_amount is None:
+        return {'error': 'Could not find data header row in bank XLSX — expected תיאור התנועה column'}
+
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        raw_date = row[col_date] if col_date is not None and len(row) > col_date else None
+        raw_desc = row[col_desc] if len(row) > col_desc else None
+        raw_amount = row[col_amount] if len(row) > col_amount else None
+        raw_balance = row[col_balance] if col_balance is not None and len(row) > col_balance else None
+
+        if not raw_desc or not raw_amount:
+            continue
+
+        # Parse date
+        try:
+            if hasattr(raw_date, 'strftime'):
+                expense_date = raw_date.strftime('%Y-%m-%d')
+            else:
+                date_str = str(raw_date).strip()[:10]
+                expense_date = date_str  # already YYYY-MM-DD from some exports
+            year, month_num = int(expense_date[:4]), int(expense_date[5:7])
+        except Exception:
+            continue
+
+        description = str(raw_desc).strip()
+
+        # Parse amount
+        try:
+            amount = float(str(raw_amount).replace(',', '').strip())
+        except (ValueError, TypeError):
+            continue
+
+        if amount == 0:
+            continue
+
+        # Track running balance for month-end closing
+        if raw_balance is not None:
+            try:
+                balance_val = float(str(raw_balance).replace(',', '').strip())
+                row_month = f"{year}-{month_num:02d}"
+                if row_month not in month_balances or expense_date >= month_balances[row_month][1]:
+                    month_balances[row_month] = (balance_val, expense_date)
+            except (ValueError, TypeError):
+                pass
+
+        # Skip credit-card charge summary lines (same as CSV parser)
+        should_skip = any(pat in description for pat in BANK_SKIP_PATTERNS)
+        if should_skip:
+            skipped_visa += 1
+            continue
+
+        # ── INCOME (positive) ────────────────────────────────────────────────
+        if amount > 0:
+            person = 'family'
+            source = 'other'
+            is_recurring = 0
+            for pattern, p, s, rec in BANK_INCOME_PATTERNS:
+                if pattern in description:
+                    person = p; source = s; is_recurring = rec
+                    break
+
+            # Intelligence engine — income classification
+            source_key = ''
+            classification_source = 'legacy'
+            classification_confidence = None
+            if _INTELLIGENCE_AVAILABLE:
+                try:
+                    from intelligence.income_normalizer import resolve_income_source
+                    inc_type, source_key, inc_conf = resolve_income_source(description, user_id, conn)
+                    if inc_type:
+                        source = inc_type
+                        classification_source = 'income_normalizer'
+                        classification_confidence = inc_conf
+                except Exception:
+                    pass
+
+            dup = conn.execute(
+                "SELECT COUNT(*) FROM income WHERE date=? AND description=? AND amount=? AND user_id=?",
+                (expense_date, description, amount, user_id)
+            ).fetchone()[0]
+            if dup:
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO income
+                   (date, person, source, amount, description, is_recurring, user_id,
+                    source_key, classification_source, classification_confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, person, source, amount, description, is_recurring, user_id,
+                 source_key, classification_source, classification_confidence)
+            )
+            audit(conn, user_id, 'import_income', 'income', None,
+                  None, {'source': source, 'amount': amount, 'description': description},
+                  'bank_xlsx')
+            imported_income += 1
+
+        # ── EXPENSE (negative) ───────────────────────────────────────────────
+        else:
+            abs_amount = abs(amount)
+            cat_result = smart_categorize(
+                conn, description, abs_amount, user_id,
+                bank_expense_patterns=BANK_EXPENSE_PATTERNS,
+            )
+            if cat_result.source == 'unresolved':
+                skipped_other += 1
+
+            if _is_expense_duplicate(conn, expense_date, description, abs_amount, user_id, cat_result.merchant_key):
+                skipped_dup += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO expenses
+                   (date, category_id, subcategory, description, amount, source,
+                    frequency, card, user_id, category_source, categorization_confidence, merchant_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (expense_date, cat_result.category_id, cat_result.subcategory or description,
+                 description, abs_amount, 'bank_xlsx', cat_result.frequency or 'random',
+                 'בנק', user_id, cat_result.source, cat_result.confidence, cat_result.merchant_key)
+            )
+            audit(conn, user_id, 'categorize', 'expense', None,
+                  None, {'category': cat_result.category_id, 'source': cat_result.source,
+                         'merchant_key': cat_result.merchant_key}, cat_result.source)
+            imported_expenses += 1
+
+    # Save month-end balances
+    balances_saved = 0
+    for month_str, (balance, last_date) in month_balances.items():
+        conn.execute("""INSERT OR REPLACE INTO bank_balances
+            (user_id, account_name, month, closing_balance, last_transaction_date)
+            VALUES (?, 'main', ?, ?, ?)""", (user_id, month_str, balance, last_date))
+        balances_saved += 1
+
+    conn.commit()
+    link_result = run_linking_engine(user_id)
+    inst_match = run_installment_matching(user_id)
+    conn.close()
+    return {
+        'status': 'ok',
+        'imported_expenses': imported_expenses,
+        'imported_income': imported_income,
+        'skipped_visa': skipped_visa,
+        'skipped_duplicates': skipped_dup,
+        'balances_saved': balances_saved,
+        'auto_linked': link_result.get('auto_linked', 0),
+        'link_suggestions': link_result.get('suggested', 0),
+        'inst_matched': inst_match.get('auto_matched', 0),
+        'source': 'bank_xlsx'
+    }
 
 
 def _is_insurance_portfolio_xlsx(filepath):
@@ -10309,6 +11685,165 @@ def save_ai_settings():
 def get_version():
     return jsonify({'version': APP_VERSION})
 
+
+# ── Financial Intelligence: Feature Flag API ─────────────────────────────────
+
+@app.route('/api/intelligence/flags', methods=['GET'])
+@login_required
+def get_feature_flags():
+    uid = get_uid()
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT flag_name, user_id, is_enabled, updated_at FROM feature_flags ORDER BY flag_name"
+    ).fetchall()
+    conn.close()
+    flags = {}
+    for r in rows:
+        key = r['flag_name']
+        if r['user_id'] == -1:
+            flags.setdefault(key, {})['global'] = bool(r['is_enabled'])
+        elif r['user_id'] == uid:
+            flags.setdefault(key, {})['user'] = bool(r['is_enabled'])
+    result = []
+    for flag_name, vals in flags.items():
+        result.append({
+            'flag_name': flag_name,
+            'global': vals.get('global', False),
+            'user_override': vals.get('user', None),
+            'effective': is_flag_enabled(flag_name, uid),
+        })
+    return jsonify(result)
+
+
+@app.route('/api/intelligence/flags/<flag_name>', methods=['POST'])
+@login_required
+def set_feature_flag(flag_name):
+    uid = get_uid()
+    data = request.json or {}
+    enabled = bool(data.get('enabled', False))
+    scope = data.get('scope', 'user')          # 'user' or 'global' (global = admin only)
+    if scope == 'global':
+        conn = get_db()
+        user = conn.execute("SELECT is_admin FROM users WHERE id=?", (uid,)).fetchone()
+        conn.close()
+        if not user or not user['is_admin']:
+            return jsonify({'error': 'Admin required for global flag changes'}), 403
+        set_flag(flag_name, enabled, user_id=None)
+        conn2 = get_db()
+        audit(conn2, uid, 'flag_changed', 'feature_flag', flag_name,
+              old_value=not enabled, new_value=enabled, source='admin')
+        conn2.commit()
+        conn2.close()
+    else:
+        set_flag(flag_name, enabled, user_id=uid)
+        conn2 = get_db()
+        audit(conn2, uid, 'flag_changed', 'feature_flag', flag_name,
+              old_value=not enabled, new_value=enabled, source='user')
+        conn2.commit()
+        conn2.close()
+    return jsonify({'status': 'ok', 'flag': flag_name, 'enabled': enabled, 'scope': scope})
+
+
+# ── Financial Intelligence: Audit Log API ────────────────────────────────────
+
+@app.route('/api/intelligence/audit', methods=['GET'])
+@login_required
+def get_audit_log():
+    uid = get_uid()
+    entity_type = request.args.get('entity_type')
+    entity_id = request.args.get('entity_id')
+    limit = min(int(request.args.get('limit', 100)), 500)
+    conn = get_db()
+    if entity_type and entity_id:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE user_id=? AND entity_type=? AND entity_id=? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (uid, entity_type, entity_id, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (uid, limit)
+        ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+# ── Financial Intelligence: Schema Version API ───────────────────────────────
+
+@app.route('/api/intelligence/schema-version', methods=['GET'])
+@login_required
+def get_schema_version_api():
+    return jsonify({'schema_version': get_schema_version()})
+
+
+# ── Financial Intelligence: Status / Metrics Endpoint ────────────────────────
+
+@app.route('/api/intelligence/status', methods=['GET'])
+@login_required
+def intelligence_status():
+    uid = get_uid()
+    today = date.today().strftime('%Y-%m-%d')
+    conn = get_db()
+
+    merchant_learning_count = conn.execute(
+        "SELECT COUNT(*) FROM merchant_learning WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+
+    income_learning_count = conn.execute(
+        "SELECT COUNT(*) FROM income_learning WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+
+    categorized_today = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=? AND DATE(created_at)=? "
+        "AND category_source != 'legacy' AND category_id != 'misc'",
+        (uid, today)
+    ).fetchone()[0]
+
+    uncategorized_today = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=? AND DATE(created_at)=? "
+        "AND (category_id='misc' OR category_source='unresolved')",
+        (uid, today)
+    ).fetchone()[0]
+
+    # Coverage score: % of total expenses that are NOT misc/unresolved
+    total_expenses = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=?", (uid,)
+    ).fetchone()[0]
+    misc_expenses = conn.execute(
+        "SELECT COUNT(*) FROM expenses WHERE user_id=? AND category_id='misc'",
+        (uid,)
+    ).fetchone()[0]
+    coverage_score = round(
+        ((total_expenses - misc_expenses) / total_expenses * 100) if total_expenses > 0 else 0, 1
+    )
+
+    ai_queue_pending = conn.execute(
+        "SELECT COUNT(*) FROM ai_review_queue WHERE user_id=? AND status='pending'",
+        (uid,)
+    ).fetchone()[0]
+
+    flags = {
+        flag: is_flag_enabled(flag, uid)
+        for flag in ['merchant_learning', 'income_learning', 'smart_cleanup',
+                     'document_intelligence', 'ai_review_queue']
+    }
+
+    conn.close()
+    return jsonify({
+        'merchant_learning_count': merchant_learning_count,
+        'income_learning_count':   income_learning_count,
+        'categorized_today':       categorized_today,
+        'uncategorized_today':     uncategorized_today,
+        'coverage_score':          coverage_score,
+        'total_expenses':          total_expenses,
+        'misc_expenses':           misc_expenses,
+        'ai_queue_pending':        ai_queue_pending,
+        'intelligence_available':  _INTELLIGENCE_AVAILABLE,
+        'schema_version':          get_schema_version(),
+        'feature_flags':           flags,
+    })
+
 def _ai_chat(query, lang, conn, uid=None):
     """Use Claude API to understand the query and generate a structured SQL response."""
     api_key = _get_ai_key()
@@ -10711,12 +12246,33 @@ def admin_chat_satisfaction():
 
 if __name__ == '__main__':
     if getattr(sys, 'frozen', False):
-        import webbrowser
-        import threading
-        threading.Timer(1.5, lambda: webbrowser.open('http://127.0.0.1:5000')).start()
-        print('=== מעקב הוצאות משפחתי ===')
-        print('האפליקציה רצה בכתובת: http://127.0.0.1:5000')
-        print('לסגירה: סגרו חלון זה או לחצו Ctrl+C')
-        app.run(debug=False, port=5000)
+        import webview
+
+        # Clear stale WebView2 cache so old service workers don't block new HTML
+        import shutil
+        for _cache_path in [
+            os.path.join(os.environ.get('APPDATA', ''), 'pywebview'),
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'pywebview'),
+        ]:
+            if os.path.isdir(_cache_path):
+                try:
+                    shutil.rmtree(_cache_path)
+                except Exception:
+                    pass
+
+        server_thread = threading.Thread(
+            target=lambda: app.run(debug=False, port=5000, use_reloader=False),
+            daemon=True,
+        )
+        server_thread.start()
+
+        webview.create_window(
+            'מעקב הוצאות משפחתי',
+            'http://127.0.0.1:5000/pywebview-start',
+            width=1280,
+            height=860,
+            min_size=(900, 600),
+        )
+        webview.start()
     else:
         app.run(debug=True, port=5000)
