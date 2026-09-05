@@ -170,12 +170,23 @@ SMTP_CONFIG_PATH = os.path.join(DATA_DIR, 'smtp_config.json')
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# External secrets for admin credentials
-SECRETS_PATH = os.path.join(os.path.expanduser('~'), '.budget_tracker_secrets.json')
-ADMIN_SECRETS = {}
-if os.path.exists(SECRETS_PATH):
-    with open(SECRETS_PATH, 'r') as f:
-        ADMIN_SECRETS = json.load(f)
+# Admin bootstrap credentials — source depends on runtime mode
+if _CLOUD:
+    # Cloud: read exclusively from environment variables; secrets file is never used
+    _admin_email = os.environ.get('ADMIN_EMAIL', '')
+    _admin_password = os.environ.get('ADMIN_PASSWORD', '')
+    ADMIN_SECRETS = {
+        'ADMIN_EMAIL': _admin_email,
+        'ADMIN_PASSWORD': _admin_password,
+        'ADMIN_USERNAME': os.environ.get('ADMIN_USERNAME', 'admin'),
+    } if (_admin_email and _admin_password) else {}
+else:
+    # Desktop / local development: read from secrets file; env vars have no effect
+    SECRETS_PATH = os.path.join(os.path.expanduser('~'), '.budget_tracker_secrets.json')
+    ADMIN_SECRETS = {}
+    if os.path.exists(SECRETS_PATH):
+        with open(SECRETS_PATH, 'r') as f:
+            ADMIN_SECRETS = json.load(f)
 
 # Hebrew category mapping from the XLS structure
 CATEGORY_MAP = {
