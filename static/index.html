@@ -85,7 +85,7 @@
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="startTutorial();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#eef2ff;color:#6366f1;font-size:.9rem"><i class="bi bi-mortarboard"></i></span><span data-t="tut_restart">מדריך למשתמש</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openReminders();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef3c7;color:#d97706;font-size:.9rem"><i class="bi bi-bell"></i></span><span data-t="nav_reminders">תזכורות</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openSmtpSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f0fdf4;color:#16a34a;font-size:.9rem"><i class="bi bi-gear"></i></span><span data-t="nav_email_settings">הגדרות דוא״ל / SMS</span></a></li>
-                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openAiSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f5f3ff;color:#8b5cf6;font-size:.9rem"><i class="bi bi-robot"></i></span><span data-t="nav_ai_settings">הגדרות AI</span></a></li>
+                    <li id="navAiSettingsItem"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openAiSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f5f3ff;color:#8b5cf6;font-size:.9rem"><i class="bi bi-robot"></i></span><span data-t="nav_ai_settings">הגדרות AI</span></a></li>
                     <li id="navResetItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="resetAllData();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-arrow-counterclockwise"></i></span><span data-t="reset_data">איפוס נתונים</span></a></li>
                     <li id="navAuthItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="showAuthModal('login');return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#eef2ff;color:#4f46e5;font-size:.9rem"><i class="bi bi-box-arrow-in-left"></i></span><span data-t="auth_login">התחבר</span></a></li>
                     <li id="navLogoutItem"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="doLogout();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-box-arrow-left"></i></span><span data-t="nav_logout">יציאה / החלף משתמש</span></a></li>
@@ -4397,9 +4397,12 @@ async function checkAuth() {
             document.getElementById('navResetItem').style.display = '';
             document.getElementById('navUsername').textContent = d.username;
             document.getElementById('navAuthItem').style.display = 'none';
-            // Show admin tab if admin
+            // Show admin tab and admin-only settings if admin
             if (d.is_admin) {
                 document.getElementById('adminTabNav').style.display = '';
+                document.getElementById('navAiSettingsItem').style.display = '';
+            } else {
+                document.getElementById('navAiSettingsItem').style.display = 'none';
             }
         } else {
             document.getElementById('navUserItem').style.display = 'none';
@@ -10858,6 +10861,7 @@ async function saveSmtpSettings() {
 // AI Settings
 // ============================================================
 async function openAiSettings() {
+    if (!isAdmin) return;
     const status = document.getElementById('aiStatus');
     try {
         const r = await fetch('/api/settings/ai');
