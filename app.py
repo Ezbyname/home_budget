@@ -31,6 +31,8 @@ except ImportError:
 
 # When running as a PyInstaller exe, use the exe's directory for data files
 _FROZEN = getattr(sys, 'frozen', False)
+# Cloud production: non-frozen process with APP_ENV=production
+_CLOUD = (not _FROZEN) and (os.environ.get('APP_ENV') == 'production')
 if _FROZEN:
     BASE_DIR = os.path.dirname(sys.executable)
     STATIC_DIR = os.path.join(sys._MEIPASS, 'static')
@@ -117,14 +119,39 @@ TIP_CONFIG = {
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 # Store user data in a stable folder that survives exe rebuilds
-DATA_DIR = os.path.join(os.path.expanduser('~'), '.budget_tracker_data')
+if _CLOUD:
+    DATA_DIR = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', '')
+    if not DATA_DIR:
+        raise RuntimeError(
+            "RAILWAY_VOLUME_MOUNT_PATH is not set. "
+            "Verify a Railway volume is attached to this service."
+        )
+    if not os.path.isdir(DATA_DIR):
+        raise RuntimeError(
+            f"RAILWAY_VOLUME_MOUNT_PATH={DATA_DIR!r} does not exist or is not a directory. "
+            "Verify the volume is mounted correctly."
+        )
+    if not os.access(DATA_DIR, os.W_OK):
+        raise RuntimeError(
+            f"RAILWAY_VOLUME_MOUNT_PATH={DATA_DIR!r} is not writable. "
+            "Check volume permissions."
+        )
+else:
+    DATA_DIR = os.path.join(os.path.expanduser('~'), '.budget_tracker_data')
 os.makedirs(DATA_DIR, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'uploads')
 DB_PATH = os.path.join(DATA_DIR, 'budget.db')
 
-# Session config — store secret key in user's home dir so it survives exe rebuilds
+# Session config
 SECRET_FILE = os.path.join(os.path.expanduser('~'), '.budget_tracker_secret_key')
-if os.path.exists(SECRET_FILE):
+if _CLOUD:
+    _secret_key = os.environ.get('SECRET_KEY', '')
+    if not _secret_key:
+        raise RuntimeError(
+            "SECRET_KEY environment variable must be set in cloud production mode."
+        )
+    app.secret_key = _secret_key
+elif os.path.exists(SECRET_FILE):
     with open(SECRET_FILE, 'r') as f:
         app.secret_key = f.read().strip()
 else:
@@ -132,6 +159,11 @@ else:
     with open(SECRET_FILE, 'w') as f:
         f.write(app.secret_key)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+if _CLOUD:
+    app.config['SESSION_COOKIE_SECURE'] = True
+    app.config['SESSION_COOKIE_HTTPONLY'] = True
+    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+    app.config['SESSION_COOKIE_NAME'] = 'budget_session'
 
 # SMTP config file (created on first email setup)
 SMTP_CONFIG_PATH = os.path.join(DATA_DIR, 'smtp_config.json')
@@ -193,6 +225,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -1606,7 +1639,17 @@ def auth_signup():
     conn.close()
 
     if not success:
-        # Auto-verify if we can't send OTP (offline mode)
+        if _CLOUD:
+            # Cloud production: do not silently verify — fail closed
+            conn = get_db()
+            conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            conn.commit()
+            conn.close()
+            return jsonify({
+                'error': f'Could not send verification code: {msg}. '
+                         'Please ask the administrator to configure SMTP.'
+            }), 503
+        # Desktop / local development: auto-verify when OTP delivery unavailable
         conn = get_db()
         conn.execute("UPDATE users SET verified=1 WHERE id=?", (user_id,))
         conn.commit()
@@ -1759,6 +1802,8 @@ def reset_user_data():
 
 
 @app.route('/api/auth/smtp-config', methods=['GET'])
+@login_required
+@admin_required
 def get_smtp_config():
     if os.path.exists(SMTP_CONFIG_PATH):
         with open(SMTP_CONFIG_PATH, 'r') as f:
@@ -1774,6 +1819,8 @@ def get_smtp_config():
 
 
 @app.route('/api/auth/smtp-config', methods=['POST'])
+@login_required
+@admin_required
 def set_smtp_config():
     data = request.json
     cfg = {
@@ -11674,6 +11721,7 @@ def get_ai_settings():
 
 @app.route('/api/settings/ai', methods=['POST'])
 @login_required
+@admin_required
 def save_ai_settings():
     data = request.json
     key = data.get('api_key', '').strip()
@@ -12275,4 +12323,8 @@ if __name__ == '__main__':
         )
         webview.start()
     else:
-        app.run(debug=True, port=5000)
+        if _CLOUD:
+            from waitress import serve
+            serve(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+        else:
+            app.run(debug=True, port=5000)
