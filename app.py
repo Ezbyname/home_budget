@@ -2186,7 +2186,7 @@ def get_expenses():
     cards = request.args.getlist('card')  # multi-select source/card filter
 
     sql = """SELECT e.*, c.name_he as category_name, c.color as category_color
-             FROM expenses e JOIN categories c ON e.category_id = c.id WHERE e.user_id = ?"""
+             FROM expenses e LEFT JOIN categories c ON e.category_id = c.id WHERE e.user_id = ?"""
     params = [get_uid()]
 
     if from_date and to_date:
@@ -2222,10 +2222,25 @@ def get_expenses():
 @login_required
 def add_expense():
     data = request.json
+    cat_id = data.get('category_id')
+
+    # '__new__' is a frontend-only sentinel for the "add category" modal flow.
+    # It must never reach the backend. Any other non-existent category_id is
+    # also rejected so the expense ledger stays JOIN-safe.
+    if not cat_id or cat_id == '__new__':
+        return jsonify({'error': 'category_id is required and must be a valid existing category'}), 400
+
     conn = get_db()
+    cat_exists = conn.execute(
+        "SELECT id FROM categories WHERE id=?", (cat_id,)
+    ).fetchone()
+    if not cat_exists:
+        conn.close()
+        return jsonify({'error': f'category_id {cat_id!r} does not exist'}), 400
+
     conn.execute(
         "INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (data['date'], data['category_id'], data.get('subcategory', ''),
+        (data['date'], cat_id, data.get('subcategory', ''),
          data.get('description', ''), data['amount'], data.get('source', 'manual'),
          data.get('frequency', 'random'), get_uid())
     )
