@@ -7916,12 +7916,17 @@ function finishRecurring() {
 // ============================================================
 document.getElementById('addExpenseForm').addEventListener('submit', async e => {
     e.preventDefault();
-    await api('/api/expenses', {
+    const catVal = document.getElementById('expenseCategory').value;
+    if (!catVal || catVal === '__new__') {
+        showToast(t('select_category_first') || 'יש לבחור קטגוריה תחילה');
+        return;
+    }
+    const res = await api('/api/expenses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             date: document.getElementById('expenseDate').value,
-            category_id: document.getElementById('expenseCategory').value,
+            category_id: catVal,
             subcategory: document.getElementById('expenseSubcategory').value,
             description: document.getElementById('expenseDescription').value,
             amount: parseFloat(document.getElementById('expenseAmount').value),
@@ -7929,6 +7934,7 @@ document.getElementById('addExpenseForm').addEventListener('submit', async e => 
             source: 'manual'
         })
     });
+    if (res && res.error) { showToast(res.error); return; }
     showToast(t('expense_added'));
     e.target.reset();
     document.getElementById('expenseDate').value = new Date().toISOString().slice(0, 10);
