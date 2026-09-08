@@ -246,6 +246,68 @@ class TestSMTPAuthorization:
                              'twilio_sid': '', 'twilio_token': '', 'twilio_from': ''})
             assert r.status_code == 200
 
+    def test_smtp_post_admin_writes_config_file(self, cloud_app, tmp_path):
+        """Admin POST persists dummy values to isolated SMTP_CONFIG_PATH under tmp_path."""
+        import app as mod
+        smtp_config_path = mod.SMTP_CONFIG_PATH
+
+        # 5. Must be under the isolated tmp_path, never under /data or real dirs
+        assert str(smtp_config_path).startswith(str(tmp_path)), (
+            f"SMTP_CONFIG_PATH {smtp_config_path!r} is not under tmp_path {tmp_path!r}"
+        )
+
+        dummy = {
+            'smtp_server': 'smtp.test.invalid',
+            'smtp_port': 587,
+            'smtp_user': 'phase0b-test-user',
+            'smtp_password': 'phase0b-test-password',
+            'from_email': 'phase0b@example.invalid',
+            'twilio_sid': '',
+            'twilio_token': '',
+            'twilio_from': '',
+        }
+
+        with cloud_app.test_client() as c:
+            # 1. Authenticate as admin
+            username, pw = _create_admin_user(cloud_app)
+            c.post('/api/auth/login', json={'username': username, 'password': pw})
+
+            # 2+3. POST dummy SMTP data; assert HTTP 200
+            r = c.post('/api/auth/smtp-config', json=dummy)
+            assert r.status_code == 200
+
+        # 4. File must exist after the POST
+        assert os.path.exists(smtp_config_path), (
+            f"SMTP_CONFIG_PATH {smtp_config_path!r} was not created after admin POST"
+        )
+
+        # 6. Read and assert expected dummy values persisted
+        with open(smtp_config_path, 'r') as f:
+            written = json.load(f)
+        assert written.get('smtp_server') == 'smtp.test.invalid'
+        assert written.get('smtp_port') == 587
+        assert written.get('smtp_user') == 'phase0b-test-user'
+        assert written.get('smtp_password') == 'phase0b-test-password'
+        assert written.get('from_email') == 'phase0b@example.invalid'
+
+    def test_smtp_post_non_admin_does_not_create_config(self, cloud_app):
+        """Non-admin POST returns 403 and must not create or modify SMTP_CONFIG_PATH."""
+        import app as mod
+        smtp_config_path = mod.SMTP_CONFIG_PATH
+        existed_before = os.path.exists(smtp_config_path)
+
+        with cloud_app.test_client() as c:
+            username, pw = _create_normal_user(cloud_app)
+            c.post('/api/auth/login', json={'username': username, 'password': pw})
+            r = c.post('/api/auth/smtp-config', json={'smtp_server': 'evil.com'})
+            assert r.status_code == 403
+
+        # File must not have been created by the rejected request
+        if not existed_before:
+            assert not os.path.exists(smtp_config_path), (
+                "SMTP_CONFIG_PATH was created despite 403 rejection"
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3. AI settings authorization
