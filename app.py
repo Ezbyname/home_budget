@@ -10,6 +10,7 @@ import hashlib
 import secrets
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import tempfile
 import threading
 import time as _time
 from datetime import datetime, date, timedelta
@@ -3324,6 +3325,158 @@ def update_bank_balance(bid):
         return jsonify({'error': 'Account name conflict'}), 409
     conn.close()
     return jsonify({'status': 'ok'})
+
+
+# ---------------------------------------------------------------------------
+# TEMPORARY — DB Staging (Phase B1 migration helper, remove after cutover)
+# ---------------------------------------------------------------------------
+_STAGING_MAX_BYTES = 2 * 1024 * 1024          # 2 MiB local cap
+_SQLITE_MAGIC = b'SQLite format 3\x00'         # first 16 bytes of any valid SQLite file
+_STAGING_PATH = os.path.join(DATA_DIR, 'budget.incoming.db')
+_STAGING_SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+
+_STAGE_DB_HTML = '''<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head><meta charset="utf-8"><title>Stage DB</title>
+<style>body{font-family:sans-serif;max-width:600px;margin:40px auto;padding:0 16px}
+label{display:block;margin-top:12px;font-weight:bold}
+input,button{margin-top:4px;width:100%;box-sizing:border-box;padding:8px;font-size:1em}
+button{background:#1a56db;color:#fff;border:none;cursor:pointer;margin-top:16px}
+#result{margin-top:20px;white-space:pre;background:#f4f4f4;padding:12px;border-radius:4px;display:none}
+.err{color:#c00}.ok{color:#060}</style></head>
+<body>
+<h2>DB Staging (one-time migration)</h2>
+<p>Upload <code>budget.db</code> for validation only.
+This does <strong>not</strong> replace the live database.</p>
+<form id="f" enctype="multipart/form-data">
+  <label>SQLite file (.db)<input type="file" name="file" accept=".db" required></label>
+  <label>Expected SHA256 (64 hex chars)
+    <input type="text" name="expected_sha256" maxlength="64" required
+           placeholder="a98ba78cb44a7c6e12fcebceeff7e05c..."></label>
+  <button type="submit">Stage (validate only)</button>
+</form>
+<div id="result"></div>
+<script>
+document.getElementById('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const r = document.getElementById('result');
+  r.style.display = 'block'; r.className = ''; r.textContent = 'Uploading…';
+  const fd = new FormData(e.target);
+  try {
+    const res = await fetch('/api/admin/stage-db', {method:'POST', body: fd});
+    const j = await res.json();
+    r.textContent = JSON.stringify(j, null, 2);
+    r.className = res.ok ? 'ok' : 'err';
+  } catch(err) { r.textContent = String(err); r.className = 'err'; }
+});
+</script>
+</body></html>'''
+
+
+@app.route('/api/admin/stage-db', methods=['GET'])
+@login_required
+@admin_required
+def stage_db_get():
+    if not _CLOUD:
+        return jsonify({'error': 'staging only available in cloud mode'}), 403
+    from flask import make_response
+    resp = make_response(_STAGE_DB_HTML, 200)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return resp
+
+
+@app.route('/api/admin/stage-db', methods=['POST'])
+@login_required
+@admin_required
+def stage_db_post():
+    if not _CLOUD:
+        return jsonify({'error': 'staging only available in cloud mode'}), 403
+
+    # ── 1. required SHA256 param ──────────────────────────────────────────
+    expected = (request.form.get('expected_sha256') or '').strip().lower()
+    if not expected:
+        return jsonify({'error': 'expected_sha256 is required'}), 400
+    if not _STAGING_SHA256_RE.match(expected):
+        return jsonify({'error': 'expected_sha256 must be exactly 64 hex characters'}), 400
+
+    # ── 2. file present ───────────────────────────────────────────────────
+    if 'file' not in request.files:
+        return jsonify({'error': 'no file uploaded'}), 400
+    upload = request.files['file']
+    if not upload.filename:
+        return jsonify({'error': 'no file selected'}), 400
+
+    # ── 3. read with local size cap ───────────────────────────────────────
+    # Read in chunks; abort if stream exceeds _STAGING_MAX_BYTES before EOF.
+    chunks = []
+    total = 0
+    chunk_size = 65536
+    while True:
+        chunk = upload.stream.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _STAGING_MAX_BYTES:
+            return jsonify({'error': f'file exceeds {_STAGING_MAX_BYTES} byte limit'}), 400
+        chunks.append(chunk)
+    data = b''.join(chunks)
+    if len(data) == 0:
+        return jsonify({'error': 'empty file'}), 400
+
+    # ── 4. SQLite magic bytes ──────────────────────────────────────────────
+    if len(data) < 16 or data[:16] != _SQLITE_MAGIC:
+        return jsonify({'error': 'not a valid SQLite database (magic bytes mismatch)'}), 400
+
+    # ── 5. SHA256 — server-side, before writing anywhere ──────────────────
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if actual_sha256 != expected:
+        return jsonify({
+            'error': 'SHA256 mismatch',
+            'expected': expected,
+            'actual': actual_sha256,
+        }), 400
+
+    # ── 6. write to temp file under DATA_DIR ──────────────────────────────
+    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix='.staging_tmp')
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
+
+        # ── 7. integrity + quick check via read-only URI ──────────────────
+        db_uri = 'file:' + tmp_path.replace('\\', '/') + '?mode=ro'
+        check_conn = None
+        try:
+            check_conn = sqlite3.connect(db_uri, uri=True)
+            check_conn.row_factory = sqlite3.Row
+            integrity = check_conn.execute('PRAGMA integrity_check').fetchone()[0]
+            quick = check_conn.execute('PRAGMA quick_check').fetchone()[0]
+        except sqlite3.DatabaseError:
+            app.logger.exception('Staged SQLite validation failed')
+            return jsonify({'error': 'SQLite validation failed'}), 400
+        finally:
+            if check_conn is not None:
+                check_conn.close()
+
+        if integrity != 'ok':
+            return jsonify({'error': f'integrity_check failed: {integrity}'}), 400
+        if quick != 'ok':
+            return jsonify({'error': f'quick_check failed: {quick}'}), 400
+
+        # ── 8. atomic promotion to staging path ───────────────────────────
+        os.replace(tmp_path, _STAGING_PATH)
+        tmp_path = None       # prevent cleanup block from touching it
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    return jsonify({
+        'staged_file': 'budget.incoming.db',
+        'file_size': len(data),
+        'sha256': actual_sha256,
+        'integrity_check': integrity,
+        'quick_check': quick,
+    })
 
 
 # --- File Import ---
