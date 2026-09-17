@@ -82,14 +82,21 @@ INCOME_BASELINES: dict[str, Decimal] = {
 # stream_label_hint = substring that must appear in pattern.label (empty = any stream).
 PATTERN_OVERRIDES: list[PatternOverride] = [
 
+    # ══════════════════════════════════════════════════════════════════════
+    # CONFIRMED RUNTIME description_keys (verified against normalize_description()
+    # output from a real-data run on the budget DB).
+    # ══════════════════════════════════════════════════════════════════════
+
     # ── Gal Naomi (הוק לגל נעמי לסניף 17-662) ────────────────────────────
-    # Two parallel debt-repayment streams (607 and 2000). Both active recurring committed.
+    # Two parallel debt-repayment streams (~607 and ~2000). Both active recurring
+    # committed. No amount override — classifier detects per-stream amounts.
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
-        stream_label_hint="",   # applies to all streams with this key
+        stream_label_hint="",   # applies to all streams (both are active LOAN)
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-gal-naomi-recurrence",
+        expected_match_count=None,  # 2 streams expected, but don't hard-fail on count
     ),
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
@@ -97,6 +104,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-gal-naomi-committed",
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
@@ -104,14 +112,15 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-gal-naomi-active",
+        expected_match_count=None,
     ),
-    # Stream 1 (~607): planning_amount reviewed
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
-        stream_label_hint="",   # classifier assigns planning_amount per stream; no amount override
+        stream_label_hint="",
         field_name="purpose_type",
         value=PurposeType.LOAN,
         override_id="ov-gal-naomi-purpose",
+        expected_match_count=None,
     ),
 
     # ── Arnona (מ.א. חוף ה חיוב) ──────────────────────────────────────────
@@ -122,6 +131,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="cadence",
         value=Cadence.EVERY_2_MONTHS,
         override_id="ov-arnona-cadence",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מ.א. חוף ה חיוב",
@@ -129,6 +139,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("886.10"),
         override_id="ov-arnona-amount",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מ.א. חוף ה חיוב",
@@ -136,6 +147,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-arnona-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מ.א. חוף ה חיוב",
@@ -143,6 +155,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-arnona-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מ.א. חוף ה חיוב",
@@ -150,6 +163,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-arnona-active",
+        expected_match_count=1,
     ),
 
     # ── Harel Loan (הראלהלואה חיוב) ──────────────────────────────────────
@@ -159,6 +173,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("390.80"),
         override_id="ov-harel-loan-amount",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="הראלהלואה חיוב",
@@ -166,6 +181,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-harel-loan-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="הראלהלואה חיוב",
@@ -173,6 +189,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-harel-loan-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="הראלהלואה חיוב",
@@ -180,6 +197,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-harel-loan-active",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="הראלהלואה חיוב",
@@ -187,15 +205,22 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="purpose_type",
         value=PurposeType.LOAN,
         override_id="ov-harel-loan-purpose",
+        expected_match_count=1,
     ),
 
-    # ── Hiyuvei Halo (חיובי הלוו חיוב) ──────────────────────────────────
+    # ── Hiyuvei Halo (חיובי הלוו חיוב) — TWO STREAMS, active 222.12 only ─
+    # The active stream has planning_amount=222.12 (verified).
+    # The inactive stream has a different classifier amount; it is NOT overridden
+    # here and keeps the classifier's lifecycle (ENDED / POSSIBLY_STOPPED).
+    # amount_hint discriminates between the two streams without fuzzy matching.
     PatternOverride(
         description_key="חיובי הלוו חיוב",
         stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("222.12"),
         override_id="ov-hiyuvei-halo-amount",
+        expected_match_count=1,
+        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
@@ -203,6 +228,8 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-hiyuvei-halo-committed",
+        expected_match_count=1,
+        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
@@ -210,6 +237,8 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-hiyuvei-halo-recurrence",
+        expected_match_count=1,
+        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
@@ -217,6 +246,8 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-hiyuvei-halo-active",
+        expected_match_count=1,
+        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
@@ -224,16 +255,21 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="purpose_type",
         value=PurposeType.LOAN,
         override_id="ov-hiyuvei-halo-purpose",
+        expected_match_count=1,
+        amount_hint=Decimal("222.12"),
     ),
 
     # ── Harel Insurance (הראל בטוח חיוב) — two parallel streams ─────────
-    # Stream 1: 231.35, Stream 2: 346.12
+    # Stream 1 (lower, ~231.35, no label suffix): recurrence/commitment/lifecycle
+    # Stream 2 (higher, 346.12, label contains "stream 2"): all + amount override
+    # Broad overrides (no hint) apply to BOTH streams.
     PatternOverride(
         description_key="הראל בטוח חיוב",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-harel-ins-recurrence",
+        expected_match_count=None,  # 2 streams; don't hard-fail
     ),
     PatternOverride(
         description_key="הראל בטוח חיוב",
@@ -241,6 +277,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-harel-ins-committed",
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="הראל בטוח חיוב",
@@ -248,17 +285,36 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-harel-ins-active",
+        expected_match_count=None,
+    ),
+    # Stream 2 specific — amount + commitment
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="stream 2",
+        field_name="planning_amount",
+        value=Decimal("346.12"),
+        override_id="ov-harel-ins-amount-stream2",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="stream 2",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-harel-ins-committed-stream2",
+        expected_match_count=1,
     ),
 
     # ── Mei Hof HaKarmel (מי חוף הכרמל) — every-2-months, variable ───────
     # Reviewed: 410.99 every 2 months (observed median).
-    # monthly_equivalent(410.99, EVERY_2_MONTHS) = 410.99 * 6/12 = 205.495 → rounds to 205.50.
+    # monthly_equivalent(410.99, EVERY_2_MONTHS) = 410.99 * 6/12 = 205.495 → 205.50
     PatternOverride(
         description_key="מי חוף הכרמל",
         stream_label_hint="",
         field_name="cadence",
         value=Cadence.EVERY_2_MONTHS,
         override_id="ov-mei-hof-cadence",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מי חוף הכרמל",
@@ -266,6 +322,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("410.99"),
         override_id="ov-mei-hof-amount",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מי חוף הכרמל",
@@ -273,6 +330,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-mei-hof-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מי חוף הכרמל",
@@ -280,6 +338,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-mei-hof-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="מי חוף הכרמל",
@@ -287,6 +346,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-mei-hof-active",
+        expected_match_count=1,
     ),
 
     # ── Mishki Ram (משקי רם — normalized from משקי רם בע"מ) ──────────────
@@ -296,6 +356,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("787.61"),
         override_id="ov-mishki-ram-amount",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="משקי רם",
@@ -303,6 +364,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-mishki-ram-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="משקי רם",
@@ -310,6 +372,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-mishki-ram-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="משקי רם",
@@ -317,74 +380,88 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-mishki-ram-active",
+        expected_match_count=1,
     ),
 
-    # ── Training Fund (קרן השתלמות) — SAVINGS_INVESTMENT, reserve-eligible ─
-    # planning_amount=137.59; purpose override only (classifier may mis-classify purpose)
+    # ── Training Fund (השתלמות אג חיוב) — SAVINGS_INVESTMENT, reserve-eligible ─
+    # PROVEN runtime key: "השתלמות אג חיוב" (was wrong: "קרן השתלמות").
+    # planning_amount=137.59; SAVINGS_INVESTMENT purpose override.
     PatternOverride(
-        description_key="קרן השתלמות",
+        description_key="השתלמות אג חיוב",
         stream_label_hint="",
         field_name="purpose_type",
         value=PurposeType.SAVINGS_INVESTMENT,
         override_id="ov-training-fund-purpose",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="קרן השתלמות",
+        description_key="השתלמות אג חיוב",
         stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("137.59"),
         override_id="ov-training-fund-amount",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="קרן השתלמות",
+        description_key="השתלמות אג חיוב",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-training-fund-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="קרן השתלמות",
+        description_key="השתלמות אג חיוב",
         stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-training-fund-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="קרן השתלמות",
+        description_key="השתלמות אג חיוב",
         stream_label_hint="",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-training-fund-active",
+        expected_match_count=1,
     ),
 
-    # ── Efrat Rosenberg ───────────────────────────────────────────────────
+    # ── Efrat Rosenberg (אפרת רוזנברג בריאות וכושר) — TWO STREAMS ────────
+    # PROVEN runtime key: "אפרת רוזנברג בריאות וכושר" (was: "אפרת רוזנברג").
+    # Historical stream 0: 300.00 (ended) — NO override; classifier keeps ENDED lifecycle.
+    # Active stream 1 ("stream 2"): 350.00 — RECURRING + COMMITTED + ACTIVE + 350.
     PatternOverride(
-        description_key="אפרת רוזנברג",
-        stream_label_hint="",
+        description_key="אפרת רוזנברג בריאות וכושר",
+        stream_label_hint="stream 2",
         field_name="planning_amount",
         value=Decimal("350.00"),
         override_id="ov-efrat-amount",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="אפרת רוזנברג",
-        stream_label_hint="",
+        description_key="אפרת רוזנברג בריאות וכושר",
+        stream_label_hint="stream 2",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-efrat-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="אפרת רוזנברג",
-        stream_label_hint="",
+        description_key="אפרת רוזנברג בריאות וכושר",
+        stream_label_hint="stream 2",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-efrat-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="אפרת רוזנברג",
-        stream_label_hint="",
+        description_key="אפרת רוזנברג בריאות וכושר",
+        stream_label_hint="stream 2",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-efrat-active",
+        expected_match_count=1,
     ),
 
     # ── Cancelled / Ended ─────────────────────────────────────────────────
@@ -395,138 +472,222 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ENDED,
         override_id="ov-noy-lenz-ended",
+        expected_match_count=None,  # may not appear in all DB snapshots
     ),
-    # STP — cancelled service (description_key may need adjustment after next run)
+    # STP — cancelled service
     PatternOverride(
         description_key="STP",
         stream_label_hint="",
         field_name="lifecycle_status",
         value=LifecycleStatus.CANCELLED,
         override_id="ov-stp-cancelled",
+        expected_match_count=None,  # may not appear in all DB snapshots
     ),
 
-    # ── Amount TBD (planning_amount=None → not reserve-eligible) ──────────
-    # Google Cloud — active recurring committed, amount TBD
+    # ── Google Cloud — TWO raw description_keys, ONE canonical TBD commitment ─
+    # PROVEN runtime keys: "GOOGLE*CLOUD LN7KQW" and "GOOGLE*CLOUD TLBZ7J".
+    # Both represent the same reviewed commitment; canonical_identity deduplicates them
+    # so they count as ONE TBD in the reserve report (not two).
     PatternOverride(
-        description_key="GOOGLE CLOUD",
+        description_key="GOOGLE*CLOUD LN7KQW",
         stream_label_hint="",
         field_name="planning_amount",
         value=None,
-        override_id="ov-google-cloud-tbd",
+        override_id="ov-google-cloud-lnkqw-tbd",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
     ),
-    # Mor Gemel — active recurring savings, do NOT use classifier's 90.08
     PatternOverride(
-        description_key="מור גמל",
+        description_key="GOOGLE*CLOUD LN7KQW",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-google-cloud-lnkqw-recurrence",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+    PatternOverride(
+        description_key="GOOGLE*CLOUD LN7KQW",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-google-cloud-lnkqw-committed",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+    PatternOverride(
+        description_key="GOOGLE*CLOUD LN7KQW",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-google-cloud-lnkqw-active",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+    PatternOverride(
+        description_key="GOOGLE*CLOUD TLBZ7J",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=None,
+        override_id="ov-google-cloud-tlbz7j-tbd",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+    PatternOverride(
+        description_key="GOOGLE*CLOUD TLBZ7J",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-google-cloud-tlbz7j-recurrence",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+    PatternOverride(
+        description_key="GOOGLE*CLOUD TLBZ7J",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-google-cloud-tlbz7j-committed",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+    PatternOverride(
+        description_key="GOOGLE*CLOUD TLBZ7J",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-google-cloud-tlbz7j-active",
+        expected_match_count=1,
+        canonical_identity="google-cloud-tbd",
+    ),
+
+    # ── Mor Gemel (מור גמל ופ חיוב) — TBD savings ────────────────────────
+    # PROVEN runtime key: "מור גמל ופ חיוב" (was: "מור גמל").
+    # Classifier may produce ~90.08 from limited data.
+    # Family Review: planning_amount=None (TBD) — do NOT use classifier's amount.
+    PatternOverride(
+        description_key="מור גמל ופ חיוב",
         stream_label_hint="",
         field_name="planning_amount",
         value=None,
         override_id="ov-mor-gemel-tbd",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="מור גמל",
+        description_key="מור גמל ופ חיוב",
         stream_label_hint="",
         field_name="purpose_type",
         value=PurposeType.SAVINGS_INVESTMENT,
         override_id="ov-mor-gemel-purpose",
-    ),
-
-    # ── Harel Insurance parallel stream planning amounts ──────────────────
-    # Two parallel streams: 231.35 and 346.12.
-    # Classifier splits by bimodal detection; each stream should detect its own amount.
-    # Overrides encode the reviewed amounts explicitly per stream.
-    # Stream 0 (lower amount, no label suffix): 231.35
-    # Stream 1 (higher amount, label ends with "(stream 2)"): 346.12
-    PatternOverride(
-        description_key="הראל בטוח חיוב",
-        stream_label_hint="stream 2",
-        field_name="planning_amount",
-        value=Decimal("346.12"),
-        override_id="ov-harel-ins-amount-stream2",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="הראל בטוח חיוב",
-        stream_label_hint="stream 2",
+        description_key="מור גמל ופ חיוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-mor-gemel-recurrence",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="מור גמל ופ חיוב",
+        stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
-        override_id="ov-harel-ins-committed-stream2",
+        override_id="ov-mor-gemel-committed",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="מור גמל ופ חיוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-mor-gemel-active",
+        expected_match_count=1,
     ),
 
-    # ── Space Gym (149/month) ─────────────────────────────────────────────
-    # POSSIBLE_RECURRING automatically (semantic=None for gym category).
-    # Family Review: recurring committed active.
-    # description_key unconfirmed from runtime — best-effort normalization.
+    # ── Space Gym (ספייס מועדוני כושר - טירת הכרמל הו"ק) ────────────────
+    # PROVEN runtime key: "ספייס מועדוני כושר - טירת הכרמל הו\"ק" (was: "SPACE GYM").
+    # Family Review: recurring committed active, 149.00/month.
     PatternOverride(
-        description_key="SPACE GYM",
+        description_key='ספייס מועדוני כושר - טירת הכרמל הו"ק',
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-space-gym-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="SPACE GYM",
+        description_key='ספייס מועדוני כושר - טירת הכרמל הו"ק',
         stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-space-gym-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="SPACE GYM",
+        description_key='ספייס מועדוני כושר - טירת הכרמל הו"ק',
         stream_label_hint="",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-space-gym-active",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="SPACE GYM",
+        description_key='ספייס מועדוני כושר - טירת הכרמל הו"ק',
         stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("149.00"),
         override_id="ov-space-gym-amount",
+        expected_match_count=1,
     ),
 
-    # ── Local house committee (ועד בית) ───────────────────────────────────
-    # POSSIBLE_RECURRING automatically (semantic=None for committee category).
-    # Family Review: recurring committed active, 743.64/month.
-    # description_key unconfirmed — best-effort.
+    # ── Local committee (הוק לועד מקומי החותר לסניף 12-703) — TWO STREAMS ─
+    # PROVEN runtime key: "הוק לועד מקומי החותר לסניף 12-703" (was: "ועד בית").
+    # Historical stream 0: 629.50 (ended) — NO override; classifier keeps ENDED lifecycle.
+    # Active stream 1 ("stream 2"): 743.64 — RECURRING + COMMITTED + ACTIVE + 743.64.
     PatternOverride(
-        description_key="ועד בית",
-        stream_label_hint="",
+        description_key="הוק לועד מקומי החותר לסניף 12-703",
+        stream_label_hint="stream 2",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-vaad-bayit-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="ועד בית",
-        stream_label_hint="",
+        description_key="הוק לועד מקומי החותר לסניף 12-703",
+        stream_label_hint="stream 2",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-vaad-bayit-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="ועד בית",
-        stream_label_hint="",
+        description_key="הוק לועד מקומי החותר לסניף 12-703",
+        stream_label_hint="stream 2",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-vaad-bayit-active",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="ועד בית",
-        stream_label_hint="",
+        description_key="הוק לועד מקומי החותר לסניף 12-703",
+        stream_label_hint="stream 2",
         field_name="planning_amount",
         value=Decimal("743.64"),
         override_id="ov-vaad-bayit-amount",
+        expected_match_count=1,
     ),
 
     # ── Nursing insurance (סיעוד) ─────────────────────────────────────────
-    # POSSIBLE_RECURRING automatically (semantic=None).
     # Family Review: recurring committed active, 128.23/month.
-    # description_key unconfirmed — best-effort.
     PatternOverride(
         description_key="סיעוד",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-siyud-recurrence",
+        expected_match_count=None,  # description_key not yet confirmed from runtime
     ),
     PatternOverride(
         description_key="סיעוד",
@@ -534,6 +695,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-siyud-committed",
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="סיעוד",
@@ -541,6 +703,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-siyud-active",
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="סיעוד",
@@ -548,18 +711,18 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("128.23"),
         override_id="ov-siyud-amount",
+        expected_match_count=None,
     ),
 
     # ── Sewage (ביוב) ─────────────────────────────────────────────────────
-    # POSSIBLE_RECURRING automatically (semantic=None).
     # Family Review: recurring committed active, 174/month.
-    # description_key unconfirmed — best-effort.
     PatternOverride(
         description_key="ביוב",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-biyuv-recurrence",
+        expected_match_count=None,  # description_key not yet confirmed from runtime
     ),
     PatternOverride(
         description_key="ביוב",
@@ -567,6 +730,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-biyuv-committed",
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -574,6 +738,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-biyuv-active",
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -581,79 +746,146 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("174.00"),
         override_id="ov-biyuv-amount",
+        expected_match_count=None,
     ),
 
-    # ── Pango / Moovit — recurring NON_COMMITTED ──────────────────────────
-    # Classifier may assign COMMITTED (stable amounts). Family Review: NON_COMMITTED transport.
-    # description_keys unconfirmed — best-effort normalized forms.
+    # ── Pango / Moovit (מ. התחבורה - פנגו מוביט) — NON_COMMITTED ─────────
+    # PROVEN runtime key: "מ. התחבורה - פנגו מוביט" (combined, was: separate "פנגו"/"מוביט").
+    # Family Review: NON_COMMITTED transport. Reserve contribution = 0.
     PatternOverride(
-        description_key="פנגו",
+        description_key="מ. התחבורה - פנגו מוביט",
         stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.NON_COMMITTED,
-        override_id="ov-pango-non-committed",
-    ),
-    PatternOverride(
-        description_key="PANGO",
-        stream_label_hint="",
-        field_name="commitment_status",
-        value=CommitmentStatus.NON_COMMITTED,
-        override_id="ov-pango-en-non-committed",
-    ),
-    PatternOverride(
-        description_key="מוביט",
-        stream_label_hint="",
-        field_name="commitment_status",
-        value=CommitmentStatus.NON_COMMITTED,
-        override_id="ov-moovit-non-committed",
+        override_id="ov-pango-moovit-non-committed",
+        expected_match_count=1,
     ),
 
-    # ── Sports association — recurring active, amount TBD ─────────────────
-    # description_key unconfirmed — best-effort.
+    # ── Sports association (עמותת ספורט חוף הכרמל) — TBD ─────────────────
+    # PROVEN runtime key: "עמותת ספורט חוף הכרמל" (was: "אגודת ספורט").
+    # Family Review: recurring committed active, amount TBD.
     PatternOverride(
-        description_key="אגודת ספורט",
+        description_key="עמותת ספורט חוף הכרמל",
         stream_label_hint="",
         field_name="planning_amount",
         value=None,
         override_id="ov-sports-assoc-tbd",
-    ),
-
-    # ── Discount card fees — two 19.80 charges = 39.60/month ─────────────
-    # FINANCIAL_FEE purpose. description_keys unconfirmed — best-effort.
-    PatternOverride(
-        description_key="דמי כרטיס",
-        stream_label_hint="",
-        field_name="purpose_type",
-        value=PurposeType.FINANCIAL_FEE,
-        override_id="ov-discount-fee1-purpose",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="דמי כרטיס",
+        description_key="עמותת ספורט חוף הכרמל",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
-        override_id="ov-discount-fee1-recurrence",
+        override_id="ov-sports-assoc-recurrence",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="דמי כרטיס",
+        description_key="עמותת ספורט חוף הכרמל",
         stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
-        override_id="ov-discount-fee1-committed",
+        override_id="ov-sports-assoc-committed",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="דמי כרטיס",
+        description_key="עמותת ספורט חוף הכרמל",
         stream_label_hint="",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
-        override_id="ov-discount-fee1-active",
+        override_id="ov-sports-assoc-active",
+        expected_match_count=1,
+    ),
+
+    # ── Discount card fees (דמי כרטיס בנק דיסקונט) — 39.60/month total ──
+    # PROVEN runtime key: "דמי כרטיס בנק דיסקונט" (was: "דמי כרטיס").
+    # Family Review: two 19.80 charges per month = 39.60/month total.
+    # All payments share the same description_key and same amount (19.80), so bimodal
+    # split does NOT occur → one stream.
+    # Cadence override = MONTHLY (classifier may detect BIWEEKLY from 2 payments/month).
+    # planning_amount = 39.60 (total monthly, not per-charge).
+    PatternOverride(
+        description_key="דמי כרטיס בנק דיסקונט",
+        stream_label_hint="",
+        field_name="purpose_type",
+        value=PurposeType.FINANCIAL_FEE,
+        override_id="ov-discount-fee-purpose",
+        expected_match_count=1,
     ),
     PatternOverride(
-        description_key="דמי כרטיס",
+        description_key="דמי כרטיס בנק דיסקונט",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.MONTHLY,
+        override_id="ov-discount-fee-cadence",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס בנק דיסקונט",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-discount-fee-recurrence",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס בנק דיסקונט",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-discount-fee-committed",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס בנק דיסקונט",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-discount-fee-active",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס בנק דיסקונט",
         stream_label_hint="",
         field_name="planning_amount",
-        value=Decimal("19.80"),
-        override_id="ov-discount-fee1-amount",
+        value=Decimal("39.60"),
+        override_id="ov-discount-fee-amount",
+        expected_match_count=1,
+    ),
+
+    # ── Ituran (איתוראן) — RECURRING + COMMITTED + ACTIVE ────────────────
+    # No existing override. Family Review: recurring committed active, 74.01/month.
+    PatternOverride(
+        description_key="איתוראן",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-ituran-recurrence",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="איתוראן",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-ituran-committed",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="איתוראן",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-ituran-active",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="איתוראן",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("74.01"),
+        override_id="ov-ituran-amount",
+        expected_match_count=1,
     ),
 ]
 

@@ -34,10 +34,12 @@ from intelligence.v4_classifier import (
 )
 from intelligence.v4_contracts import (
     ClassificationReport, DecisionSource, EffectiveFinancialResult,
-    IncomeStreamResult, PatternResult, RawClassifierOutput,
-    ReconciliationReport, ReviewReason,
+    FamilyReviewMappingConflict, IncomeStreamResult, PatternResult,
+    RawClassifierOutput, ReconciliationReport, ReviewReason,
     make_reconciliation_record, quantize_ils,
 )
+# Re-export for convenience (tests import FamilyReviewMappingConflict from here)
+__all__ = ["FamilyReviewMappingConflict", "PatternOverride", "ReviewedTargets"]
 
 # ═══════════════════════════════════════════════════════════════════════════
 # READ-ONLY DB ACCESS
@@ -125,13 +127,55 @@ class PatternOverride:
     """
     A single field-level override to apply over a raw PatternResult.
     Family Review decisions are represented as a list of these, not persisted to DB.
+
+    Matching rules (all must hold):
+      1. description_key == pattern.description_key  (exact, never fuzzy)
+      2. if stream_label_hint != "": stream_label_hint in pattern.label
+      3. if amount_hint is not None: pattern.planning_amount == amount_hint
+         (checked against RAW classifier amount before any overrides)
+
+    Validation:
+      expected_match_count — if not None, the number of distinct patterns that this
+      override's (description_key, stream_label_hint, amount_hint) group must match.
+      0 or wrong count → FamilyReviewMappingConflict raised by apply_overrides().
+
+    TBD deduplication:
+      canonical_identity — when set, TBD patterns across multiple description_keys
+      that share the same canonical_identity are counted as ONE TBD commitment in
+      the report (e.g. two Google Cloud raw keys → one canonical TBD entry).
     """
-    description_key: str     # matches PatternResult.description_key
-    stream_label_hint: str   # optional label fragment to distinguish parallel streams
-    field_name: str          # field on PatternResult to override
-    value: object            # new value (must be the correct type)
-    override_id: str         # human-readable ID for audit
+    description_key: str               # matches PatternResult.description_key
+    stream_label_hint: str             # optional label fragment to distinguish parallel streams
+    field_name: str                    # field on PatternResult to override
+    value: object                      # new value (must be the correct type)
+    override_id: str                   # human-readable ID for audit
     source: DecisionSource = DecisionSource.FAMILY_REVIEW
+    expected_match_count: Optional[int] = None   # None = "don't care"
+    canonical_identity: Optional[str] = None     # for TBD canonical deduplication
+    amount_hint: Optional[Decimal] = None        # discriminate by classifier planning_amount
+
+
+def _override_matches(ov: PatternOverride, pattern: PatternResult) -> bool:
+    """
+    Return True if an override matches a pattern.
+
+    All three criteria must hold:
+      1. description_key exact match
+      2. stream_label_hint substring match (empty = wildcard)
+      3. amount_hint exact match against RAW classifier planning_amount (None = wildcard)
+    """
+    if ov.description_key != pattern.description_key:
+        return False
+    if ov.stream_label_hint and ov.stream_label_hint not in pattern.label:
+        return False
+    if ov.amount_hint is not None and pattern.planning_amount != ov.amount_hint:
+        return False
+    return True
+
+
+def _override_group_key(ov: PatternOverride) -> tuple:
+    """Canonical key that identifies a validation/deduplication group."""
+    return (ov.description_key, ov.stream_label_hint, ov.amount_hint)
 
 
 def apply_overrides(
@@ -142,29 +186,53 @@ def apply_overrides(
     Apply in-memory overrides to raw patterns.
     Returns (updated_patterns, applied_override_ids, override_audit).
 
+    Override matching (all must hold):
+      1. description_key exact match (never fuzzy)
+      2. stream_label_hint substring match against pattern.label (empty = wildcard)
+      3. amount_hint exact match against RAW classifier planning_amount (None = wildcard)
+
+    After applying all overrides, validates each override group whose
+    expected_match_count is not None.  Raises FamilyReviewMappingConflict
+    if the actual matched count differs from expected_match_count.
+
     override_audit: one dict per overridden pattern showing classifier
     raw state, override_ids applied, and final effective state — for
     auditability without hiding the original classifier result.
-
-    Override matching: description_key must match exactly.
-    If stream_label_hint is non-empty, the pattern label must contain it.
     """
+    from intelligence.v4_contracts import (
+        FamilyReviewMappingConflict,
+        derive_budget_class, is_reserve_eligible,
+        CADENCE_OCCURRENCES_PER_YEAR, monthly_equivalent,
+    )
+
     applied: list[str] = []
     updated: list[PatternResult] = []
     audit: list[dict] = []
 
+    # --- Phase 1: count matches per override group (against RAW patterns) ---
+    group_match_counts: dict[tuple, int] = {}   # group_key → matched pattern count
+    group_canonical: dict[tuple, Optional[str]] = {}  # group_key → canonical_identity
+
     for pattern in patterns:
-        relevant = [
-            ov for ov in overrides
-            if ov.description_key == pattern.description_key
-            and (not ov.stream_label_hint or ov.stream_label_hint in pattern.label)
-        ]
+        matched_groups: set[tuple] = set()
+        for ov in overrides:
+            if _override_matches(ov, pattern):
+                gk = _override_group_key(ov)
+                if gk not in matched_groups:
+                    matched_groups.add(gk)
+                    group_match_counts[gk] = group_match_counts.get(gk, 0) + 1
+                if ov.canonical_identity is not None:
+                    group_canonical[gk] = ov.canonical_identity
+
+    # --- Phase 2: apply overrides pattern by pattern ---
+    for pattern in patterns:
+        relevant = [ov for ov in overrides if _override_matches(ov, pattern)]
         if not relevant:
             updated.append(pattern)
             continue
 
         # Apply overrides field by field using dataclass replacement
-        kwargs = {
+        kwargs: dict = {
             "description_key": pattern.description_key,
             "label": pattern.label,
             "recurrence_status": pattern.recurrence_status,
@@ -183,6 +251,7 @@ def apply_overrides(
             "review_reasons": pattern.review_reasons,
             "reserve_eligible": pattern.reserve_eligible,
             "monthly_reserve_contrib": pattern.monthly_reserve_contrib,
+            "canonical_identity": pattern.canonical_identity,
         }
         pattern_applied: list[str] = []
         changed_fields: dict[str, dict] = {}
@@ -197,14 +266,14 @@ def apply_overrides(
                     "override": str(ov.value) if ov.value is not None else None,
                     "override_id": ov.override_id,
                 }
+            # Propagate canonical_identity from any matching override
+            if ov.canonical_identity is not None and kwargs["canonical_identity"] is None:
+                kwargs["canonical_identity"] = ov.canonical_identity
+
         # Override authority: at least one override applied → FAMILY_REVIEW
         kwargs["decision_source"] = DecisionSource.FAMILY_REVIEW
 
         # Recompute derived fields after overrides
-        from intelligence.v4_contracts import (
-            derive_budget_class, is_reserve_eligible,
-            CADENCE_OCCURRENCES_PER_YEAR, monthly_equivalent,
-        )
         kwargs["budget_class"] = derive_budget_class(
             kwargs["recurrence_status"],
             kwargs["commitment_status"],
@@ -256,6 +325,30 @@ def apply_overrides(
                 "decision_source": effective.decision_source.value,
             },
         })
+
+    # --- Phase 3: fail-closed validation ---
+    validated_groups: set[tuple] = set()
+    conflicts: list[str] = []
+    for ov in overrides:
+        if ov.expected_match_count is None:
+            continue
+        gk = _override_group_key(ov)
+        if gk in validated_groups:
+            continue
+        validated_groups.add(gk)
+        actual = group_match_counts.get(gk, 0)
+        if actual != ov.expected_match_count:
+            conflicts.append(
+                f"  override key=({ov.description_key!r}, hint={ov.stream_label_hint!r}, "
+                f"amount={ov.amount_hint}): "
+                f"expected {ov.expected_match_count} match(es), got {actual}"
+            )
+    if conflicts:
+        raise FamilyReviewMappingConflict(
+            "Family Review override mapping conflict(s) detected — "
+            "description_key, stream_label_hint, or amount_hint may be stale:\n"
+            + "\n".join(conflicts)
+        )
 
     return tuple(updated), tuple(applied), audit
 
@@ -490,7 +583,9 @@ def report_to_json(
 
     # Patterns that are COMMITTED+RECURRING+ACTIVE but amount=TBD (planning_amount=None).
     # These represent a genuine UNKNOWN contribution to the reserve — not zero.
-    tbd_reserve_patterns = [
+    # Patterns sharing the same canonical_identity are deduplicated for count purposes
+    # (e.g. two Google Cloud raw description_keys → one canonical TBD commitment).
+    tbd_reserve_patterns_raw = [
         p for p in report.effective.patterns
         if (not p.reserve_eligible
             and p.planning_amount is None
@@ -498,6 +593,15 @@ def report_to_json(
             and p.lifecycle_status.value == "ACTIVE"
             and p.recurrence_status.value == "RECURRING")
     ]
+    # Deduplicate by canonical_identity; patterns without one are each counted separately.
+    seen_canonical: set[str] = set()
+    tbd_reserve_patterns: list = []
+    for p in tbd_reserve_patterns_raw:
+        if p.canonical_identity is not None:
+            if p.canonical_identity in seen_canonical:
+                continue
+            seen_canonical.add(p.canonical_identity)
+        tbd_reserve_patterns.append(p)
     reserve_is_lower_bound = len(tbd_reserve_patterns) > 0
 
     payload = {
@@ -587,13 +691,21 @@ def report_to_markdown(
         lines.append(f"| {s.person} | {s.income_type.value} | {s.reliability_status.value} "
                      f"| ₪{s.planning_baseline} | {s.cadence.value} |")
 
-    tbd_reserve = [
+    _tbd_raw_md = [
         p for p in eff.patterns
         if (not p.reserve_eligible and p.planning_amount is None
             and p.commitment_status.value == "COMMITTED"
             and p.lifecycle_status.value == "ACTIVE"
             and p.recurrence_status.value == "RECURRING")
     ]
+    _seen_md: set[str] = set()
+    tbd_reserve = []
+    for _p in _tbd_raw_md:
+        if _p.canonical_identity is not None:
+            if _p.canonical_identity in _seen_md:
+                continue
+            _seen_md.add(_p.canonical_identity)
+        tbd_reserve.append(_p)
     reserve_note = " *(LOWER BOUND — TBD patterns excluded)*" if tbd_reserve else ""
 
     lines.append(f"\n## Reserve-Eligible Patterns{reserve_note}\n")

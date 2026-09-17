@@ -351,6 +351,10 @@ class PatternResult:
     review_reasons:           tuple[ReviewReason, ...]
     reserve_eligible:         bool                 # derived; see is_reserve_eligible()
     monthly_reserve_contrib:  Decimal              # Decimal(0) if not reserve_eligible
+    # Optional canonical identity — set by apply_overrides() when an override carries
+    # canonical_identity.  Used to deduplicate TBD patterns that share the same reviewed
+    # commitment (e.g. two Google Cloud raw keys → one canonical TBD entry).
+    canonical_identity:       Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -771,6 +775,26 @@ class HouseholdResolutionError(ValueError):
     Raised when a Phase D write is attempted without a resolved household_id.
     household_id=None is permitted only during bootstrap/migration.
     Production writes must refuse to create pattern rows for an unknown household.
+    """
+
+
+class FamilyReviewMappingConflict(RuntimeError):
+    """
+    Raised when a required PatternOverride matched 0 or the wrong number of patterns.
+
+    This is a fail-closed safeguard: if a Family Review override cannot find its
+    target pattern in the runtime data, the analysis halts rather than silently
+    producing wrong reserve totals.
+
+    Possible causes:
+      - description_key in the override does not match the runtime normalize_description()
+        output (the most common cause after a real-data run).
+      - stream_label_hint or amount_hint is too specific or too broad.
+      - The pattern was removed / merged / renamed since the override was written.
+
+    Resolution: inspect the raw patterns in the JSON output, correct the
+    description_key / stream_label_hint / amount_hint in PATTERN_OVERRIDES, and
+    re-run.
     """
 
 
