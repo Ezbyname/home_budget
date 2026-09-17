@@ -1462,38 +1462,160 @@ class TestFamilyReviewRegression:
         assert active.reserve_eligible is True
         assert active.monthly_reserve_contrib == Decimal("743.64")
 
-    # ── Test 7: חיובי הלוו חיוב — only active 222.12 contributes ─────────
-    def test_hiyuvei_halo_only_active_222_contributes(self):
-        """amount_hint=222.12 targets only the active stream; inactive stays untouched."""
+    # ── Tests 7a–7i: חיובי הלוו חיוב — label_exact discriminator ────────────
+    # Railway evidence (commit 7faf30c fail-closed run):
+    #   Current segment:    label="חיובי הלוו חיוב"           plan=221.15  ACTIVE
+    #   Historical segment: label="חיובי הלוו חיוב (stream 2)" plan=222.21  POSSIBLY_STOPPED
+    # Both share description_key="חיובי הלוו חיוב".
+    # amount_hint=222.12 FAILED because 221.15 ≠ 222.12 and 222.21 ≠ 222.12.
+    # Fix: use label_exact="חיובי הלוו חיוב" for exact-equality matching.
+
+    def test_hiyuvei_halo_label_exact_selects_current_segment(self):
+        """label_exact='חיובי הלוו חיוב' matches current segment, not historical."""
         KEY = "חיובי הלוו חיוב"
-        # Inactive stream has different classifier amount (e.g. 350.00)
-        p_inactive = _make_pattern(KEY, label=KEY, planning_amount=Decimal("350.00"),
-                                   lifecycle=LifecycleStatus.ENDED)
-        # Active stream has classifier amount 222.12
-        p_active = _make_pattern(KEY, label=f"{KEY} (stream 2)",
-                                 planning_amount=Decimal("222.12"))
-        overrides = [
-            PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-a",
-                            amount_hint=Decimal("222.12")),
-            PatternOverride(KEY, "", "recurrence_status", RecurrenceStatus.RECURRING, "ov-halo-r",
-                            amount_hint=Decimal("222.12")),
-            PatternOverride(KEY, "", "commitment_status", CommitmentStatus.COMMITTED, "ov-halo-c",
-                            amount_hint=Decimal("222.12")),
-            PatternOverride(KEY, "", "lifecycle_status", LifecycleStatus.ACTIVE, "ov-halo-l",
-                            amount_hint=Decimal("222.12")),
-        ]
-        updated, _, _ = apply_overrides((p_inactive, p_active), overrides)
+        p_current    = _make_pattern(KEY, label=KEY,
+                                     planning_amount=Decimal("221.15"))
+        p_historical = _make_pattern(KEY, label=f"{KEY} (stream 2)",
+                                     planning_amount=Decimal("222.21"),
+                                     lifecycle=LifecycleStatus.ENDED)
+        ov = PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-a",
+                             label_exact=KEY)
+        updated, applied, _ = apply_overrides((p_current, p_historical), [ov])
         by_label = {p.label: p for p in updated}
-        inactive_eff = by_label[KEY]
-        active_eff = by_label[f"{KEY} (stream 2)"]
-        # Inactive: untouched, stays ENDED and not reserve-eligible
-        assert inactive_eff.lifecycle_status == LifecycleStatus.ENDED
-        assert inactive_eff.reserve_eligible is False
-        # Active: overridden, ACTIVE + 222.12 + reserve-eligible
-        assert active_eff.lifecycle_status == LifecycleStatus.ACTIVE
-        assert active_eff.planning_amount == Decimal("222.12")
-        assert active_eff.reserve_eligible is True
-        assert active_eff.monthly_reserve_contrib == Decimal("222.12")
+        # Current segment receives override
+        assert by_label[KEY].planning_amount == Decimal("222.12")
+        assert "ov-halo-a" in applied
+        # Historical segment is untouched
+        assert by_label[f"{KEY} (stream 2)"].planning_amount == Decimal("222.21")
+
+    def test_hiyuvei_halo_label_exact_does_not_match_stream2(self):
+        """label_exact='חיובי הלוו חיוב' must NOT match '...(stream 2)'."""
+        KEY = "חיובי הלוו חיוב"
+        p_historical = _make_pattern(KEY, label=f"{KEY} (stream 2)",
+                                     planning_amount=Decimal("222.21"))
+        ov = PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-x",
+                             label_exact=KEY)
+        updated, applied, _ = apply_overrides((p_historical,), [ov])
+        assert "ov-halo-x" not in applied
+        assert updated[0].planning_amount == Decimal("222.21")
+
+    def test_hiyuvei_halo_current_segment_becomes_active_and_reserve_eligible(self):
+        """All 5 overrides with label_exact apply to current segment → reserve_eligible."""
+        KEY = "חיובי הלוו חיוב"
+        p_current    = _make_pattern(KEY, label=KEY,
+                                     planning_amount=Decimal("221.15"))
+        p_historical = _make_pattern(KEY, label=f"{KEY} (stream 2)",
+                                     planning_amount=Decimal("222.21"),
+                                     lifecycle=LifecycleStatus.ENDED)
+        overrides = [
+            PatternOverride(KEY, "", "planning_amount",    Decimal("222.12"),          "ov-halo-a",
+                            label_exact=KEY, expected_match_count=1),
+            PatternOverride(KEY, "", "commitment_status",  CommitmentStatus.COMMITTED,  "ov-halo-c",
+                            label_exact=KEY, expected_match_count=1),
+            PatternOverride(KEY, "", "recurrence_status",  RecurrenceStatus.RECURRING,  "ov-halo-r",
+                            label_exact=KEY, expected_match_count=1),
+            PatternOverride(KEY, "", "lifecycle_status",   LifecycleStatus.ACTIVE,      "ov-halo-l",
+                            label_exact=KEY, expected_match_count=1),
+            PatternOverride(KEY, "", "purpose_type",       PurposeType.LOAN,            "ov-halo-p",
+                            label_exact=KEY, expected_match_count=1),
+        ]
+        updated, applied, _ = apply_overrides((p_current, p_historical), overrides)
+        by_label = {p.label: p for p in updated}
+        cur = by_label[KEY]
+        assert cur.planning_amount  == Decimal("222.12")
+        assert cur.commitment_status  == CommitmentStatus.COMMITTED
+        assert cur.recurrence_status  == RecurrenceStatus.RECURRING
+        assert cur.lifecycle_status   == LifecycleStatus.ACTIVE
+        assert cur.reserve_eligible   is True
+        assert cur.monthly_reserve_contrib == Decimal("222.12")
+
+    def test_hiyuvei_halo_historical_segment_contributes_zero_to_reserve(self):
+        """Historical segment (stream 2) must contribute 0 to reserve after overrides."""
+        KEY = "חיובי הלוו חיוב"
+        p_current    = _make_pattern(KEY, label=KEY,
+                                     planning_amount=Decimal("221.15"))
+        p_historical = _make_pattern(KEY, label=f"{KEY} (stream 2)",
+                                     planning_amount=Decimal("222.21"),
+                                     lifecycle=LifecycleStatus.ENDED)
+        overrides = [
+            PatternOverride(KEY, "", "planning_amount",   Decimal("222.12"),         "ov-halo-a",
+                            label_exact=KEY),
+            PatternOverride(KEY, "", "lifecycle_status",  LifecycleStatus.ACTIVE,    "ov-halo-l",
+                            label_exact=KEY),
+            PatternOverride(KEY, "", "commitment_status", CommitmentStatus.COMMITTED, "ov-halo-c",
+                            label_exact=KEY),
+            PatternOverride(KEY, "", "recurrence_status", RecurrenceStatus.RECURRING, "ov-halo-r",
+                            label_exact=KEY),
+        ]
+        updated, _, _ = apply_overrides((p_current, p_historical), overrides)
+        by_label = {p.label: p for p in updated}
+        hist = by_label[f"{KEY} (stream 2)"]
+        assert hist.reserve_eligible is False
+        assert hist.monthly_reserve_contrib == Decimal("0.00")
+
+    def test_hiyuvei_halo_expected_match_count_1_passes(self):
+        """expected_match_count=1 with exactly one matching pattern must pass silently."""
+        from intelligence.v4_contracts import FamilyReviewMappingConflict
+        KEY = "חיובי הלוו חיוב"
+        p_current    = _make_pattern(KEY, label=KEY, planning_amount=Decimal("221.15"))
+        p_historical = _make_pattern(KEY, label=f"{KEY} (stream 2)",
+                                     planning_amount=Decimal("222.21"))
+        ov = PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-cnt",
+                             label_exact=KEY, expected_match_count=1)
+        # Should NOT raise — exactly one pattern has label == KEY
+        apply_overrides((p_current, p_historical), [ov])
+
+    def test_hiyuvei_halo_zero_matches_raises_conflict(self):
+        """label_exact that matches nothing → FamilyReviewMappingConflict (fail-closed)."""
+        from intelligence.v4_contracts import FamilyReviewMappingConflict
+        KEY = "חיובי הלוו חיוב"
+        # Only historical segment present — exact label won't match KEY
+        p_historical = _make_pattern(KEY, label=f"{KEY} (stream 2)",
+                                     planning_amount=Decimal("222.21"))
+        ov = PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-zero",
+                             label_exact=KEY, expected_match_count=1)
+        with pytest.raises(FamilyReviewMappingConflict):
+            apply_overrides((p_historical,), [ov])
+
+    def test_hiyuvei_halo_duplicate_exact_matches_raises_conflict(self):
+        """Two patterns with same exact label → expected_match_count=1 must raise."""
+        from intelligence.v4_contracts import FamilyReviewMappingConflict
+        KEY = "חיובי הלוו חיוב"
+        p1 = _make_pattern(KEY, label=KEY, planning_amount=Decimal("221.15"))
+        p2 = _make_pattern(KEY, label=KEY, planning_amount=Decimal("219.00"))
+        ov = PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-dup",
+                             label_exact=KEY, expected_match_count=1)
+        with pytest.raises(FamilyReviewMappingConflict):
+            apply_overrides((p1, p2), [ov])
+
+    def test_hiyuvei_halo_amount_hint_not_used(self):
+        """Regression: no amount_hint on hiyuvei-halo overrides; label_exact is the discriminator."""
+        KEY = "חיובי הלוו חיוב"
+        p_current = _make_pattern(KEY, label=KEY, planning_amount=Decimal("221.15"))
+        # Build override exactly as in analyze_home_budget_v4.py — label_exact only, NO amount_hint
+        ov = PatternOverride(KEY, "", "planning_amount", Decimal("222.12"), "ov-halo-noamount",
+                             label_exact=KEY, expected_match_count=1)
+        assert ov.amount_hint is None, "amount_hint must be None for hiyuvei-halo overrides"
+        # Override must still apply correctly via label_exact alone
+        updated, applied, _ = apply_overrides((p_current,), [ov])
+        assert "ov-halo-noamount" in applied
+        assert updated[0].planning_amount == Decimal("222.12")
+
+    def test_efrat_and_local_committee_unaffected_by_label_exact_feature(self):
+        """Efrat (stream_label_hint) and local committee (stream_label_hint) still work correctly."""
+        # Efrat: broad override on stream 1, stream_label_hint="stream 2" override on stream 2
+        KEY_E = "עפרת גמל לפיצויים"
+        p_e1 = _make_pattern(KEY_E, label=KEY_E, planning_amount=Decimal("300.00"))
+        p_e2 = _make_pattern(KEY_E, label=f"{KEY_E} (stream 2)",
+                              planning_amount=Decimal("743.64"))
+        ov_e_broad = PatternOverride(KEY_E, "", "commitment_status", CommitmentStatus.COMMITTED, "ov-e-c")
+        ov_e_s2    = PatternOverride(KEY_E, "stream 2", "planning_amount", Decimal("743.64"), "ov-e-a2")
+        updated_e, applied_e, _ = apply_overrides((p_e1, p_e2), [ov_e_broad, ov_e_s2])
+        by_e = {p.label: p for p in updated_e}
+        assert by_e[KEY_E].commitment_status == CommitmentStatus.COMMITTED
+        assert by_e[f"{KEY_E} (stream 2)"].planning_amount == Decimal("743.64")
+        assert "ov-e-c"  in applied_e
+        assert "ov-e-a2" in applied_e
 
     # ── Test 8: Harel parallel streams 231.35 + 346.12 unchanged ──────────
     def test_harel_parallel_streams_unchanged(self):

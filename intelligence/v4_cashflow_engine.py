@@ -131,12 +131,19 @@ class PatternOverride:
     Matching rules (all must hold):
       1. description_key == pattern.description_key  (exact, never fuzzy)
       2. if stream_label_hint != "": stream_label_hint in pattern.label
-      3. if amount_hint is not None: pattern.planning_amount == amount_hint
-         (checked against RAW classifier amount before any overrides)
+      3. if label_exact is not None: pattern.label == label_exact  (exact equality)
+      4. if amount_hint is not None: pattern.planning_amount == amount_hint
+         (checked against RAW classifier planning_amount before any overrides)
+
+    label_exact vs stream_label_hint:
+      stream_label_hint — substring match, useful for "stream 2" suffix patterns
+      label_exact       — exact equality, use when two segments share the same
+                          description_key but have distinguishable exact labels
+                          (e.g. "חיובי הלוו חיוב" vs "חיובי הלוו חיוב (stream 2)")
 
     Validation:
       expected_match_count — if not None, the number of distinct patterns that this
-      override's (description_key, stream_label_hint, amount_hint) group must match.
+      override's group key must match.
       0 or wrong count → FamilyReviewMappingConflict raised by apply_overrides().
 
     TBD deduplication:
@@ -153,20 +160,24 @@ class PatternOverride:
     expected_match_count: Optional[int] = None   # None = "don't care"
     canonical_identity: Optional[str] = None     # for TBD canonical deduplication
     amount_hint: Optional[Decimal] = None        # discriminate by classifier planning_amount
+    label_exact: Optional[str] = None            # exact pattern.label equality (stronger than hint)
 
 
 def _override_matches(ov: PatternOverride, pattern: PatternResult) -> bool:
     """
     Return True if an override matches a pattern.
 
-    All three criteria must hold:
+    All criteria must hold:
       1. description_key exact match
       2. stream_label_hint substring match (empty = wildcard)
-      3. amount_hint exact match against RAW classifier planning_amount (None = wildcard)
+      3. label_exact exact equality match (None = wildcard)
+      4. amount_hint exact match against RAW classifier planning_amount (None = wildcard)
     """
     if ov.description_key != pattern.description_key:
         return False
     if ov.stream_label_hint and ov.stream_label_hint not in pattern.label:
+        return False
+    if ov.label_exact is not None and pattern.label != ov.label_exact:
         return False
     if ov.amount_hint is not None and pattern.planning_amount != ov.amount_hint:
         return False
@@ -175,7 +186,7 @@ def _override_matches(ov: PatternOverride, pattern: PatternResult) -> bool:
 
 def _override_group_key(ov: PatternOverride) -> tuple:
     """Canonical key that identifies a validation/deduplication group."""
-    return (ov.description_key, ov.stream_label_hint, ov.amount_hint)
+    return (ov.description_key, ov.stream_label_hint, ov.label_exact, ov.amount_hint)
 
 
 def apply_overrides(
@@ -340,13 +351,13 @@ def apply_overrides(
         if actual != ov.expected_match_count:
             conflicts.append(
                 f"  override key=({ov.description_key!r}, hint={ov.stream_label_hint!r}, "
-                f"amount={ov.amount_hint}): "
+                f"label_exact={ov.label_exact!r}, amount={ov.amount_hint}): "
                 f"expected {ov.expected_match_count} match(es), got {actual}"
             )
     if conflicts:
         raise FamilyReviewMappingConflict(
             "Family Review override mapping conflict(s) detected — "
-            "description_key, stream_label_hint, or amount_hint may be stale:\n"
+            "description_key, stream_label_hint, label_exact, or amount_hint may be stale:\n"
             + "\n".join(conflicts)
         )
 

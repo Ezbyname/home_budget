@@ -209,55 +209,61 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
 
-    # ── Hiyuvei Halo (חיובי הלוו חיוב) — TWO STREAMS, active 222.12 only ─
-    # The active stream has planning_amount=222.12 (verified).
-    # The inactive stream has a different classifier amount; it is NOT overridden
-    # here and keeps the classifier's lifecycle (ENDED / POSSIBLY_STOPPED).
-    # amount_hint discriminates between the two streams without fuzzy matching.
+    # ── Hiyuvei Halo (חיובי הלוו חיוב) — TWO SEGMENTS, current only ────────
+    # The classifier split one continuous loan into two segments when the per-payment
+    # amount shifted slightly:
+    #   Current segment  label="חיובי הלוו חיוב"           plan=221.15  ACTIVE
+    #   Historical seg.  label="חיובי הלוו חיוב (stream 2)" plan=222.21  POSSIBLY_STOPPED
+    # Both share description_key="חיובי הלוו חיוב".
+    # Family Review: ONE active loan commitment, 222.12/month.
+    # label_exact="חיובי הלוו חיוב" selects ONLY the current segment by exact label
+    # equality, excluding the historical "(stream 2)" segment.
+    # amount_hint is NOT used — classifier amounts (221.15 / 222.21) are observations,
+    # not stable identity.
     PatternOverride(
         description_key="חיובי הלוו חיוב",
         stream_label_hint="",
+        label_exact="חיובי הלוו חיוב",
         field_name="planning_amount",
         value=Decimal("222.12"),
         override_id="ov-hiyuvei-halo-amount",
         expected_match_count=1,
-        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
         stream_label_hint="",
+        label_exact="חיובי הלוו חיוב",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-hiyuvei-halo-committed",
         expected_match_count=1,
-        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
         stream_label_hint="",
+        label_exact="חיובי הלוו חיוב",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-hiyuvei-halo-recurrence",
         expected_match_count=1,
-        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
         stream_label_hint="",
+        label_exact="חיובי הלוו חיוב",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-hiyuvei-halo-active",
         expected_match_count=1,
-        amount_hint=Decimal("222.12"),
     ),
     PatternOverride(
         description_key="חיובי הלוו חיוב",
         stream_label_hint="",
+        label_exact="חיובי הלוו חיוב",
         field_name="purpose_type",
         value=PurposeType.LOAN,
         override_id="ov-hiyuvei-halo-purpose",
         expected_match_count=1,
-        amount_hint=Decimal("222.12"),
     ),
 
     # ── Harel Insurance (הראל בטוח חיוב) — two parallel streams ─────────
