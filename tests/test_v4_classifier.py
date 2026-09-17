@@ -367,67 +367,128 @@ class TestParallelStreams:
 
 class TestRecurrenceClassification:
     """
-    Exact recurrence rule (cadence-coverage based, no semantic evidence):
+    Approved V4 recurrence contract (cadence coverage + semantic plausibility):
 
-        cadence_coverage = min(1.0, len(dates) / expected_slots)
-        where expected_slots = round(span_days / 365.25 * occ_per_year)
-        and span_days = last_date - first_date (inclusive).
+        0–1 observations → UNKNOWN  (single data-point proves nothing)
+        2   observations → POSSIBLE_RECURRING at most
+        3+ observations:
+            IRREGULAR/UNKNOWN cadence:
+                6+ rows → POSSIBLE_RECURRING (real but irregular frequency)
+                <6 rows → NON_RECURRING
+            coverage < 0.40  → NON_RECURRING
+            coverage 0.40–0.69 → POSSIBLE_RECURRING
+            coverage >= 0.70:
+                semantic=True  → RECURRING
+                semantic=None  → POSSIBLE_RECURRING (ambiguous, wait for more data)
+                semantic=False → NON_RECURRING
 
-    Classification:
-        UNKNOWN           if len(rows) < 2
-        NON_RECURRING     if len(rows) == 1
-        RECURRING         if coverage >= 0.70 AND len(rows) >= 3
-        POSSIBLE_RECURRING if 0.40 <= coverage < 0.70
-        NON_RECURRING     if coverage < 0.40
+    RECURRING ≠ COMMITTED.
+    Transport, utilities, gym are semantically recurring + NON_COMMITTED.
+    Random grocery visits at the same supermarket are NOT semantically recurring.
 
-    Note on 3 consecutive monthly observations:
-        span=~60 days → expected_slots=round(60/365.25*12)=2
-        coverage=min(1.0, 3/2)=1.0 → RECURRING
-        This is CORRECT: 3 payments with no gaps IS recurring evidence.
-        "3 of 12 possible months" is a different scenario requiring
-        sparse dates spread over 12 months, which gives coverage≈0.25.
+    cadence_coverage = min(1.0, len(dates) / expected_slots)
+    expected_slots   = round(span_days / 365.25 * occ_per_year)
+    span_days        = last_date − first_date
     """
 
-    def test_high_coverage_monthly_is_recurring(self):
-        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(10), 1)]
-        assert classify_recurrence(rows, Cadence.MONTHLY) == RecurrenceStatus.RECURRING
+    def test_zero_rows_is_unknown(self):
+        assert classify_recurrence([], Cadence.MONTHLY) == RecurrenceStatus.UNKNOWN
 
-    def test_two_monthly_observations(self):
-        # 2 observations: len(rows)<3 required for RECURRING → POSSIBLE_RECURRING
+    def test_one_row_is_unknown(self):
+        # Approved: single observation proves nothing → UNKNOWN (not NON_RECURRING)
+        rows = [_make_expense(1, "2024-01-15")]
+        assert classify_recurrence(rows, Cadence.MONTHLY) == RecurrenceStatus.UNKNOWN
+
+    def test_two_monthly_observations_is_possible_recurring(self):
+        # 2 observations → POSSIBLE_RECURRING at most (regardless of coverage)
         rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(2), 1)]
         result = classify_recurrence(rows, Cadence.MONTHLY)
-        # coverage=min(1.0, 2/1)=1.0 but len<3 → POSSIBLE_RECURRING or better
-        assert result in (RecurrenceStatus.POSSIBLE_RECURRING, RecurrenceStatus.RECURRING)
+        assert result == RecurrenceStatus.POSSIBLE_RECURRING
 
-    def test_three_consecutive_monthly_is_recurring(self):
-        # 3 consecutive monthly observations → coverage=1.0, len=3 → RECURRING
-        # This is CORRECT behaviour: no missed payments in observed span
+    def test_three_consecutive_monthly_with_recurring_semantics_is_recurring(self):
+        # 3 consecutive monthly observations + recurring semantic → RECURRING
+        # coverage=1.0, semantic=True (mortgage keyword)
         rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(3), 1)]
-        result = classify_recurrence(rows, Cadence.MONTHLY)
+        result = classify_recurrence(
+            rows, Cadence.MONTHLY,
+            norm_desc="משכנתא בנק",  # mortgage → semantic=True
+            cat_id="mortgage",
+        )
         assert result == RecurrenceStatus.RECURRING
 
-    def test_single_row_is_non_recurring(self):
-        rows = [_make_expense(1, "2024-01-01")]
-        assert classify_recurrence(rows, Cadence.MONTHLY) == RecurrenceStatus.NON_RECURRING
+    def test_three_consecutive_monthly_with_ambiguous_semantics_is_possible_recurring(self):
+        # 3 consecutive monthly observations + ambiguous semantics → POSSIBLE_RECURRING
+        # coverage=1.0, but description is generic → semantic=None
+        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(3), 1)]
+        result = classify_recurrence(
+            rows, Cadence.MONTHLY,
+            norm_desc="TRANSFER 123",  # non-specific → semantic=None
+            cat_id=None,
+        )
+        assert result == RecurrenceStatus.POSSIBLE_RECURRING
+
+    def test_three_consecutive_monthly_with_onetime_semantics_is_non_recurring(self):
+        # coverage=1.0, but semantic=False (one-off shopping) → NON_RECURRING
+        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(3), 1)]
+        result = classify_recurrence(
+            rows, Cadence.MONTHLY,
+            norm_desc="ZARA",          # shopping → semantic=False
+            cat_id="shopping",
+        )
+        assert result == RecurrenceStatus.NON_RECURRING
+
+    def test_recurring_non_committed_transport(self):
+        # Bus/transport: semantically recurring even though NON_COMMITTED
+        # RECURRING ≠ COMMITTED — this is the core invariant
+        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(8), 1)]
+        recurrence = classify_recurrence(
+            rows, Cadence.MONTHLY,
+            norm_desc="רב קו",  # Rav Kav → semantic=True
+            cat_id="transport",
+        )
+        commitment = classify_commitment(rows, "רב קו", "transport")
+        assert recurrence == RecurrenceStatus.RECURRING
+        assert commitment != CommitmentStatus.COMMITTED, (
+            "Transport should not be COMMITTED — it's recurring but not a contractual obligation"
+        )
+
+    def test_high_coverage_utility_is_recurring(self):
+        # 10 monthly utility payments → RECURRING
+        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(10), 1)]
+        result = classify_recurrence(
+            rows, Cadence.MONTHLY,
+            norm_desc="חשמל",  # electricity → semantic=True
+            cat_id="utilities",
+        )
+        assert result == RecurrenceStatus.RECURRING
 
     def test_sparse_three_payments_over_twelve_months(self):
-        # 3 payments spread over ~10 months → coverage≈3/10=0.30 → not RECURRING
-        # span=309 days → expected_slots=round(309/365.25*12)=10 → coverage=3/10=0.30
+        # 3 payments spread over ~10 months → coverage≈0.30 → NON_RECURRING
+        # span≈309 days, expected_slots=round(309/365.25*12)≈10, coverage=3/10=0.30
         sparse_dates = ["2024-01-15", "2024-05-10", "2024-11-20"]
         rows = [_make_expense(i, d) for i, d in enumerate(sparse_dates, 1)]
-        result = classify_recurrence(rows, Cadence.MONTHLY)
+        result = classify_recurrence(
+            rows, Cadence.MONTHLY,
+            norm_desc="חשמל",
+            cat_id="utilities",
+        )
         assert result in (RecurrenceStatus.POSSIBLE_RECURRING, RecurrenceStatus.NON_RECURRING), (
             f"3 sparse monthly payments must not be RECURRING, got {result}"
         )
 
-    def test_repeated_discretionary_usage(self):
-        # Irregular cadence with many occurrences → POSSIBLE_RECURRING
+    def test_irregular_discretionary_many_rows(self):
+        # Irregular cadence + 8 rows → POSSIBLE_RECURRING (real frequency, irregular period)
         rows = [_make_expense(i, f"2024-{m:02d}-{d:02d}")
                 for i, (m, d) in enumerate([
                     (1,5),(1,22),(2,8),(3,3),(3,27),(4,14),(5,9),(6,1)
                 ], 1)]
-        result = classify_recurrence(rows, Cadence.IRREGULAR)
-        assert result in (RecurrenceStatus.POSSIBLE_RECURRING, RecurrenceStatus.NON_RECURRING)
+        result = classify_recurrence(
+            rows, Cadence.IRREGULAR,
+            norm_desc="COFFEE SHOP",
+            cat_id="entertainment",
+        )
+        # 8 >= 6 → POSSIBLE_RECURRING despite one-off semantics (irregular branch)
+        assert result == RecurrenceStatus.POSSIBLE_RECURRING
 
     def test_possible_recurring_budget_class_is_uncertain(self):
         from intelligence.v4_contracts import derive_budget_class

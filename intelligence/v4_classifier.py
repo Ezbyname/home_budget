@@ -372,6 +372,8 @@ _COMMITTED_KEYWORDS = [
 _NON_COMMITTED_KEYWORDS = [
     "קפה", "מסעדה", "RESTAURANT", "CAFE", "אוכל", "סופר",
     "קניות", "בגדים", "SHOPPING",
+    # Transport is recurring but NOT a contractual commitment (no cancellation penalty)
+    "רב קו", "RAV KAV", "BUS", "TRAIN", "METRO", "דלק", "FUEL",
 ]
 
 
@@ -452,25 +454,143 @@ def classify_lifecycle(
 # ═══════════════════════════════════════════════════════════════════════════
 # RECURRENCE CLASSIFICATION
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# Approved V4 recurrence contract:
+#
+#   0 observations  → UNKNOWN
+#   1 observation   → UNKNOWN (single data-point proves nothing)
+#   2 observations  → at most POSSIBLE_RECURRING automatically
+#   3+ observations → RECURRING only when BOTH hold:
+#                       (a) cadence evidence: coverage >= 0.70
+#                       (b) recurring semantic plausibility (see below)
+#                     POSSIBLE_RECURRING when cadence evidence but ambiguous semantics
+#                     NON_RECURRING when coverage < 0.40
+#
+# Recurring semantic plausibility is INDEPENDENT of CommitmentStatus.
+# A utility/subscription/transport payment is semantically plausible as
+# recurring even when NON_COMMITTED (e.g. bus fare, gym membership).
+# Random discretionary shopping at the same store is NOT plausible as
+# recurring even if cadence happens to look regular.
+#
+# _recurring_semantic_plausibility(norm_desc, cat_id) → True|False|None
+#   True  = semantics strongly support recurrence (subscription, utility, etc.)
+#   False = semantics argue against recurrence (one-off, shopping)
+#   None  = ambiguous / unknown → stays POSSIBLE_RECURRING at 3+
+#
+# Note: IRREGULAR/UNKNOWN cadence with 6+ observations → POSSIBLE_RECURRING
+# (frequency is real but period is irregular — bus, coffee, gym).
+
+# Categories and keywords that indicate recurring plausibility (NOT commitment)
+_RECURRING_PLAUSIBLE_CATEGORIES = {
+    "mortgage", "rent", "utilities", "electricity", "water", "internet",
+    "phone", "insurance", "health_insurance", "pension", "training_fund",
+    "loan", "credit", "subscription", "transport", "arnona", "tax",
+    "gym", "childcare",
+    # Income sources — employer salary / government benefits are recurring
+    "employer", "ביטוח לאומי", "government", "social_security",
+}
+_RECURRING_PLAUSIBLE_KEYWORDS = [
+    "משכנתא", "שכר דירה", "חשמל", "מים", "גז", "ארנונה", "ביטוח",
+    "אינטרנט", "סלולר", "NETFLIX", "SPOTIFY", "APPLE", "GOOGLE",
+    "HOT", "YES", "AMAZON PRIME", "DISNEY",
+    "קרן השתלמות", "פנסיה", "גמל", "הלוואה", "ליסינג",
+    "קופת חולים", "כללית", "מכבי",
+    "רב קו", "RAV KAV", "חניה חודשית",
+    "MONTHLY", "SUBSCRIPTION", "חיוב חודשי", "חיוב קבוע",
+    # Income-side recurring sources
+    "משכורת", "SALARY", "שכר", "WAGE",
+    "קצבה", "BENEFIT", "גמלה",
+]
+# Categories/keywords that argue AGAINST recurring plausibility
+_ONE_OFF_CATEGORIES = {"shopping", "entertainment", "restaurant", "travel"}
+_ONE_OFF_KEYWORDS = [
+    "קניון", "AMAZON.CO", "ZARA", "H&M", "ALIEXPRESS", "תיאטרון", "קולנוע",
+    "מסעדה", "RESTAURANT", "CAFE", "קפה", "טיסה", "FLIGHT", "HOTEL",
+    "BOOKING", "AIRBNB",
+]
+
+
+def _recurring_semantic_plausibility(
+    norm_desc: str,
+    cat_id: Optional[str],
+) -> Optional[bool]:
+    """
+    Return True if description/category strongly suggests recurring behaviour,
+    False if it suggests one-off behaviour, None if ambiguous.
+
+    This is INDEPENDENT of CommitmentStatus. Transport, utilities and gym
+    memberships are semantically recurring even when uncommitted.
+    """
+    desc_upper = norm_desc.upper()
+    cat_lower  = (cat_id or "").lower()
+
+    if cat_lower in _ONE_OFF_CATEGORIES:
+        return False
+    for kw in _ONE_OFF_KEYWORDS:
+        if kw.upper() in desc_upper:
+            return False
+
+    if cat_lower in _RECURRING_PLAUSIBLE_CATEGORIES:
+        return True
+    for kw in _RECURRING_PLAUSIBLE_KEYWORDS:
+        if kw.upper() in desc_upper:
+            return True
+
+    return None  # ambiguous
+
 
 def classify_recurrence(
     rows: list[ExpenseRow],
     cadence: Cadence,
+    norm_desc: str = "",
+    cat_id: Optional[str] = None,
 ) -> RecurrenceStatus:
-    if len(rows) < 2:
-        if len(rows) == 1:
-            return RecurrenceStatus.NON_RECURRING
+    """
+    Classify recurrence using cadence evidence + semantic plausibility.
+
+    Approved contract:
+      0–1 observations → UNKNOWN
+      2   observations → POSSIBLE_RECURRING at most
+      3+  observations:
+        cadence IRREGULAR/UNKNOWN:
+          6+ rows → POSSIBLE_RECURRING (irregular but real frequency)
+          <6 rows → NON_RECURRING
+        coverage < 0.40 → NON_RECURRING
+        coverage 0.40–0.69 → POSSIBLE_RECURRING
+        coverage >= 0.70:
+          semantic = True  → RECURRING
+          semantic = None  → POSSIBLE_RECURRING  (ambiguous)
+          semantic = False → NON_RECURRING
+    """
+    n = len(rows)
+    if n == 0:
         return RecurrenceStatus.UNKNOWN
-    coverage = cadence_coverage([r.date for r in rows], cadence)
-    if cadence == Cadence.IRREGULAR or cadence == Cadence.UNKNOWN:
-        if len(rows) >= 6:
+    if n == 1:
+        return RecurrenceStatus.UNKNOWN
+    if n == 2:
+        return RecurrenceStatus.POSSIBLE_RECURRING
+
+    # 3+ observations
+    if cadence in (Cadence.IRREGULAR, Cadence.UNKNOWN):
+        if n >= 6:
             return RecurrenceStatus.POSSIBLE_RECURRING
         return RecurrenceStatus.NON_RECURRING
-    if coverage >= 0.70 and len(rows) >= 3:
-        return RecurrenceStatus.RECURRING
-    if coverage >= 0.40:
+
+    coverage = cadence_coverage([r.date for r in rows], cadence)
+
+    if coverage < 0.40:
+        return RecurrenceStatus.NON_RECURRING
+    if coverage < 0.70:
         return RecurrenceStatus.POSSIBLE_RECURRING
-    return RecurrenceStatus.NON_RECURRING
+
+    # coverage >= 0.70 — consult semantic plausibility
+    semantic = _recurring_semantic_plausibility(norm_desc, cat_id)
+    if semantic is True:
+        return RecurrenceStatus.RECURRING
+    if semantic is False:
+        return RecurrenceStatus.NON_RECURRING
+    # semantic is None (ambiguous) → POSSIBLE_RECURRING regardless of coverage
+    return RecurrenceStatus.POSSIBLE_RECURRING
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -597,8 +717,8 @@ def classify_stream(
         if regime is not None and regime > Decimal("0"):
             planning_amount = regime
 
-    # Recurrence
-    recurrence = classify_recurrence(rows, cadence)
+    # Recurrence — pass norm_desc and cat_id for semantic plausibility check
+    recurrence = classify_recurrence(rows, cadence, norm_desc=description_key, cat_id=cat_id)
 
     # Commitment
     commitment = classify_commitment(rows, description_key, cat_id)
@@ -826,10 +946,12 @@ def classify_income(
 
         cadence = detect_cadence(dates)
         recurrence = classify_recurrence(
-            # fake ExpenseRow for recurrence API
+            # income rows wrapped as minimal duck-typed objects for recurrence API
             [type("_R", (), {"date": r.date, "amount": r.amount, "source": r.source})()
              for r in stream_rows],
             cadence,
+            norm_desc=norm_desc,
+            cat_id=sample.source or "",  # income source as category hint
         )
         income_type = _classify_income_type(
             sample.person or "", sample.source or "", sample.description or ""
