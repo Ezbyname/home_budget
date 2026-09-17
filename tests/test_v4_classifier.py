@@ -64,7 +64,7 @@ from intelligence.v4_contracts import (
 from intelligence.v4_cashflow_engine import (
     PatternOverride, ReviewedTargets, SettlementRecord as EngineSettlement,
     apply_overrides, compute_monthly_reserve, compute_planning_income,
-    open_readonly_db, run_analysis,
+    open_readonly_db, run_analysis, report_to_json,
     make_reconciliation_record,
 )
 
@@ -230,10 +230,24 @@ class TestAmountBehavior:
                    Decimal("1050.00"), Decimal("1020.00")]
         assert classify_amount_behavior(amounts) in (AmountBehavior.VERY_STABLE, AmountBehavior.STABLE)
 
-    def test_variable_high_cv(self):
+    def test_variable_moderate_spread(self):
+        # CV ≈ 0.39 (mean=200, stdev≈77) — between 0.25 and 0.60 → VARIABLE
+        amounts = [Decimal("100.00"), Decimal("150.00"), Decimal("200.00"),
+                   Decimal("280.00"), Decimal("270.00")]
+        result = classify_amount_behavior(amounts)
+        assert result == AmountBehavior.VARIABLE, (
+            f"Expected VARIABLE (CV 0.25–0.60), got {result}"
+        )
+
+    def test_highly_variable_cv_approved_threshold(self):
+        # CV ≈ 0.68 (mean=210, stdev≈143) — >= 0.60 → HIGHLY_VARIABLE per approved contract
+        # Approved thresholds: VERY_STABLE<0.05, STABLE<0.25, VARIABLE<0.60, HIGHLY_VARIABLE>=0.60
         amounts = [Decimal("100.00"), Decimal("200.00"), Decimal("400.00"),
                    Decimal("50.00"), Decimal("300.00")]
-        assert classify_amount_behavior(amounts) == AmountBehavior.VARIABLE
+        result = classify_amount_behavior(amounts)
+        assert result == AmountBehavior.HIGHLY_VARIABLE, (
+            f"CV≈0.68 must be HIGHLY_VARIABLE (approved threshold >=0.60), got {result}"
+        )
 
     def test_highly_variable_extreme_cv(self):
         amounts = [Decimal("10.00"), Decimal("1000.00"), Decimal("5.00"),
@@ -352,19 +366,67 @@ class TestParallelStreams:
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestRecurrenceClassification:
+    """
+    Exact recurrence rule (cadence-coverage based, no semantic evidence):
+
+        cadence_coverage = min(1.0, len(dates) / expected_slots)
+        where expected_slots = round(span_days / 365.25 * occ_per_year)
+        and span_days = last_date - first_date (inclusive).
+
+    Classification:
+        UNKNOWN           if len(rows) < 2
+        NON_RECURRING     if len(rows) == 1
+        RECURRING         if coverage >= 0.70 AND len(rows) >= 3
+        POSSIBLE_RECURRING if 0.40 <= coverage < 0.70
+        NON_RECURRING     if coverage < 0.40
+
+    Note on 3 consecutive monthly observations:
+        span=~60 days → expected_slots=round(60/365.25*12)=2
+        coverage=min(1.0, 3/2)=1.0 → RECURRING
+        This is CORRECT: 3 payments with no gaps IS recurring evidence.
+        "3 of 12 possible months" is a different scenario requiring
+        sparse dates spread over 12 months, which gives coverage≈0.25.
+    """
+
     def test_high_coverage_monthly_is_recurring(self):
         rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(10), 1)]
         assert classify_recurrence(rows, Cadence.MONTHLY) == RecurrenceStatus.RECURRING
+
+    def test_two_monthly_observations(self):
+        # 2 observations: len(rows)<3 required for RECURRING → POSSIBLE_RECURRING
+        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(2), 1)]
+        result = classify_recurrence(rows, Cadence.MONTHLY)
+        # coverage=min(1.0, 2/1)=1.0 but len<3 → POSSIBLE_RECURRING or better
+        assert result in (RecurrenceStatus.POSSIBLE_RECURRING, RecurrenceStatus.RECURRING)
+
+    def test_three_consecutive_monthly_is_recurring(self):
+        # 3 consecutive monthly observations → coverage=1.0, len=3 → RECURRING
+        # This is CORRECT behaviour: no missed payments in observed span
+        rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(3), 1)]
+        result = classify_recurrence(rows, Cadence.MONTHLY)
+        assert result == RecurrenceStatus.RECURRING
 
     def test_single_row_is_non_recurring(self):
         rows = [_make_expense(1, "2024-01-01")]
         assert classify_recurrence(rows, Cadence.MONTHLY) == RecurrenceStatus.NON_RECURRING
 
-    def test_low_coverage_is_possible_recurring(self):
-        # Only 3 payments in 12 months — coverage ~3/12 = 0.25 → should not be RECURRING
+    def test_sparse_three_payments_over_twelve_months(self):
+        # 3 payments spread over ~10 months → coverage≈3/10=0.30 → not RECURRING
+        # span=309 days → expected_slots=round(309/365.25*12)=10 → coverage=3/10=0.30
         sparse_dates = ["2024-01-15", "2024-05-10", "2024-11-20"]
         rows = [_make_expense(i, d) for i, d in enumerate(sparse_dates, 1)]
         result = classify_recurrence(rows, Cadence.MONTHLY)
+        assert result in (RecurrenceStatus.POSSIBLE_RECURRING, RecurrenceStatus.NON_RECURRING), (
+            f"3 sparse monthly payments must not be RECURRING, got {result}"
+        )
+
+    def test_repeated_discretionary_usage(self):
+        # Irregular cadence with many occurrences → POSSIBLE_RECURRING
+        rows = [_make_expense(i, f"2024-{m:02d}-{d:02d}")
+                for i, (m, d) in enumerate([
+                    (1,5),(1,22),(2,8),(3,3),(3,27),(4,14),(5,9),(6,1)
+                ], 1)]
+        result = classify_recurrence(rows, Cadence.IRREGULAR)
         assert result in (RecurrenceStatus.POSSIBLE_RECURRING, RecurrenceStatus.NON_RECURRING)
 
     def test_possible_recurring_budget_class_is_uncertain(self):
@@ -826,6 +888,53 @@ class TestReadOnlyDB:
         count = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
         conn.close()
         assert count == 0
+
+    def test_deterministic_financial_output(self):
+        """
+        Same DB + config → identical canonical financial payload on two runs.
+        Non-deterministic metadata (run_at, run_id) is excluded from the hash.
+        Approved canonical: exclude top-level 'metadata' key.
+        """
+        import hashlib, json
+        from intelligence.v4_cashflow_engine import PatternOverride, ReviewedTargets
+        from intelligence.v4_contracts import make_income_stream_key
+
+        db_path = self._create_test_db()
+        # Insert reproducible test data
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            INSERT INTO expenses VALUES
+                (1,'2024-01-15','mortgage','משכנתא בנק',3200,NULL,NULL,NULL,1,NULL,NULL),
+                (2,'2024-02-15','mortgage','משכנתא בנק',3200,NULL,NULL,NULL,1,NULL,NULL),
+                (3,'2024-03-15','mortgage','משכנתא בנק',3200,NULL,NULL,NULL,1,NULL,NULL);
+            INSERT INTO income VALUES
+                (1,'2024-01-01','אשה','employer',16623,'משכורת',1,1,NULL),
+                (2,'2024-02-01','אשה','employer',16623,'משכורת',1,1,NULL),
+                (3,'2024-03-01','אשה','employer',16623,'משכורת',1,1,NULL);
+        """)
+        conn.commit(); conn.close()
+
+        targets = ReviewedTargets(
+            planning_income=Decimal("31659.50"),
+            monthly_reserve=Decimal("15395.99"),
+        )
+        baselines = {
+            make_income_stream_key("אשה", "employer", "משכורת"): Decimal("16623.00"),
+        }
+
+        def canonical_hash(report, settlements):
+            j = json.loads(report_to_json(report, settlements))
+            j.pop("metadata", None)
+            return hashlib.sha256(
+                json.dumps(j, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()
+
+        r1, s1 = run_analysis(db_path, reviewed_targets=targets, income_baselines=baselines)
+        r2, s2 = run_analysis(db_path, reviewed_targets=targets, income_baselines=baselines)
+
+        h1 = canonical_hash(r1, s1)
+        h2 = canonical_hash(r2, s2)
+        assert h1 == h2, f"Non-deterministic output: {h1} vs {h2}"
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -219,7 +219,7 @@ def classify_amount_behavior(amounts: list[Decimal]) -> AmountBehavior:
         return AmountBehavior.VERY_STABLE
     if cv < 0.25:
         return AmountBehavior.STABLE
-    if cv < 0.75:
+    if cv < 0.60:
         return AmountBehavior.VARIABLE
     return AmountBehavior.HIGHLY_VARIABLE
 
