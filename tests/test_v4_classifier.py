@@ -853,7 +853,7 @@ class TestOverrideApplication:
             value=CommitmentStatus.COMMITTED,
             override_id="ov-test-1",
         )
-        updated, applied = apply_overrides((pattern,), [override])
+        updated, applied, _audit = apply_overrides((pattern,), [override])
         assert len(updated) == 1
         assert updated[0].commitment_status == CommitmentStatus.COMMITTED
         assert "ov-test-1" in applied
@@ -867,7 +867,7 @@ class TestOverrideApplication:
             value=CommitmentStatus.COMMITTED,
             override_id="ov-wrong",
         )
-        updated, applied = apply_overrides((pattern,), [override])
+        updated, applied, _audit = apply_overrides((pattern,), [override])
         assert "ov-wrong" not in applied
 
     def test_raw_patterns_unchanged_after_override(self):
@@ -880,7 +880,7 @@ class TestOverrideApplication:
             value=CommitmentStatus.NON_COMMITTED,
             override_id="ov-test-2",
         )
-        updated, _ = apply_overrides((pattern,), [override])
+        updated, _applied, _audit = apply_overrides((pattern,), [override])
         # Raw pattern must be unchanged (frozen dataclass)
         assert pattern.commitment_status == original_commitment
         assert updated[0].commitment_status == CommitmentStatus.NON_COMMITTED
@@ -896,7 +896,7 @@ class TestOverrideApplication:
             value=Decimal("191.15"),
             override_id="ov-clalit-amount",
         )
-        updated, applied = apply_overrides((pattern,), [override])
+        updated, applied, _audit = apply_overrides((pattern,), [override])
         assert "ov-clalit-amount" in applied
         assert updated[0].decision_source == DecisionSource.FAMILY_REVIEW, (
             "decision_source must be FAMILY_REVIEW when override applied"
@@ -912,7 +912,7 @@ class TestOverrideApplication:
             value=Decimal("100.00"),
             override_id="ov-other",
         )
-        updated, applied = apply_overrides((pattern,), [override])
+        updated, applied, _audit = apply_overrides((pattern,), [override])
         assert not applied
         assert updated[0].decision_source == DecisionSource.CLASSIFIER
 
@@ -926,7 +926,7 @@ class TestOverrideApplication:
             value=LifecycleStatus.CANCELLED,
             override_id="ov-stp-cancelled-test",
         )
-        updated, _ = apply_overrides((pattern,), [override])
+        updated, _applied, _audit = apply_overrides((pattern,), [override])
         assert updated[0].reserve_eligible is False
         assert updated[0].monthly_reserve_contrib == Decimal("0.00")
 
@@ -940,7 +940,7 @@ class TestOverrideApplication:
             value=LifecycleStatus.ENDED,
             override_id="ov-ended-test",
         )
-        updated, _ = apply_overrides((pattern,), [override])
+        updated, _applied, _audit = apply_overrides((pattern,), [override])
         assert updated[0].reserve_eligible is False
 
     def test_none_planning_amount_override_makes_pattern_reserve_ineligible(self):
@@ -953,7 +953,7 @@ class TestOverrideApplication:
             value=None,
             override_id="ov-tbd-test",
         )
-        updated, _ = apply_overrides((pattern,), [override])
+        updated, _applied, _audit = apply_overrides((pattern,), [override])
         assert updated[0].reserve_eligible is False
         assert updated[0].monthly_reserve_contrib == Decimal("0.00")
 

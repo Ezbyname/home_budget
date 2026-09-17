@@ -137,16 +137,21 @@ class PatternOverride:
 def apply_overrides(
     patterns: tuple[PatternResult, ...],
     overrides: list[PatternOverride],
-) -> tuple[tuple[PatternResult, ...], tuple[str, ...]]:
+) -> tuple[tuple[PatternResult, ...], tuple[str, ...], list[dict]]:
     """
     Apply in-memory overrides to raw patterns.
-    Returns (updated_patterns, applied_override_ids).
+    Returns (updated_patterns, applied_override_ids, override_audit).
+
+    override_audit: one dict per overridden pattern showing classifier
+    raw state, override_ids applied, and final effective state — for
+    auditability without hiding the original classifier result.
 
     Override matching: description_key must match exactly.
     If stream_label_hint is non-empty, the pattern label must contain it.
     """
     applied: list[str] = []
     updated: list[PatternResult] = []
+    audit: list[dict] = []
 
     for pattern in patterns:
         relevant = [
@@ -179,10 +184,19 @@ def apply_overrides(
             "reserve_eligible": pattern.reserve_eligible,
             "monthly_reserve_contrib": pattern.monthly_reserve_contrib,
         }
+        pattern_applied: list[str] = []
+        changed_fields: dict[str, dict] = {}
         for ov in relevant:
             if ov.field_name in kwargs:
+                old_val = kwargs[ov.field_name]
                 kwargs[ov.field_name] = ov.value
                 applied.append(ov.override_id)
+                pattern_applied.append(ov.override_id)
+                changed_fields[ov.field_name] = {
+                    "classifier": str(old_val) if old_val is not None else None,
+                    "override": str(ov.value) if ov.value is not None else None,
+                    "override_id": ov.override_id,
+                }
         # Override authority: at least one override applied → FAMILY_REVIEW
         kwargs["decision_source"] = DecisionSource.FAMILY_REVIEW
 
@@ -213,9 +227,37 @@ def apply_overrides(
         else:
             kwargs["monthly_reserve_contrib"] = Decimal("0.00")
 
-        updated.append(PatternResult(**kwargs))
+        effective = PatternResult(**kwargs)
+        updated.append(effective)
 
-    return tuple(updated), tuple(applied)
+        # Per-pattern audit record: classifier raw → overrides → effective
+        audit.append({
+            "label": pattern.label,
+            "description_key": pattern.description_key,
+            "override_ids_applied": pattern_applied,
+            "changed_fields": changed_fields,
+            "classifier_result": {
+                "recurrence_status": pattern.recurrence_status.value,
+                "commitment_status": pattern.commitment_status.value,
+                "lifecycle_status": pattern.lifecycle_status.value,
+                "cadence": pattern.cadence.value,
+                "planning_amount": str(pattern.planning_amount) if pattern.planning_amount is not None else None,
+                "reserve_eligible": pattern.reserve_eligible,
+                "monthly_reserve_contrib": str(pattern.monthly_reserve_contrib),
+            },
+            "effective_result": {
+                "recurrence_status": effective.recurrence_status.value,
+                "commitment_status": effective.commitment_status.value,
+                "lifecycle_status": effective.lifecycle_status.value,
+                "cadence": effective.cadence.value,
+                "planning_amount": str(effective.planning_amount) if effective.planning_amount is not None else None,
+                "reserve_eligible": effective.reserve_eligible,
+                "monthly_reserve_contrib": str(effective.monthly_reserve_contrib),
+                "decision_source": effective.decision_source.value,
+            },
+        })
+
+    return tuple(updated), tuple(applied), audit
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -300,7 +342,7 @@ def run_analysis(
     )
 
     # — EFFECTIVE result (after overrides) —
-    eff_patterns, applied_overrides = apply_overrides(raw.patterns, pattern_overrides)
+    eff_patterns, applied_overrides, override_audit = apply_overrides(raw.patterns, pattern_overrides)
     eff_income = raw.income_streams  # income overrides via income_baselines already applied
 
     eff_planning_income = compute_planning_income(eff_income)
@@ -354,6 +396,7 @@ def run_analysis(
         raw=raw,
         effective=effective,
         reconciliation=reconciliation,
+        override_audit=tuple(override_audit),
     )
 
     return report, settlements
@@ -445,6 +488,18 @@ def report_to_json(
     effective_income = report.effective.planning_income_effective
     flexible = quantize_ils(effective_income - effective_reserve)
 
+    # Patterns that are COMMITTED+RECURRING+ACTIVE but amount=TBD (planning_amount=None).
+    # These represent a genuine UNKNOWN contribution to the reserve — not zero.
+    tbd_reserve_patterns = [
+        p for p in report.effective.patterns
+        if (not p.reserve_eligible
+            and p.planning_amount is None
+            and p.commitment_status.value == "COMMITTED"
+            and p.lifecycle_status.value == "ACTIVE"
+            and p.recurrence_status.value == "RECURRING")
+    ]
+    reserve_is_lower_bound = len(tbd_reserve_patterns) > 0
+
     payload = {
         "metadata": {
             "classifier_version": report.classifier_version,
@@ -463,6 +518,10 @@ def report_to_json(
         "aggregates": {
             "effective_planning_income": str(effective_income),
             "effective_monthly_reserve": str(effective_reserve),
+            "effective_monthly_reserve_note": (
+                "LOWER_BOUND: excludes TBD-amount committed patterns" if reserve_is_lower_bound
+                else "EXACT"
+            ),
             "effective_flexible": str(flexible),
             "raw_planning_income": str(report.raw.planning_income_raw),
             "raw_monthly_reserve": str(report.raw.monthly_reserve_raw),
@@ -473,11 +532,27 @@ def report_to_json(
             "reserve_eligible_count": sum(
                 1 for p in report.effective.patterns if p.reserve_eligible
             ),
+            "reserve_tbd_count": len(tbd_reserve_patterns),
+            "reserve_is_lower_bound": reserve_is_lower_bound,
         },
         "reconciliation": {
             "planning_income": _rec_record_to_dict(report.reconciliation.planning_income),
             "monthly_reserve": _rec_record_to_dict(report.reconciliation.monthly_reserve),
         },
+        "override_audit": list(report.override_audit),
+        "reserve_tbd_patterns": [
+            {
+                "label": p.label,
+                "description_key": p.description_key,
+                "commitment_status": p.commitment_status.value,
+                "recurrence_status": p.recurrence_status.value,
+                "lifecycle_status": p.lifecycle_status.value,
+                "planning_amount": None,
+                "monthly_reserve_contrib": "UNKNOWN",
+                "note": "Committed recurring obligation; amount not yet reviewed. Reserve total is a lower bound.",
+            }
+            for p in tbd_reserve_patterns
+        ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2, default=_decimal_default)
 
@@ -512,13 +587,31 @@ def report_to_markdown(
         lines.append(f"| {s.person} | {s.income_type.value} | {s.reliability_status.value} "
                      f"| ₪{s.planning_baseline} | {s.cadence.value} |")
 
-    lines.append(f"\n## Reserve-Eligible Patterns\n")
+    tbd_reserve = [
+        p for p in eff.patterns
+        if (not p.reserve_eligible and p.planning_amount is None
+            and p.commitment_status.value == "COMMITTED"
+            and p.lifecycle_status.value == "ACTIVE"
+            and p.recurrence_status.value == "RECURRING")
+    ]
+    reserve_note = " *(LOWER BOUND — TBD patterns excluded)*" if tbd_reserve else ""
+
+    lines.append(f"\n## Reserve-Eligible Patterns{reserve_note}\n")
     reserve_patterns = [p for p in eff.patterns if p.reserve_eligible]
-    lines.append("| Label | Amount | Cadence | Monthly |")
-    lines.append("|-------|--------|---------|---------|")
+    lines.append("| Label | Amount | Cadence | Monthly | Source |")
+    lines.append("|-------|--------|---------|---------|--------|")
     for p in reserve_patterns:
+        src = "FAMILY_REVIEW" if p.decision_source.value == "FAMILY_REVIEW" else "CLASSIFIER"
         lines.append(f"| {p.label} | ₪{p.planning_amount} | {p.cadence.value} "
-                     f"| ₪{p.monthly_reserve_contrib} |")
+                     f"| ₪{p.monthly_reserve_contrib} | {src} |")
+
+    if tbd_reserve:
+        lines.append(f"\n## Reserve TBD Patterns (amount UNKNOWN — not included in reserve total)\n")
+        lines.append("| Label | Commitment | Lifecycle | Note |")
+        lines.append("|-------|------------|-----------|------|")
+        for p in tbd_reserve:
+            lines.append(f"| {p.label} | {p.commitment_status.value} "
+                         f"| {p.lifecycle_status.value} | amount not yet reviewed |")
 
     lines.append(f"\n## Patterns Requiring Review ({len(eff.family_review_items)})\n")
     for item in eff.family_review_items:
@@ -534,6 +627,28 @@ def report_to_markdown(
             f"| {p.budget_class.value} | {p.lifecycle_status.value} "
             f"| ₪{p.planning_amount or '?'} | {review} |"
         )
+
+    if report.override_audit:
+        lines.append(f"\n## Override Audit — Family Review Decisions ({len(report.override_audit)} patterns)\n")
+        lines.append("Each entry shows: classifier raw result → override fields → effective result.\n")
+        for entry in report.override_audit:
+            lines.append(f"### {entry['label']}")
+            cr = entry['classifier_result']
+            er = entry['effective_result']
+            lines.append(f"\n**Classifier result:** rec={cr['recurrence_status']} "
+                         f"com={cr['commitment_status']} lc={cr['lifecycle_status']} "
+                         f"amount={cr['planning_amount'] or 'UNKNOWN'} "
+                         f"reserve={cr['reserve_eligible']}")
+            if entry['changed_fields']:
+                lines.append(f"\n**Overrides applied:** {', '.join(entry['override_ids_applied'])}")
+                for field, change in entry['changed_fields'].items():
+                    lines.append(f"  - `{field}`: `{change['classifier']}` → `{change['override']}`")
+            lines.append(f"\n**Effective result:** rec={er['recurrence_status']} "
+                         f"com={er['commitment_status']} lc={er['lifecycle_status']} "
+                         f"amount={er['planning_amount'] or 'UNKNOWN'} "
+                         f"reserve={er['reserve_eligible']} "
+                         f"monthly={er['monthly_reserve_contrib']} "
+                         f"source={er['decision_source']}\n")
 
     lines.append(f"\n## Settlements ({len(settlements)})\n")
     for s in settlements:

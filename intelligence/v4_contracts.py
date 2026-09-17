@@ -442,6 +442,15 @@ class ClassificationReport:
     Full output of a V4 classification run.
     Preserves both raw and effective views for auditability.
     Phase B produces this; Phase C reviews it.
+
+    override_audit: per-pattern audit trail for every pattern where
+    FAMILY_REVIEW overrides were applied. Each entry shows:
+      - classifier_result: what the pure classifier derived
+      - changed_fields: field-by-field before/after per override
+      - effective_result: final state after all overrides
+
+    This preserves three-layer auditability (classifier → override → effective)
+    without hiding or overwriting the original classifier evidence.
     """
     classifier_version: str
     run_id:             str
@@ -450,6 +459,7 @@ class ClassificationReport:
     raw:                RawClassifierOutput
     effective:          EffectiveFinancialResult
     reconciliation:     ReconciliationReport
+    override_audit:     tuple[dict, ...]    # per-pattern audit records
 
 
 # ═══════════════════════════════════════════════════════════════════════════
