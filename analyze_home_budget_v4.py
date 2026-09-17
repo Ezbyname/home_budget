@@ -63,11 +63,12 @@ REVIEWED_TARGETS = ReviewedTargets(
 )
 
 # Income stream baselines (Family Review ground truth)
-# Keys computed from (person, source, norm_desc)
+# Keys computed from (person, source, norm_desc) — verified against runtime DB output.
+# norm_desc is normalize_description(raw_description) from the actual income rows.
 _INCOME_BASELINES_RAW: list[tuple[str, str, str, Decimal]] = [
-    ("אשה", "employer", "משכורת",    Decimal("16623.00")),
-    ("בעל", "employer", "משכורת",    Decimal("14446.00")),
-    ("",    "ביטוח לאומי", "קצבת ילדים", Decimal("590.50")),
+    ("wife",   "salary",        "בנק לאומי משכורת",   Decimal("16623.00")),
+    ("husband","salary",        "בנק פועלים משכורת",  Decimal("14446.00")),
+    ("family", "child_allowance","ביטוח לאומי - ילדים", Decimal("590.50")),
     # family support and bonuses: planning_baseline = 0 by policy
 ]
 
@@ -76,33 +77,325 @@ INCOME_BASELINES: dict[str, Decimal] = {
     for person, source, desc, baseline in _INCOME_BASELINES_RAW
 }
 
-# Pattern-level overrides for known Family Review decisions
-# These encode human knowledge that the classifier cannot derive from evidence alone.
+# Pattern-level overrides for known Family Review decisions.
+# description_key = normalize_description(raw_description) — verified against runtime output.
+# stream_label_hint = substring that must appear in pattern.label (empty = any stream).
 PATTERN_OVERRIDES: list[PatternOverride] = [
-    # Gal Naomi training fund — SAVINGS_INVESTMENT but reserve-eligible
+
+    # ── Gal Naomi (הוק לגל נעמי לסניף 17-662) ────────────────────────────
+    # Two parallel debt-repayment streams (607 and 2000). Both active recurring committed.
     PatternOverride(
-        description_key="גל נעמי".upper(),
-        stream_label_hint="607",
-        field_name="purpose_type",
-        value=PurposeType.SAVINGS_INVESTMENT,
-        override_id="ov-gal-naomi-607-purpose",
+        description_key="הוק לגל נעמי לסניף 17-662",
+        stream_label_hint="",   # applies to all streams with this key
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-gal-naomi-recurrence",
     ),
     PatternOverride(
-        description_key="גל נעמי".upper(),
-        stream_label_hint="607",
+        description_key="הוק לגל נעמי לסניף 17-662",
+        stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
-        override_id="ov-gal-naomi-607-committed",
+        override_id="ov-gal-naomi-committed",
     ),
-    # Discount bank card fee — FINANCIAL_FEE but reserve-eligible
     PatternOverride(
-        description_key="",  # will be set when we know the real description key
-        stream_label_hint="דיסקונט",
-        field_name="purpose_type",
-        value=PurposeType.FINANCIAL_FEE,
-        override_id="ov-discount-fee-purpose",
+        description_key="הוק לגל נעמי לסניף 17-662",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-gal-naomi-active",
     ),
-    # Cancelled STP service
+    # Stream 1 (~607): planning_amount reviewed
+    PatternOverride(
+        description_key="הוק לגל נעמי לסניף 17-662",
+        stream_label_hint="",   # classifier assigns planning_amount per stream; no amount override
+        field_name="purpose_type",
+        value=PurposeType.LOAN,
+        override_id="ov-gal-naomi-purpose",
+    ),
+
+    # ── Arnona (מ.א. חוף ה חיוב) ──────────────────────────────────────────
+    # Every-2-months, planning_amount=886.10, monthly reserve=443.05
+    PatternOverride(
+        description_key="מ.א. חוף ה חיוב",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.EVERY_2_MONTHS,
+        override_id="ov-arnona-cadence",
+    ),
+    PatternOverride(
+        description_key="מ.א. חוף ה חיוב",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("886.10"),
+        override_id="ov-arnona-amount",
+    ),
+    PatternOverride(
+        description_key="מ.א. חוף ה חיוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-arnona-recurrence",
+    ),
+    PatternOverride(
+        description_key="מ.א. חוף ה חיוב",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-arnona-committed",
+    ),
+    PatternOverride(
+        description_key="מ.א. חוף ה חיוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-arnona-active",
+    ),
+
+    # ── Harel Loan (הראלהלואה חיוב) ──────────────────────────────────────
+    PatternOverride(
+        description_key="הראלהלואה חיוב",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("390.80"),
+        override_id="ov-harel-loan-amount",
+    ),
+    PatternOverride(
+        description_key="הראלהלואה חיוב",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-harel-loan-committed",
+    ),
+    PatternOverride(
+        description_key="הראלהלואה חיוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-harel-loan-recurrence",
+    ),
+    PatternOverride(
+        description_key="הראלהלואה חיוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-harel-loan-active",
+    ),
+    PatternOverride(
+        description_key="הראלהלואה חיוב",
+        stream_label_hint="",
+        field_name="purpose_type",
+        value=PurposeType.LOAN,
+        override_id="ov-harel-loan-purpose",
+    ),
+
+    # ── Hiyuvei Halo (חיובי הלוו חיוב) ──────────────────────────────────
+    PatternOverride(
+        description_key="חיובי הלוו חיוב",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("222.12"),
+        override_id="ov-hiyuvei-halo-amount",
+    ),
+    PatternOverride(
+        description_key="חיובי הלוו חיוב",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-hiyuvei-halo-committed",
+    ),
+    PatternOverride(
+        description_key="חיובי הלוו חיוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-hiyuvei-halo-recurrence",
+    ),
+    PatternOverride(
+        description_key="חיובי הלוו חיוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-hiyuvei-halo-active",
+    ),
+    PatternOverride(
+        description_key="חיובי הלוו חיוב",
+        stream_label_hint="",
+        field_name="purpose_type",
+        value=PurposeType.LOAN,
+        override_id="ov-hiyuvei-halo-purpose",
+    ),
+
+    # ── Harel Insurance (הראל בטוח חיוב) — two parallel streams ─────────
+    # Stream 1: 231.35, Stream 2: 346.12
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-harel-ins-recurrence",
+    ),
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-harel-ins-committed",
+    ),
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-harel-ins-active",
+    ),
+
+    # ── Mei Hof HaKarmel (מי חוף הכרמל) — every-2-months, variable ───────
+    # Monthly reserve 205.50 → planning_amount = 205.50 * 12 / 6 = 411.00
+    PatternOverride(
+        description_key="מי חוף הכרמל",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.EVERY_2_MONTHS,
+        override_id="ov-mei-hof-cadence",
+    ),
+    PatternOverride(
+        description_key="מי חוף הכרמל",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("411.00"),
+        override_id="ov-mei-hof-amount",
+    ),
+    PatternOverride(
+        description_key="מי חוף הכרמל",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-mei-hof-recurrence",
+    ),
+    PatternOverride(
+        description_key="מי חוף הכרמל",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-mei-hof-committed",
+    ),
+    PatternOverride(
+        description_key="מי חוף הכרמל",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-mei-hof-active",
+    ),
+
+    # ── Mishki Ram (משקי רם — normalized from משקי רם בע"מ) ──────────────
+    PatternOverride(
+        description_key="משקי רם",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("787.61"),
+        override_id="ov-mishki-ram-amount",
+    ),
+    PatternOverride(
+        description_key="משקי רם",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-mishki-ram-recurrence",
+    ),
+    PatternOverride(
+        description_key="משקי רם",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-mishki-ram-committed",
+    ),
+    PatternOverride(
+        description_key="משקי רם",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-mishki-ram-active",
+    ),
+
+    # ── Training Fund (קרן השתלמות) — SAVINGS_INVESTMENT, reserve-eligible ─
+    # planning_amount=137.59; purpose override only (classifier may mis-classify purpose)
+    PatternOverride(
+        description_key="קרן השתלמות",
+        stream_label_hint="",
+        field_name="purpose_type",
+        value=PurposeType.SAVINGS_INVESTMENT,
+        override_id="ov-training-fund-purpose",
+    ),
+    PatternOverride(
+        description_key="קרן השתלמות",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("137.59"),
+        override_id="ov-training-fund-amount",
+    ),
+    PatternOverride(
+        description_key="קרן השתלמות",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-training-fund-recurrence",
+    ),
+    PatternOverride(
+        description_key="קרן השתלמות",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-training-fund-committed",
+    ),
+    PatternOverride(
+        description_key="קרן השתלמות",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-training-fund-active",
+    ),
+
+    # ── Efrat Rosenberg ───────────────────────────────────────────────────
+    PatternOverride(
+        description_key="אפרת רוזנברג",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("350.00"),
+        override_id="ov-efrat-amount",
+    ),
+    PatternOverride(
+        description_key="אפרת רוזנברג",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-efrat-recurrence",
+    ),
+    PatternOverride(
+        description_key="אפרת רוזנברג",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-efrat-committed",
+    ),
+    PatternOverride(
+        description_key="אפרת רוזנברג",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-efrat-active",
+    ),
+
+    # ── Cancelled / Ended ─────────────────────────────────────────────────
+    # Noy Lenz — confirmed matched in runtime
+    PatternOverride(
+        description_key="נוי לנץ",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ENDED,
+        override_id="ov-noy-lenz-ended",
+    ),
+    # STP — cancelled service (description_key may need adjustment after next run)
     PatternOverride(
         description_key="STP",
         stream_label_hint="",
@@ -110,21 +403,30 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         value=LifecycleStatus.CANCELLED,
         override_id="ov-stp-cancelled",
     ),
-    # Ended Noy Lenz course
-    PatternOverride(
-        description_key="נוי לנץ".upper(),
-        stream_label_hint="",
-        field_name="lifecycle_status",
-        value=LifecycleStatus.ENDED,
-        override_id="ov-noy-lenz-ended",
-    ),
-    # Google Cloud — planning_amount TBD
+
+    # ── Amount TBD (planning_amount=None → not reserve-eligible) ──────────
+    # Google Cloud — active recurring committed, amount TBD
     PatternOverride(
         description_key="GOOGLE CLOUD",
         stream_label_hint="",
         field_name="planning_amount",
         value=None,
         override_id="ov-google-cloud-tbd",
+    ),
+    # Mor Gemel — active recurring savings, do NOT use classifier's 90.08
+    PatternOverride(
+        description_key="מור גמל",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=None,
+        override_id="ov-mor-gemel-tbd",
+    ),
+    PatternOverride(
+        description_key="מור גמל",
+        stream_label_hint="",
+        field_name="purpose_type",
+        value=PurposeType.SAVINGS_INVESTMENT,
+        override_id="ov-mor-gemel-purpose",
     ),
 ]
 

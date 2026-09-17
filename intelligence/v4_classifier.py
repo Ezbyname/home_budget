@@ -406,17 +406,10 @@ def classify_commitment(
 # LIFECYCLE CLASSIFICATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Today reference is injected at call time for testability
-_REFERENCE_DATE_OVERRIDE: Optional[date] = None
-
-
-def _today() -> date:
-    return _REFERENCE_DATE_OVERRIDE or date.today()
-
-
 def classify_lifecycle(
     rows: list[ExpenseRow],
     cadence: Cadence,
+    reference_date: date,
 ) -> LifecycleStatus:
     """
     Classify lifecycle based on recency of last transaction.
@@ -425,8 +418,7 @@ def classify_lifecycle(
         return LifecycleStatus.UNKNOWN
     sorted_rows = sorted(rows, key=lambda r: r.date)
     last_date = date.fromisoformat(sorted_rows[-1].date)
-    today = _today()
-    gap_days = (today - last_date).days
+    gap_days = (reference_date - last_date).days
 
     # Expected gap for this cadence (in days)
     cadence_days: dict[Cadence, float] = {
@@ -700,6 +692,7 @@ def classify_stream(
     label: str,
     cat_id: Optional[str],
     stream_index: int = 0,
+    reference_date: Optional[date] = None,
 ) -> PatternResult:
     """
     Classify a single stream (already split from parallel detection).
@@ -733,8 +726,9 @@ def classify_stream(
     # Commitment
     commitment = classify_commitment(rows, description_key, cat_id)
 
-    # Lifecycle
-    lifecycle = classify_lifecycle(rows, cadence)
+    # Lifecycle — reference_date must be derived from dataset max date upstream
+    _ref = reference_date or date.fromisoformat(max(r.date for r in rows))
+    lifecycle = classify_lifecycle(rows, cadence, _ref)
 
     # Purpose
     purpose = classify_purpose(description_key, cat_id)
@@ -790,6 +784,7 @@ def classify_group(
     description_key: str,
     label: str,
     cat_id: Optional[str],
+    reference_date: Optional[date] = None,
 ) -> list[PatternResult]:
     """
     Classify one description group, potentially returning multiple PatternResults
@@ -801,7 +796,7 @@ def classify_group(
     results = []
     for i, stream_rows in enumerate(streams):
         if stream_rows:
-            results.append(classify_stream(stream_rows, description_key, label, cat_id, i))
+            results.append(classify_stream(stream_rows, description_key, label, cat_id, i, reference_date))
     return results
 
 
@@ -823,6 +818,7 @@ class SettlementRecord:
 def classify_expenses(
     rows: list[ExpenseRow],
     cat_map: Optional[dict[int, str]] = None,
+    reference_date: Optional[date] = None,
 ) -> tuple[list[PatternResult], list[SettlementRecord]]:
     """
     Classify all expense rows.
@@ -830,9 +826,15 @@ def classify_expenses(
 
     Settlements are separated and tracked but NOT included in reserve totals
     or flexible budget, preventing double-counting.
+
+    reference_date: analysis anchor date for lifecycle classification.
+    If None, derived from the maximum transaction date in rows (deterministic).
     """
     if cat_map is None:
         cat_map = {}
+    # Derive reference_date from dataset max transaction date — deterministic, not wall-clock.
+    if reference_date is None and rows:
+        reference_date = date.fromisoformat(max(r.date for r in rows))
 
     settlements: list[SettlementRecord] = []
     economic_by_group: dict[str, list[ExpenseRow]] = {}
@@ -877,7 +879,7 @@ def classify_expenses(
     for norm_desc, group_rows in economic_by_group.items():
         cat_id = cat_by_group.get(norm_desc)
         label = group_rows[0].description or norm_desc
-        patterns.extend(classify_group(group_rows, norm_desc, label, cat_id))
+        patterns.extend(classify_group(group_rows, norm_desc, label, cat_id, reference_date))
 
     return patterns, unique_settlements
 
@@ -915,8 +917,14 @@ def _classify_income_reliability(
     income_type: IncomeType,
     recurrence: RecurrenceStatus,
 ) -> ReliabilityStatus:
+    # Single observation proves nothing — always UNKNOWN regardless of income type
+    if len(rows) <= 1:
+        return ReliabilityStatus.UNKNOWN
     if income_type == IncomeType.GOVERNMENT_BENEFIT:
-        return ReliabilityStatus.RELIABLE
+        # Government benefits are reliable only when recurring (multiple observations)
+        if recurrence == RecurrenceStatus.RECURRING:
+            return ReliabilityStatus.RELIABLE
+        return ReliabilityStatus.UNKNOWN
     if income_type in (IncomeType.FAMILY_TRANSFER, IncomeType.BONUS):
         return ReliabilityStatus.UNRELIABLE
     if recurrence == RecurrenceStatus.RECURRING and len(rows) >= 3:

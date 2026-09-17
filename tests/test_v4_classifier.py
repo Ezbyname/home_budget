@@ -52,7 +52,6 @@ from intelligence.v4_classifier import (
     classify_recurrence, classify_purpose, detect_cadence, detect_stable_regime,
     detect_stable_core, normalize_description, split_parallel_streams,
     cadence_coverage,
-    _REFERENCE_DATE_OVERRIDE,
 )
 import intelligence.v4_classifier as _cls_module
 from intelligence.v4_contracts import (
@@ -541,27 +540,41 @@ class TestRecurrenceClassification:
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestLifecycleClassification:
-    def setup_method(self):
-        # Fix reference date for deterministic tests
-        _cls_module._REFERENCE_DATE_OVERRIDE = date(2024, 9, 17)
-
-    def teardown_method(self):
-        _cls_module._REFERENCE_DATE_OVERRIDE = None
+    # reference_date is now an explicit parameter — no global mutation needed.
+    _REF = date(2024, 9, 17)
 
     def test_recent_payment_is_active(self):
         rows = [_make_expense(i, d) for i, d in enumerate(_monthly_dates(8), 1)]
-        # Last date should be recent relative to 2024-09-17
         rows[-1] = _make_expense(99, "2024-09-01")
-        assert classify_lifecycle(rows, Cadence.MONTHLY) == LifecycleStatus.ACTIVE
+        assert classify_lifecycle(rows, Cadence.MONTHLY, self._REF) == LifecycleStatus.ACTIVE
 
     def test_large_gap_is_possibly_stopped(self):
         rows = [_make_expense(i, f"2023-{m:02d}-01")
                 for i, m in enumerate(range(1, 7), 1)]  # last was 2023-06
-        result = classify_lifecycle(rows, Cadence.MONTHLY)
+        result = classify_lifecycle(rows, Cadence.MONTHLY, self._REF)
         assert result in (LifecycleStatus.POSSIBLY_STOPPED, LifecycleStatus.ENDED)
 
     def test_empty_rows_is_unknown(self):
-        assert classify_lifecycle([], Cadence.MONTHLY) == LifecycleStatus.UNKNOWN
+        assert classify_lifecycle([], Cadence.MONTHLY, self._REF) == LifecycleStatus.UNKNOWN
+
+    def test_lifecycle_deterministic_regardless_of_wall_clock(self):
+        """Same rows + same reference_date → identical lifecycle regardless of when the test runs."""
+        rows = [_make_expense(i, f"2024-{m:02d}-01") for i, m in enumerate(range(1, 7), 1)]
+        ref = date(2024, 6, 15)
+        result_a = classify_lifecycle(rows, Cadence.MONTHLY, ref)
+        result_b = classify_lifecycle(rows, Cadence.MONTHLY, ref)
+        assert result_a == result_b
+
+    def test_different_reference_dates_give_different_lifecycle(self):
+        """Reference date affects lifecycle: same rows, early ref → ACTIVE, late ref → gap."""
+        rows = [_make_expense(i, f"2024-{m:02d}-01") for i, m in enumerate(range(1, 7), 1)]
+        # ref close to last date → ACTIVE
+        early_ref = date(2024, 7, 1)
+        assert classify_lifecycle(rows, Cadence.MONTHLY, early_ref) == LifecycleStatus.ACTIVE
+        # ref far from last date → POSSIBLY_STOPPED or ENDED
+        late_ref = date(2025, 6, 1)
+        result = classify_lifecycle(rows, Cadence.MONTHLY, late_ref)
+        assert result in (LifecycleStatus.POSSIBLY_STOPPED, LifecycleStatus.ENDED)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -746,6 +759,7 @@ class TestReliabilityClassification:
             assert salary.reliability_status == ReliabilityStatus.RELIABLE
 
     def test_government_benefit_is_reliable(self):
+        # 6 monthly recurring observations → RELIABLE
         rows = [_make_income(i, d, source="ביטוח לאומי", description="קצבת ילדים",
                              amount=Decimal("590.00"))
                 for i, d in enumerate(_monthly_dates(6), 1)]
@@ -753,6 +767,21 @@ class TestReliabilityClassification:
         benefit = next((s for s in results if s.income_type == IncomeType.GOVERNMENT_BENEFIT), None)
         if benefit:
             assert benefit.reliability_status == ReliabilityStatus.RELIABLE
+
+    def test_government_benefit_single_observation_not_reliable(self):
+        # Single observation of a GOVERNMENT_BENEFIT must NOT be RELIABLE.
+        # A one-off payment (e.g. retroactive disbursement) does not constitute
+        # a reliable recurring income stream.
+        rows = [_make_income(1, "2024-01-15", person="family",
+                             source="child_allowance",
+                             description="ביטוח לאומי - ילדים",
+                             amount=Decimal("1762.00"))]
+        results = classify_income(rows)
+        benefit = next((s for s in results if s.income_type == IncomeType.GOVERNMENT_BENEFIT), None)
+        assert benefit is not None, "Should still classify income type correctly"
+        assert benefit.reliability_status == ReliabilityStatus.UNKNOWN, (
+            f"Single-observation government benefit must be UNKNOWN, got {benefit.reliability_status}"
+        )
 
     def test_unknown_reliability_available(self):
         # Single income row → insufficient evidence
@@ -846,6 +875,78 @@ class TestOverrideApplication:
         assert pattern.commitment_status == original_commitment
         assert updated[0].commitment_status == CommitmentStatus.NON_COMMITTED
 
+    def test_override_sets_decision_source_family_review(self):
+        """When at least one override is applied, decision_source must become FAMILY_REVIEW."""
+        pattern = self._make_raw_pattern("CLALIT")
+        assert pattern.decision_source == DecisionSource.CLASSIFIER
+        override = PatternOverride(
+            description_key=pattern.description_key,
+            stream_label_hint="",
+            field_name="planning_amount",
+            value=Decimal("191.15"),
+            override_id="ov-clalit-amount",
+        )
+        updated, applied = apply_overrides((pattern,), [override])
+        assert "ov-clalit-amount" in applied
+        assert updated[0].decision_source == DecisionSource.FAMILY_REVIEW, (
+            "decision_source must be FAMILY_REVIEW when override applied"
+        )
+
+    def test_no_override_preserves_classifier_decision_source(self):
+        """Pattern with no matching override retains CLASSIFIER decision_source."""
+        pattern = self._make_raw_pattern("UNREVIEWED")
+        override = PatternOverride(
+            description_key="SOMETHING_ELSE",
+            stream_label_hint="",
+            field_name="planning_amount",
+            value=Decimal("100.00"),
+            override_id="ov-other",
+        )
+        updated, applied = apply_overrides((pattern,), [override])
+        assert not applied
+        assert updated[0].decision_source == DecisionSource.CLASSIFIER
+
+    def test_cancelled_lifecycle_makes_pattern_reserve_ineligible(self):
+        """CANCELLED lifecycle → reserve_eligible=False, monthly_reserve_contrib=0."""
+        pattern = self._make_raw_pattern("STP SERVICE")
+        override = PatternOverride(
+            description_key=pattern.description_key,
+            stream_label_hint="",
+            field_name="lifecycle_status",
+            value=LifecycleStatus.CANCELLED,
+            override_id="ov-stp-cancelled-test",
+        )
+        updated, _ = apply_overrides((pattern,), [override])
+        assert updated[0].reserve_eligible is False
+        assert updated[0].monthly_reserve_contrib == Decimal("0.00")
+
+    def test_ended_lifecycle_makes_pattern_reserve_ineligible(self):
+        """ENDED lifecycle → reserve_eligible=False."""
+        pattern = self._make_raw_pattern("NOY COURSE")
+        override = PatternOverride(
+            description_key=pattern.description_key,
+            stream_label_hint="",
+            field_name="lifecycle_status",
+            value=LifecycleStatus.ENDED,
+            override_id="ov-ended-test",
+        )
+        updated, _ = apply_overrides((pattern,), [override])
+        assert updated[0].reserve_eligible is False
+
+    def test_none_planning_amount_override_makes_pattern_reserve_ineligible(self):
+        """planning_amount=None override → reserve_eligible=False (TBD)."""
+        pattern = self._make_raw_pattern("GOOGLE CLOUD SERVICE")
+        override = PatternOverride(
+            description_key=pattern.description_key,
+            stream_label_hint="",
+            field_name="planning_amount",
+            value=None,
+            override_id="ov-tbd-test",
+        )
+        updated, _ = apply_overrides((pattern,), [override])
+        assert updated[0].reserve_eligible is False
+        assert updated[0].monthly_reserve_contrib == Decimal("0.00")
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # 18. DECIMAL MONEY — no float in monetary outputs
@@ -931,6 +1032,80 @@ class TestDeterministicOutput:
         k1 = make_income_stream_key("גל", "employer", "משכורת")
         k2 = make_income_stream_key("גל", "employer", "משכורת")
         assert k1 == k2
+
+    def test_income_baseline_keys_apply_for_real_db_persons(self):
+        """
+        Income baselines keyed by the ACTUAL runtime person/source/norm_desc values
+        must match and override the classifier's planning_baseline.
+
+        This test verifies that the three Family Review baselines
+        (wife/salary, husband/salary, family/child_allowance) each apply
+        when the income rows have the correct person+source+description fields.
+        """
+        from intelligence.v4_contracts import make_income_stream_key, ReliabilityStatus
+        from intelligence.v4_classifier import normalize_description
+
+        wife_key    = make_income_stream_key("wife",   "salary",        "בנק לאומי משכורת")
+        husband_key = make_income_stream_key("husband","salary",        "בנק פועלים משכורת")
+        child_key   = make_income_stream_key("family", "child_allowance","ביטוח לאומי - ילדים")
+
+        # Each key must be distinct
+        assert len({wife_key, husband_key, child_key}) == 3
+
+        # Keys must be 16-char hex strings (SHA256[:16])
+        for k in (wife_key, husband_key, child_key):
+            assert len(k) == 16
+            assert all(c in "0123456789abcdef" for c in k), f"Non-hex key: {k}"
+
+        # Baseline dict with these keys must apply when income rows match
+        baselines = {
+            wife_key:    Decimal("16623.00"),
+            husband_key: Decimal("14446.00"),
+            child_key:   Decimal("590.50"),
+        }
+        wife_rows = [
+            _make_income(i, d, person="wife", source="salary",
+                         description="בנק לאומי משכורת",
+                         amount=Decimal("16623.00"))
+            for i, d in enumerate(_monthly_dates(6), 1)
+        ]
+        husband_rows = [
+            _make_income(i, d, person="husband", source="salary",
+                         description="בנק פועלים משכורת",
+                         amount=Decimal("14446.00"))
+            for i, d in enumerate(_monthly_dates(6), 100)
+        ]
+        child_rows = [
+            _make_income(i, d, person="family", source="child_allowance",
+                         description="ביטוח לאומי - ילדים",
+                         amount=Decimal("590.50"))
+            for i, d in enumerate(_monthly_dates(6), 200)
+        ]
+
+        streams = classify_income(wife_rows + husband_rows + child_rows,
+                                  reviewed_baselines=baselines)
+
+        wife_stream    = next((s for s in streams if s.stream_key == wife_key),    None)
+        husband_stream = next((s for s in streams if s.stream_key == husband_key), None)
+        child_stream   = next((s for s in streams if s.stream_key == child_key),   None)
+
+        assert wife_stream    is not None, "wife stream not found"
+        assert husband_stream is not None, "husband stream not found"
+        assert child_stream   is not None, "child_allowance stream not found"
+
+        assert wife_stream.planning_baseline    == Decimal("16623.00")
+        assert husband_stream.planning_baseline == Decimal("14446.00")
+        assert child_stream.planning_baseline   == Decimal("590.50")
+
+        # All three must be FAMILY_REVIEW decision_source
+        for s in (wife_stream, husband_stream, child_stream):
+            assert s.decision_source == DecisionSource.FAMILY_REVIEW, (
+                f"Stream {s.stream_key} should have FAMILY_REVIEW decision_source"
+            )
+
+        # Total planning income from RELIABLE streams must be 31659.50
+        total = compute_planning_income(tuple(streams))
+        assert total == Decimal("31659.50"), f"Expected 31659.50, got {total}"
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -183,6 +183,8 @@ def apply_overrides(
             if ov.field_name in kwargs:
                 kwargs[ov.field_name] = ov.value
                 applied.append(ov.override_id)
+        # Override authority: at least one override applied → FAMILY_REVIEW
+        kwargs["decision_source"] = DecisionSource.FAMILY_REVIEW
 
         # Recompute derived fields after overrides
         from intelligence.v4_contracts import (
