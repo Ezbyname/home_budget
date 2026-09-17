@@ -20,14 +20,51 @@ Key design decisions recorded here:
     auditable, not automatic failures.
   - Household ownership: household_id is nullable only during
     migration/bootstrap. Normal operation requires a resolved household.
+
+MONEY REPRESENTATION
+  All monetary amounts use Decimal, never float, to support exact
+  agora-level reconciliation.
+
+  When values originate from SQLite REAL columns:
+      Decimal(str(db_value))   # correct: via string
+      Decimal(db_float)        # WRONG: inherits float error
+
+  Rounding / quantization policy:
+      - Intermediate calculations: full Decimal precision.
+      - Financial boundary values (reserve totals, income totals,
+        reconciliation fields): quantize to TWO_PLACES = Decimal("0.01")
+        using ROUND_HALF_UP at the point where a value leaves the
+        domain layer and enters persistence, display, or comparison.
+      - membership_confidence scores are float (not money).
 """
 
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Optional, Protocol, runtime_checkable
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MONEY CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+TWO_PLACES = Decimal("0.01")
+
+
+def quantize_ils(amount: Decimal) -> Decimal:
+    """Round Decimal to two places (agora precision) using ROUND_HALF_UP."""
+    return amount.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
+def decimal_from_db(db_value) -> Decimal:
+    """
+    Convert a SQLite REAL value to Decimal without inheriting float error.
+    Always route through str() first.
+    """
+    return Decimal(str(db_value))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -74,17 +111,25 @@ class LifecycleStatus(str, Enum):
 
 
 class PurposeType(str, Enum):
-    HOUSING            = "HOUSING"
-    INSURANCE          = "INSURANCE"
-    UTILITY            = "UTILITY"
-    EDUCATION          = "EDUCATION"
-    SAVINGS_INVESTMENT = "SAVINGS_INVESTMENT"
-    TRANSPORT          = "TRANSPORT"
-    FOOD               = "FOOD"
-    HEALTH             = "HEALTH"
-    DEBT               = "DEBT"
-    FINANCIAL_FEE      = "FINANCIAL_FEE"
-    OTHER              = "OTHER"
+    HOUSING                = "HOUSING"
+    UTILITY                = "UTILITY"
+    INSURANCE              = "INSURANCE"
+    LOAN                   = "LOAN"
+    SUBSCRIPTION           = "SUBSCRIPTION"
+    HEALTH                 = "HEALTH"
+    CHILDREN               = "CHILDREN"
+    EDUCATION              = "EDUCATION"
+    TRANSPORT              = "TRANSPORT"
+    SAVINGS_INVESTMENT     = "SAVINGS_INVESTMENT"
+    FINANCIAL_FEE          = "FINANCIAL_FEE"
+    TAX                    = "TAX"
+    FOOD                   = "FOOD"
+    SHOPPING               = "SHOPPING"
+    ENTERTAINMENT          = "ENTERTAINMENT"
+    TRANSFER               = "TRANSFER"
+    CREDIT_CARD_SETTLEMENT = "CREDIT_CARD_SETTLEMENT"
+    OTHER                  = "OTHER"
+    UNKNOWN                = "UNKNOWN"
 
 
 class CashflowRole(str, Enum):
@@ -110,14 +155,36 @@ class ReliabilityStatus(str, Enum):
     SEASONAL   = "SEASONAL"    # recurring pattern with known gaps
 
 
+class IncomeType(str, Enum):
+    """
+    Semantic economic type of an income stream.
+    Independent from recurrence_status, reliability_status, amount_behavior.
+
+    Examples:
+      husband salary:  income_type=SALARY, reliability=RELIABLE, amount_behavior=VARIABLE
+      child allowance: income_type=GOVERNMENT_BENEFIT, reliability=RELIABLE
+      family support:  income_type=FAMILY_TRANSFER (not included in
+                       reliable planning baseline by default)
+      bonus:           income_type=BONUS (not included in normal reliable
+                       planning baseline by default)
+    """
+    SALARY             = "SALARY"
+    GOVERNMENT_BENEFIT = "GOVERNMENT_BENEFIT"
+    FAMILY_TRANSFER    = "FAMILY_TRANSFER"
+    BONUS              = "BONUS"
+    OTHER              = "OTHER"
+    UNKNOWN            = "UNKNOWN"
+
+
 class Cadence(str, Enum):
-    MONTHLY    = "monthly"
-    BIWEEKLY   = "biweekly"
-    QUARTERLY  = "quarterly"
-    SEMIANNUAL = "semiannual"
-    YEARLY     = "yearly"
-    IRREGULAR  = "irregular"
-    UNKNOWN    = "unknown"
+    MONTHLY        = "monthly"
+    BIWEEKLY       = "biweekly"       # ~26 payments/year (every 2 weeks)
+    EVERY_2_MONTHS = "every_2_months" # 6 payments/year (arnona, water)
+    QUARTERLY      = "quarterly"      # 4 payments/year
+    SEMIANNUAL     = "semiannual"     # 2 payments/year
+    YEARLY         = "yearly"         # 1 payment/year
+    IRREGULAR      = "irregular"      # no automatic normalization
+    UNKNOWN        = "unknown"        # no automatic normalization
 
 
 class DecisionSource(str, Enum):
@@ -134,19 +201,47 @@ class ReviewReason(str, Enum):
     LOW_CONFIDENCE_MEMBERSHIP = "LOW_CONFIDENCE_MEMBERSHIP"
     RECONCILIATION_CONFLICT   = "RECONCILIATION_CONFLICT"
     HIGH_CV                   = "HIGH_CV"
+    UNKNOWN_MERCHANT          = "UNKNOWN_MERCHANT"
+    POSSIBLY_STOPPED          = "POSSIBLY_STOPPED"
+    UNRECONCILED_SETTLEMENT   = "UNRECONCILED_SETTLEMENT"
+    NEW_EVIDENCE_FOUND        = "NEW_EVIDENCE_FOUND"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CADENCE → MONTHS DIVISOR (for monthly equivalent normalization)
+# CADENCE — OCCURRENCES PER YEAR AND MONTHLY NORMALIZATION
+#
+# Model: monthly_equivalent = payment_amount × occurrences_per_year / 12
+#
+# IRREGULAR and UNKNOWN have no automatic normalization factor.
+# Do not add them to CADENCE_OCCURRENCES_PER_YEAR.
 # ═══════════════════════════════════════════════════════════════════════════
 
-CADENCE_TO_MONTHS: dict[Cadence, int] = {
-    Cadence.MONTHLY:    1,
-    Cadence.BIWEEKLY:   1,   # ~2×/month; treated as monthly for planning
-    Cadence.QUARTERLY:  3,
-    Cadence.SEMIANNUAL: 6,
-    Cadence.YEARLY:     12,
+CADENCE_OCCURRENCES_PER_YEAR: dict[Cadence, int] = {
+    Cadence.MONTHLY:        12,
+    Cadence.BIWEEKLY:       26,  # every 2 weeks → 26 payments/year
+    Cadence.EVERY_2_MONTHS:  6,  # arnona, water
+    Cadence.QUARTERLY:       4,
+    Cadence.SEMIANNUAL:      2,
+    Cadence.YEARLY:          1,
 }
+
+
+def monthly_equivalent(payment_amount: Decimal, cadence: Cadence) -> Decimal:
+    """
+    Convert a single payment_amount to its monthly equivalent.
+
+    Raises ValueError for IRREGULAR and UNKNOWN cadences — those require
+    manual or statistical estimation, not automatic normalization.
+
+    Example: ₪886 bimonthly (EVERY_2_MONTHS) → ₪443.00/month
+    """
+    if cadence not in CADENCE_OCCURRENCES_PER_YEAR:
+        raise ValueError(
+            f"Cadence {cadence} has no automatic monthly normalization. "
+            "Estimate manually or statistically."
+        )
+    occ = CADENCE_OCCURRENCES_PER_YEAR[cadence]
+    return quantize_ils(payment_amount * occ / 12)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -180,7 +275,7 @@ class PatternStateContract:
     budget_class:         BudgetClass
     lifecycle_status:     LifecycleStatus
     cadence:              Cadence
-    planning_amount:      Optional[float]          # None = amount TBD
+    planning_amount:      Optional[Decimal]        # None = amount TBD; Decimal for precision
     purpose_type:         PurposeType
     evidence_sources:     tuple[str, ...]
     decision_source:      DecisionSource           # origin of this state row as a whole
@@ -225,15 +320,15 @@ class PatternResult:
     lifecycle_status:         LifecycleStatus
     purpose_type:             PurposeType
     cadence:                  Cadence
-    planning_amount:          Optional[float]        # None = TBD
-    member_ids:               tuple[str, ...]        # expense_id list (this stream only)
-    membership_confidence:    dict[str, float]       # expense_id → 0.0–1.0
+    planning_amount:          Optional[Decimal]    # None = TBD; Decimal for precision
+    member_ids:               tuple[str, ...]      # expense_id list (this stream only)
+    membership_confidence:    dict[str, float]     # expense_id → 0.0–1.0 (float OK, not money)
     evidence_sources:         tuple[str, ...]
     decision_source:          DecisionSource
     family_review_required:   bool
     review_reasons:           tuple[ReviewReason, ...]
-    reserve_eligible:         bool                   # derived; see is_reserve_eligible()
-    monthly_reserve_contrib:  float                  # 0.0 if not reserve_eligible
+    reserve_eligible:         bool                 # derived; see is_reserve_eligible()
+    monthly_reserve_contrib:  Decimal              # Decimal(0) if not reserve_eligible
 
 
 @dataclass(frozen=True)
@@ -244,18 +339,23 @@ class IncomeStreamResult:
     Two salaries with the same description but different persons
     produce two distinct IncomeStreamResults.
 
-    planning_baseline is an explicit amount — never computed as amount × weight.
+    planning_baseline is an explicit Decimal amount — never computed as amount × weight.
     VARIABLE amount_behavior does NOT reduce planning_baseline for RELIABLE streams.
+
+    income_type is the semantic economic category (SALARY, GOVERNMENT_BENEFIT, etc.),
+    independent from recurrence_status and reliability_status.
+    FAMILY_TRANSFER and BONUS are not included in reliable planning baseline by default.
     """
     stream_key:             str             # hash(person, source, norm_desc)
     person:                 str
     source:                 str
     description_key:        str
+    income_type:            IncomeType      # semantic economic category
     recurrence_status:      RecurrenceStatus
     reliability_status:     ReliabilityStatus
     amount_behavior:        AmountBehavior
     cadence:                Cadence
-    planning_baseline:      float           # explicit reviewed/derived amount
+    planning_baseline:      Decimal         # explicit reviewed/derived amount; never float
     member_ids:             tuple[str, ...]
     evidence_sources:       tuple[str, ...]
     decision_source:        DecisionSource
@@ -271,9 +371,9 @@ class RawClassifierOutput:
     """
     patterns:              tuple[PatternResult, ...]
     income_streams:        tuple[IncomeStreamResult, ...]
-    planning_income_raw:   float
-    monthly_reserve_raw:   float
-    family_review_items:   tuple[str, ...]   # pattern labels needing review
+    planning_income_raw:   Decimal          # sum of income stream baselines
+    monthly_reserve_raw:   Decimal          # sum of reserve-eligible monthly contribs
+    family_review_items:   tuple[str, ...]  # pattern labels needing review
 
 
 @dataclass(frozen=True)
@@ -285,8 +385,8 @@ class EffectiveFinancialResult:
     """
     patterns:                    tuple[PatternResult, ...]
     income_streams:              tuple[IncomeStreamResult, ...]
-    planning_income_effective:   float
-    monthly_reserve_effective:   float
+    planning_income_effective:   Decimal
+    monthly_reserve_effective:   Decimal
     family_review_items:         tuple[str, ...]
     overrides_applied:           tuple[str, ...]   # override_ids applied
 
@@ -297,12 +397,13 @@ class ReconciliationRecord:
     Per-value reconciliation result.
     Any non-zero difference → status = "CONFLICT".
     Conflicts are never auto-resolved by adjusting classification.
+    All monetary fields are Decimal for exact agora-level comparison.
     """
     field:              str
-    reviewed_value:     float             # Family Review ground truth
-    derived_value:      float             # from effective result
-    raw_derived_value:  float             # from raw classifier (before overrides)
-    difference:         float             # derived_value - reviewed_value; 0.0 = MATCH
+    reviewed_value:     Decimal           # Family Review ground truth
+    derived_value:      Decimal           # from effective result
+    raw_derived_value:  Decimal           # from raw classifier (before overrides)
+    difference:         Decimal           # derived_value - reviewed_value; 0.00 = MATCH
     status:             str               # "MATCH" | "CONFLICT"
     conflict_report:    Optional[dict]    # full breakdown when CONFLICT
 
@@ -337,7 +438,7 @@ def is_reserve_eligible(
     recurrence: RecurrenceStatus,
     commitment: CommitmentStatus,
     lifecycle: LifecycleStatus,
-    planning_amount: Optional[float],
+    planning_amount: Optional[Decimal],
 ) -> bool:
     """
     Reserve eligibility is derived from financial state only.
@@ -349,10 +450,10 @@ def is_reserve_eligible(
     Examples:
       Training fund (קרן השתלמות):
         purpose=SAVINGS_INVESTMENT, recurrence=RECURRING,
-        commitment=COMMITTED, lifecycle=ACTIVE, amount=137.59 → ELIGIBLE
+        commitment=COMMITTED, lifecycle=ACTIVE, amount=Decimal("137.59") → ELIGIBLE
       Discount bank card fee:
         purpose=FINANCIAL_FEE, recurrence=RECURRING,
-        commitment=COMMITTED, lifecycle=ACTIVE, amount=39.60 → ELIGIBLE
+        commitment=COMMITTED, lifecycle=ACTIVE, amount=Decimal("39.60") → ELIGIBLE
       Round-up savings:
         purpose=SAVINGS_INVESTMENT, commitment=NON_COMMITTED → NOT ELIGIBLE
     """
@@ -361,7 +462,7 @@ def is_reserve_eligible(
         and commitment == CommitmentStatus.COMMITTED
         and lifecycle == LifecycleStatus.ACTIVE
         and planning_amount is not None
-        and planning_amount > 0
+        and planning_amount > Decimal("0")
     )
 
 
@@ -404,7 +505,7 @@ def derive_cashflow_role(
     recurrence: RecurrenceStatus,
     commitment: CommitmentStatus,
     lifecycle: LifecycleStatus,
-    planning_amount: Optional[float],
+    planning_amount: Optional[Decimal],
     purpose: PurposeType,
 ) -> CashflowRole:
     """
@@ -426,12 +527,17 @@ def derive_cashflow_role(
 
 def make_reconciliation_record(
     field: str,
-    reviewed_value: float,
-    derived_value: float,
-    raw_derived_value: float,
+    reviewed_value: Decimal,
+    derived_value: Decimal,
+    raw_derived_value: Decimal,
 ) -> ReconciliationRecord:
-    diff = round(derived_value - reviewed_value, 2)
-    status = "MATCH" if diff == 0.0 else "CONFLICT"
+    """
+    Build a ReconciliationRecord with exact Decimal arithmetic.
+    difference = quantize_ils(derived_value - reviewed_value).
+    status = "MATCH" iff difference == Decimal("0.00").
+    """
+    diff = quantize_ils(derived_value - reviewed_value)
+    status = "MATCH" if diff == Decimal("0.00") else "CONFLICT"
     return ReconciliationRecord(
         field=field,
         reviewed_value=reviewed_value,
@@ -441,9 +547,9 @@ def make_reconciliation_record(
         status=status,
         conflict_report=None if status == "MATCH" else {
             "field": field,
-            "reviewed_value": reviewed_value,
-            "derived_value": derived_value,
-            "difference": diff,
+            "reviewed_value": str(reviewed_value),
+            "derived_value": str(derived_value),
+            "difference": str(diff),
         },
     )
 
@@ -471,7 +577,6 @@ def validate_state_graph(states: list[PatternStateContract]) -> list[str]:
     if not states:
         return violations
 
-    ids = {s.state_id for s in states}
     by_id = {s.state_id: s for s in states}
 
     # 1. All same pattern_id
