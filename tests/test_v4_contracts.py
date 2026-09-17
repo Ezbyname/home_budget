@@ -31,7 +31,7 @@ import pytest
 
 from intelligence.v4_contracts import (
     # money helpers
-    TWO_PLACES, quantize_ils, decimal_from_db,
+    TWO_PLACES, ILS_ROUNDING, quantize_ils, decimal_from_db,
     # enums
     RecurrenceStatus, CommitmentStatus, AmountBehavior, BudgetClass,
     LifecycleStatus, PurposeType, CashflowRole, ReliabilityStatus,
@@ -263,6 +263,11 @@ class TestEnumValues:
         assert Cadence.EVERY_2_MONTHS in set(Cadence)
         assert Cadence.EVERY_2_MONTHS.value == "every_2_months"
 
+    def test_reliability_status_values(self):
+        assert {m.name for m in ReliabilityStatus} == {"RELIABLE", "UNRELIABLE", "UNKNOWN"}
+        # SEASONAL must NOT exist — seasonality belongs to cadence/pattern dimension
+        assert not hasattr(ReliabilityStatus, "SEASONAL")
+
     def test_enums_are_str_subclasses(self):
         for enum_cls in [RecurrenceStatus, CommitmentStatus, AmountBehavior,
                          BudgetClass, LifecycleStatus, PurposeType, CashflowRole,
@@ -280,8 +285,22 @@ class TestMoneyRepresentation:
     def test_two_places_constant(self):
         assert TWO_PLACES == Decimal("0.01")
 
-    def test_quantize_ils_rounds_to_two_places(self):
-        assert quantize_ils(Decimal("0.005")) == Decimal("0.01")  # ROUND_HALF_UP
+    def test_ils_rounding_is_round_half_up(self):
+        from decimal import ROUND_HALF_UP as _RHU
+        assert ILS_ROUNDING == _RHU
+
+    # ILS rounding policy: ROUND_HALF_UP to 0.01
+    def test_quantize_1_005_rounds_up(self):
+        assert quantize_ils(Decimal("1.005")) == Decimal("1.01")
+
+    def test_quantize_1_004_rounds_down(self):
+        assert quantize_ils(Decimal("1.004")) == Decimal("1.00")
+
+    def test_quantize_443_005_rounds_up(self):
+        assert quantize_ils(Decimal("443.005")) == Decimal("443.01")
+
+    def test_quantize_ils_general(self):
+        assert quantize_ils(Decimal("0.005")) == Decimal("0.01")
         assert quantize_ils(Decimal("0.004")) == Decimal("0.00")
         assert quantize_ils(Decimal("100.125")) == Decimal("100.13")
 
@@ -964,6 +983,7 @@ class TestIncomeStreamIsolation:
         assert total == Decimal("31659.50")
 
     def test_reliable_income_baseline_not_discounted(self):
+        # RELIABLE + VARIABLE: planning_baseline must not be discounted
         stream = _make_income_stream(
             reliability=ReliabilityStatus.RELIABLE,
             amount_behavior=AmountBehavior.VARIABLE,
@@ -1016,6 +1036,11 @@ class TestIncomeType:
         assert s.income_type == IncomeType.SALARY
         assert s.reliability_status == ReliabilityStatus.RELIABLE
         assert s.amount_behavior == AmountBehavior.VARIABLE
+
+    def test_unknown_reliability_when_insufficient_evidence(self):
+        # classifier must not be forced to choose RELIABLE or UNRELIABLE without evidence
+        s = _make_income_stream(reliability=ReliabilityStatus.UNKNOWN)
+        assert s.reliability_status == ReliabilityStatus.UNKNOWN
 
     def test_income_stream_has_income_type_field(self):
         f_names = {f.name for f in fields(IncomeStreamResult)}

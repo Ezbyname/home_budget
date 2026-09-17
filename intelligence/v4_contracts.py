@@ -51,18 +51,32 @@ from typing import Optional, Protocol, runtime_checkable
 # MONEY CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ILS monetary rounding policy (applies to all domain-layer money operations):
+#   1. All monetary arithmetic uses Decimal — never float.
+#   2. SQLite REAL → Decimal via Decimal(str(value)); never Decimal(float_value).
+#   3. Intermediate calculations are not rounded prematurely.
+#   4. Final ILS monetary values (reserve totals, income totals,
+#      reconciliation fields) are quantized to Decimal("0.01").
+#   5. Rounding mode is ALWAYS ROUND_HALF_UP.
+#
+# Rounding examples:
+#   quantize_ils(Decimal("1.005"))   → Decimal("1.01")   (half rounds up)
+#   quantize_ils(Decimal("1.004"))   → Decimal("1.00")   (below half stays down)
+#   quantize_ils(Decimal("443.005")) → Decimal("443.01") (consistent with rule 5)
+
 TWO_PLACES = Decimal("0.01")
+ILS_ROUNDING = ROUND_HALF_UP
 
 
 def quantize_ils(amount: Decimal) -> Decimal:
-    """Round Decimal to two places (agora precision) using ROUND_HALF_UP."""
-    return amount.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    """Round a Decimal to agora precision using ROUND_HALF_UP."""
+    return amount.quantize(TWO_PLACES, rounding=ILS_ROUNDING)
 
 
 def decimal_from_db(db_value) -> Decimal:
     """
     Convert a SQLite REAL value to Decimal without inheriting float error.
-    Always route through str() first.
+    Always route through str() — never pass the float directly to Decimal().
     """
     return Decimal(str(db_value))
 
@@ -150,9 +164,17 @@ class CashflowRole(str, Enum):
 
 
 class ReliabilityStatus(str, Enum):
-    RELIABLE   = "RELIABLE"    # employer/government obligation
+    """
+    Economic reliability of an income stream.
+
+    Seasonality is a temporal / cadence property that belongs to the
+    cadence/pattern dimension, not here.  A stream may be both seasonal
+    AND reliable (e.g. a guaranteed annual bonus).  Use UNKNOWN when the
+    classifier lacks sufficient evidence to decide.
+    """
+    RELIABLE   = "RELIABLE"    # employer / government obligation
     UNRELIABLE = "UNRELIABLE"  # freelance / sporadic
-    SEASONAL   = "SEASONAL"    # recurring pattern with known gaps
+    UNKNOWN    = "UNKNOWN"     # insufficient evidence to classify
 
 
 class IncomeType(str, Enum):
