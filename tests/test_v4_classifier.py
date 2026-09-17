@@ -1722,6 +1722,82 @@ class TestFamilyReviewRegression:
         assert "ov-wrong-nu" not in applied
         assert updated[0].planning_amount == Decimal("128.23")
 
+    # ── Test 14c: Sewage — proven runtime key, 174.00/month ──────────────
+    def test_sewage_proven_key_174_per_month(self):
+        # PROVEN runtime key from prior Railway PatternResult:
+        #   'מועצה אזורית חוף הכרמל הו"ק'  (normalize_description returns itself)
+        # Classifier state was POSSIBLE_RECURRING/UNCERTAIN/ENDED — not eligible.
+        # Family Review sets RECURRING/COMMITTED/ACTIVE — auditable override.
+        KEY = 'מועצה אזורית חוף הכרמל הו"ק'
+        p = _make_pattern(
+            KEY,
+            planning_amount=Decimal("174.00"),
+            recurrence=RecurrenceStatus.POSSIBLE_RECURRING,
+            commitment=CommitmentStatus.UNCERTAIN,
+            lifecycle=LifecycleStatus.ENDED,
+        )
+        overrides = [
+            PatternOverride(KEY, "", "recurrence_status", RecurrenceStatus.RECURRING,   "ov-biyuv-r"),
+            PatternOverride(KEY, "", "commitment_status", CommitmentStatus.COMMITTED,    "ov-biyuv-c"),
+            PatternOverride(KEY, "", "lifecycle_status",  LifecycleStatus.ACTIVE,        "ov-biyuv-l"),
+            PatternOverride(KEY, "", "planning_amount",   Decimal("174.00"),             "ov-biyuv-a"),
+        ]
+        updated, applied, audit = apply_overrides((p,), overrides)
+        eff = updated[0]
+        # Effective state reflects Family Review
+        assert eff.recurrence_status == RecurrenceStatus.RECURRING
+        assert eff.commitment_status == CommitmentStatus.COMMITTED
+        assert eff.lifecycle_status  == LifecycleStatus.ACTIVE
+        assert eff.planning_amount   == Decimal("174.00")
+        assert eff.reserve_eligible  is True
+        assert eff.monthly_reserve_contrib == Decimal("174.00")
+        # All four override IDs applied
+        for oid in ("ov-biyuv-r", "ov-biyuv-c", "ov-biyuv-l", "ov-biyuv-a"):
+            assert oid in applied
+        # Audit trail preserves classifier evidence
+        assert len(audit) >= 1
+        rec = audit[0]
+        assert rec["classifier_result"]["recurrence_status"] == RecurrenceStatus.POSSIBLE_RECURRING.value
+        assert rec["classifier_result"]["lifecycle_status"]  == LifecycleStatus.ENDED.value
+        assert rec["effective_result"]["lifecycle_status"]   == LifecycleStatus.ACTIVE.value
+
+    def test_sewage_legacy_key_does_not_match(self):
+        # Old placeholder "ביוב" must NOT match the proven runtime key.
+        KEY_PROVEN = 'מועצה אזורית חוף הכרמל הו"ק'
+        KEY_WRONG  = "ביוב"
+        p = _make_pattern(KEY_PROVEN, planning_amount=Decimal("174.00"))
+        ov = PatternOverride(KEY_WRONG, "", "planning_amount", Decimal("0.00"), "ov-wrong-biyuv")
+        updated, applied, _ = apply_overrides((p,), [ov])
+        assert "ov-wrong-biyuv" not in applied
+        assert updated[0].planning_amount == Decimal("174.00")
+
+    def test_sewage_classifier_ended_becomes_active_via_family_review(self):
+        # Classifier ENDED + Family Review ACTIVE = effective ACTIVE (auditable).
+        KEY = 'מועצה אזורית חוף הכרמל הו"ק'
+        p = _make_pattern(KEY, lifecycle=LifecycleStatus.ENDED,
+                          recurrence=RecurrenceStatus.POSSIBLE_RECURRING,
+                          commitment=CommitmentStatus.UNCERTAIN,
+                          planning_amount=Decimal("174.00"))
+        ov_lifecycle = PatternOverride(KEY, "", "lifecycle_status", LifecycleStatus.ACTIVE, "ov-biyuv-l2")
+        updated, applied, _ = apply_overrides((p,), [ov_lifecycle])
+        assert updated[0].lifecycle_status == LifecycleStatus.ACTIVE
+        assert "ov-biyuv-l2" in applied
+
+    def test_sewage_expected_match_count_1(self):
+        # Verifies that an override with expected_match_count=1 on the sewage key
+        # passes when exactly one pattern is present, and raises when none match.
+        from intelligence.v4_contracts import FamilyReviewMappingConflict
+        KEY = 'מועצה אזורית חוף הכרמל הו"ק'
+        p = _make_pattern(KEY)
+        ov = PatternOverride(KEY, "", "recurrence_status", RecurrenceStatus.RECURRING,
+                             "ov-biyuv-rc1", expected_match_count=1)
+        # One pattern — should pass
+        apply_overrides((p,), [ov])
+        # No matching pattern — should raise FamilyReviewMappingConflict
+        p_wrong = _make_pattern("שונה לגמרי")
+        with pytest.raises(FamilyReviewMappingConflict):
+            apply_overrides((p_wrong,), [ov])
+
     # ── Test 15: Pango/Moovit → NON_COMMITTED, reserve = 0 ───────────────
     def test_pango_moovit_non_committed_no_reserve(self):
         KEY = "מ. התחבורה - פנגו מוביט"
