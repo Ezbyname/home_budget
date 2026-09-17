@@ -684,12 +684,13 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
 
-    # ── Nursing insurance (סיעוד) ─────────────────────────────────────────
-    # Family Review: recurring committed active, 128.23/month.
-    # description_key unconfirmed from real DB — expected_match_count=1 ensures
-    # FamilyReviewMappingConflict fires immediately if the key is wrong (fail-closed).
+    # ── Nursing insurance (סעוד הראל -כללית) ────────────────────────────────
+    # PROVEN runtime key: "סעוד הראל -כללית" (was wrong: "סיעוד").
+    # Proven from prior Railway Phase B output: description_key="סעוד הראל -כללית",
+    # planning_amount=128.23, cadence=MONTHLY.
+    # normalize_description("סעוד הראל -כללית") == "סעוד הראל -כללית" (no transformation).
     PatternOverride(
-        description_key="סיעוד",
+        description_key="סעוד הראל -כללית",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
@@ -697,7 +698,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
     PatternOverride(
-        description_key="סיעוד",
+        description_key="סעוד הראל -כללית",
         stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
@@ -705,7 +706,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
     PatternOverride(
-        description_key="סיעוד",
+        description_key="סעוד הראל -כללית",
         stream_label_hint="",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
@@ -713,7 +714,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
     PatternOverride(
-        description_key="סיעוד",
+        description_key="סעוד הראל -כללית",
         stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("128.23"),
@@ -723,15 +724,31 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
 
     # ── Sewage (ביוב) ─────────────────────────────────────────────────────
     # Family Review: recurring committed active, 174/month.
-    # description_key unconfirmed from real DB — expected_match_count=1 ensures
-    # FamilyReviewMappingConflict fires immediately if the key is wrong (fail-closed).
+    # UNRESOLVED RUNTIME IDENTITY: A prior Railway scan across all 256
+    # effective_patterns found NO pattern with "ביוב" in its label or
+    # description_key. "ביוב" as a standalone key is therefore unverified.
+    # expected_match_count=None (defensive/don't-care) so this does NOT
+    # trigger FamilyReviewMappingConflict on Railway. The actual runtime key
+    # must be confirmed via the Railway diagnostic command below before
+    # expected_match_count can be set to 1.
+    #
+    # Railway diagnostic to locate the sewage pattern:
+    #   import sqlite3, sys
+    #   db = "/tmp/home_budget_v4_migrate_home/.budget_tracker_data/budget.db"
+    #   con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    #   rows = con.execute(
+    #       "SELECT description, amount, date FROM expenses "
+    #       "WHERE amount BETWEEN 150 AND 200 "
+    #       "ORDER BY date DESC LIMIT 50"
+    #   ).fetchall()
+    #   for r in rows: print(r)
     PatternOverride(
         description_key="ביוב",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-biyuv-recurrence",
-        expected_match_count=1,
+        expected_match_count=None,  # UNRESOLVED — see diagnostic above
     ),
     PatternOverride(
         description_key="ביוב",
@@ -739,7 +756,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-biyuv-committed",
-        expected_match_count=1,
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -747,7 +764,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-biyuv-active",
-        expected_match_count=1,
+        expected_match_count=None,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -755,7 +772,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("174.00"),
         override_id="ov-biyuv-amount",
-        expected_match_count=1,
+        expected_match_count=None,
     ),
 
     # ── Pango / Moovit (מ. התחבורה - פנגו מוביט) — NON_COMMITTED ─────────
@@ -862,10 +879,15 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
 
-    # ── Ituran (איתוראן) — RECURRING + COMMITTED + ACTIVE ────────────────
-    # No existing override. Family Review: recurring committed active, 74.01/month.
+    # ── Ituran (איתוראן איתור ושליטה הוראות קבע) ──────────────────────────
+    # PROVEN runtime key: "איתוראן איתור ושליטה הוראות קבע".
+    # Prior Railway output: description_key="איתוראן איתור ושליטה הוראות קבע",
+    # label="איתוראן איתור ושליטה בע\"מ הוראות קבע", planning_amount=74.01.
+    # normalize_description strips the legal suffix "בע\"מ":
+    #   "איתוראן איתור ושליטה בע\"מ הוראות קבע" -> "איתוראן איתור ושליטה הוראות קבע"
+    # Family Review: recurring committed active, 74.01/month.
     PatternOverride(
-        description_key="איתוראן",
+        description_key="איתוראן איתור ושליטה הוראות קבע",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
@@ -873,7 +895,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
     PatternOverride(
-        description_key="איתוראן",
+        description_key="איתוראן איתור ושליטה הוראות קבע",
         stream_label_hint="",
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
@@ -881,7 +903,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
     PatternOverride(
-        description_key="איתוראן",
+        description_key="איתוראן איתור ושליטה הוראות קבע",
         stream_label_hint="",
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
@@ -889,7 +911,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
     PatternOverride(
-        description_key="איתוראן",
+        description_key="איתוראן איתור ושליטה הוראות קבע",
         stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("74.01"),

@@ -1662,9 +1662,12 @@ class TestFamilyReviewRegression:
         assert eff.reserve_eligible is True
         assert eff.monthly_reserve_contrib == Decimal("39.60")
 
-    # ── Test 14: Ituran → 74.01/month contribution ────────────────────────
+    # ── Test 14: Ituran — proven runtime key, 74.01/month ────────────────
     def test_ituran_74_01_per_month(self):
-        KEY = "איתוראן"
+        # PROVEN runtime key from prior Railway run:
+        #   normalize_description("איתוראן איתור ושליטה בע\"מ הוראות קבע")
+        #   == "איתוראן איתור ושליטה הוראות קבע"  (legal suffix stripped)
+        KEY = "איתוראן איתור ושליטה הוראות קבע"
         p = _make_pattern(KEY, planning_amount=Decimal("74.01"))
         overrides = [
             PatternOverride(KEY, "", "recurrence_status", RecurrenceStatus.RECURRING, "ov-it-r"),
@@ -1677,6 +1680,47 @@ class TestFamilyReviewRegression:
         assert eff.planning_amount == Decimal("74.01")
         assert eff.reserve_eligible is True
         assert eff.monthly_reserve_contrib == Decimal("74.01")
+
+    def test_ituran_short_alias_does_not_match(self):
+        # "איתוראן" (short) must NOT match the proven runtime key.
+        # This guards against reverting to the wrong selector.
+        KEY_PROVEN = "איתוראן איתור ושליטה הוראות קבע"
+        KEY_WRONG  = "איתוראן"
+        p = _make_pattern(KEY_PROVEN, planning_amount=Decimal("74.01"))
+        # Override targets the WRONG key — must not apply.
+        ov = PatternOverride(KEY_WRONG, "", "planning_amount", Decimal("0.00"), "ov-wrong")
+        updated, applied, _ = apply_overrides((p,), [ov])
+        # Override should not have matched.
+        assert "ov-wrong" not in applied
+        assert updated[0].planning_amount == Decimal("74.01")
+
+    # ── Test 14b: Nursing insurance — proven runtime key ─────────────────
+    def test_nursing_insurance_proven_key_128_23(self):
+        # PROVEN runtime key from prior Railway run:
+        #   description_key = "סעוד הראל -כללית"  (NOT "סיעוד")
+        KEY = "סעוד הראל -כללית"
+        p = _make_pattern(KEY, planning_amount=Decimal("128.23"))
+        overrides = [
+            PatternOverride(KEY, "", "recurrence_status", RecurrenceStatus.RECURRING, "ov-nu-r"),
+            PatternOverride(KEY, "", "commitment_status", CommitmentStatus.COMMITTED, "ov-nu-c"),
+            PatternOverride(KEY, "", "lifecycle_status", LifecycleStatus.ACTIVE, "ov-nu-l"),
+            PatternOverride(KEY, "", "planning_amount", Decimal("128.23"), "ov-nu-a"),
+        ]
+        updated, _, _ = apply_overrides((p,), overrides)
+        eff = updated[0]
+        assert eff.planning_amount == Decimal("128.23")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("128.23")
+
+    def test_nursing_short_alias_does_not_match(self):
+        # "סיעוד" (old wrong key) must NOT match the proven runtime key.
+        KEY_PROVEN = "סעוד הראל -כללית"
+        KEY_WRONG  = "סיעוד"
+        p = _make_pattern(KEY_PROVEN, planning_amount=Decimal("128.23"))
+        ov = PatternOverride(KEY_WRONG, "", "planning_amount", Decimal("0.00"), "ov-wrong-nu")
+        updated, applied, _ = apply_overrides((p,), [ov])
+        assert "ov-wrong-nu" not in applied
+        assert updated[0].planning_amount == Decimal("128.23")
 
     # ── Test 15: Pango/Moovit → NON_COMMITTED, reserve = 0 ───────────────
     def test_pango_moovit_non_committed_no_reserve(self):
