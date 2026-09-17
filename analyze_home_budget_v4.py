@@ -88,15 +88,16 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     # ══════════════════════════════════════════════════════════════════════
 
     # ── Gal Naomi (הוק לגל נעמי לסניף 17-662) ────────────────────────────
-    # Two parallel debt-repayment streams (~607 and ~2000). Both active recurring
-    # committed. No amount override — classifier detects per-stream amounts.
+    # Two parallel debt-repayment streams (reviewed: 607.00 and 2000.00).
+    # Both active recurring committed. No amount override — classifier detects
+    # per-stream amounts. expected_match_count=2: exactly two streams must match.
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
         stream_label_hint="",   # applies to all streams (both are active LOAN)
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-gal-naomi-recurrence",
-        expected_match_count=None,  # 2 streams expected, but don't hard-fail on count
+        expected_match_count=2,
     ),
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
@@ -104,7 +105,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-gal-naomi-committed",
-        expected_match_count=None,
+        expected_match_count=2,
     ),
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
@@ -112,7 +113,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-gal-naomi-active",
-        expected_match_count=None,
+        expected_match_count=2,
     ),
     PatternOverride(
         description_key="הוק לגל נעמי לסניף 17-662",
@@ -120,7 +121,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="purpose_type",
         value=PurposeType.LOAN,
         override_id="ov-gal-naomi-purpose",
-        expected_match_count=None,
+        expected_match_count=2,
     ),
 
     # ── Arnona (מ.א. חוף ה חיוב) ──────────────────────────────────────────
@@ -269,7 +270,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-harel-ins-recurrence",
-        expected_match_count=None,  # 2 streams; don't hard-fail
+        expected_match_count=2,  # exactly 2 streams (stream 1 ~231.35, stream 2 346.12)
     ),
     PatternOverride(
         description_key="הראל בטוח חיוב",
@@ -277,7 +278,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-harel-ins-committed",
-        expected_match_count=None,
+        expected_match_count=2,
     ),
     PatternOverride(
         description_key="הראל בטוח חיוב",
@@ -285,7 +286,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-harel-ins-active",
-        expected_match_count=None,
+        expected_match_count=2,
     ),
     # Stream 2 specific — amount + commitment
     PatternOverride(
@@ -464,7 +465,11 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         expected_match_count=1,
     ),
 
-    # ── Cancelled / Ended ─────────────────────────────────────────────────
+    # ── Cancelled / Ended (defensive lifecycle guardrails) ───────────────
+    # These differ from reserve commitment overrides: if the pattern is absent
+    # from the DB, there is no pattern to mis-classify and no reserve risk.
+    # expected_match_count=None is correct here — the override fires only when
+    # the pattern is present; absence is not an error.
     # Noy Lenz — confirmed matched in runtime
     PatternOverride(
         description_key="נוי לנץ",
@@ -472,7 +477,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ENDED,
         override_id="ov-noy-lenz-ended",
-        expected_match_count=None,  # may not appear in all DB snapshots
+        expected_match_count=None,  # defensive guardrail: absence = no risk
     ),
     # STP — cancelled service
     PatternOverride(
@@ -481,7 +486,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.CANCELLED,
         override_id="ov-stp-cancelled",
-        expected_match_count=None,  # may not appear in all DB snapshots
+        expected_match_count=None,  # defensive guardrail: absence = no risk
     ),
 
     # ── Google Cloud — TWO raw description_keys, ONE canonical TBD commitment ─
@@ -681,13 +686,15 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
 
     # ── Nursing insurance (סיעוד) ─────────────────────────────────────────
     # Family Review: recurring committed active, 128.23/month.
+    # description_key unconfirmed from real DB — expected_match_count=1 ensures
+    # FamilyReviewMappingConflict fires immediately if the key is wrong (fail-closed).
     PatternOverride(
         description_key="סיעוד",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-siyud-recurrence",
-        expected_match_count=None,  # description_key not yet confirmed from runtime
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="סיעוד",
@@ -695,7 +702,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-siyud-committed",
-        expected_match_count=None,
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="סיעוד",
@@ -703,7 +710,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-siyud-active",
-        expected_match_count=None,
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="סיעוד",
@@ -711,18 +718,20 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("128.23"),
         override_id="ov-siyud-amount",
-        expected_match_count=None,
+        expected_match_count=1,
     ),
 
     # ── Sewage (ביוב) ─────────────────────────────────────────────────────
     # Family Review: recurring committed active, 174/month.
+    # description_key unconfirmed from real DB — expected_match_count=1 ensures
+    # FamilyReviewMappingConflict fires immediately if the key is wrong (fail-closed).
     PatternOverride(
         description_key="ביוב",
         stream_label_hint="",
         field_name="recurrence_status",
         value=RecurrenceStatus.RECURRING,
         override_id="ov-biyuv-recurrence",
-        expected_match_count=None,  # description_key not yet confirmed from runtime
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -730,7 +739,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-biyuv-committed",
-        expected_match_count=None,
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -738,7 +747,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="lifecycle_status",
         value=LifecycleStatus.ACTIVE,
         override_id="ov-biyuv-active",
-        expected_match_count=None,
+        expected_match_count=1,
     ),
     PatternOverride(
         description_key="ביוב",
@@ -746,7 +755,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="planning_amount",
         value=Decimal("174.00"),
         override_id="ov-biyuv-amount",
-        expected_match_count=None,
+        expected_match_count=1,
     ),
 
     # ── Pango / Moovit (מ. התחבורה - פנגו מוביט) — NON_COMMITTED ─────────
