@@ -548,19 +548,26 @@ def classify_recurrence(
     """
     Classify recurrence using cadence evidence + semantic plausibility.
 
-    Approved contract:
-      0–1 observations → UNKNOWN
+    Approved V4 contract:
+
+      0–1 observations → UNKNOWN  (single data-point proves nothing)
       2   observations → POSSIBLE_RECURRING at most
-      3+  observations:
-        cadence IRREGULAR/UNKNOWN:
-          6+ rows → POSSIBLE_RECURRING (irregular but real frequency)
-          <6 rows → NON_RECURRING
-        coverage < 0.40 → NON_RECURRING
-        coverage 0.40–0.69 → POSSIBLE_RECURRING
-        coverage >= 0.70:
-          semantic = True  → RECURRING
-          semantic = None  → POSSIBLE_RECURRING  (ambiguous)
-          semantic = False → NON_RECURRING
+
+      3+ with recognized cadence (MONTHLY, QUARTERLY, …):
+        semantic=False              → NON_RECURRING
+        coverage < 0.40             → POSSIBLE_RECURRING (weak evidence, not NON_RECURRING)
+        coverage 0.40–0.69          → POSSIBLE_RECURRING
+        coverage >= 0.70, sem=True  → RECURRING
+        coverage >= 0.70, sem=None  → POSSIBLE_RECURRING
+
+      3+ with IRREGULAR or UNKNOWN cadence:
+        NON_RECURRING requires explicit one-off/negative semantics.
+        Absence of detectable cadence is NOT evidence of non-recurrence.
+        semantic=True  → POSSIBLE_RECURRING
+        semantic=None  → POSSIBLE_RECURRING  (irregular but real spend pattern)
+        semantic=False → NON_RECURRING
+
+    Note: no arbitrary row-count threshold is used for IRREGULAR cadence.
     """
     n = len(rows)
     if n == 0:
@@ -571,25 +578,28 @@ def classify_recurrence(
         return RecurrenceStatus.POSSIBLE_RECURRING
 
     # 3+ observations
+    semantic = _recurring_semantic_plausibility(norm_desc, cat_id)
+
     if cadence in (Cadence.IRREGULAR, Cadence.UNKNOWN):
-        if n >= 6:
-            return RecurrenceStatus.POSSIBLE_RECURRING
-        return RecurrenceStatus.NON_RECURRING
-
-    coverage = cadence_coverage([r.date for r in rows], cadence)
-
-    if coverage < 0.40:
-        return RecurrenceStatus.NON_RECURRING
-    if coverage < 0.70:
+        # Lack of detectable cadence ≠ non-recurring.
+        # Only explicit one-off semantics justify NON_RECURRING here.
+        if semantic is False:
+            return RecurrenceStatus.NON_RECURRING
         return RecurrenceStatus.POSSIBLE_RECURRING
 
-    # coverage >= 0.70 — consult semantic plausibility
-    semantic = _recurring_semantic_plausibility(norm_desc, cat_id)
-    if semantic is True:
-        return RecurrenceStatus.RECURRING
+    # Recognized cadence — use coverage
+    coverage = cadence_coverage([r.date for r in rows], cadence)
+
     if semantic is False:
         return RecurrenceStatus.NON_RECURRING
-    # semantic is None (ambiguous) → POSSIBLE_RECURRING regardless of coverage
+    if coverage < 0.70:
+        # Weak/sparse cadence evidence — avoid strong negative conclusion
+        return RecurrenceStatus.POSSIBLE_RECURRING
+
+    # coverage >= 0.70 — sufficient cadence evidence
+    if semantic is True:
+        return RecurrenceStatus.RECURRING
+    # semantic is None (ambiguous) → POSSIBLE_RECURRING
     return RecurrenceStatus.POSSIBLE_RECURRING
 
 

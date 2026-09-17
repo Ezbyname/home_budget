@@ -476,19 +476,55 @@ class TestRecurrenceClassification:
             f"3 sparse monthly payments must not be RECURRING, got {result}"
         )
 
-    def test_irregular_discretionary_many_rows(self):
-        # Irregular cadence + 8 rows → POSSIBLE_RECURRING (real frequency, irregular period)
+    def test_irregular_3_ambiguous_not_non_recurring(self):
+        # 3 irregular observations + ambiguous semantics → NOT NON_RECURRING
+        # Absence of detectable cadence is not evidence of non-recurrence.
         rows = [_make_expense(i, f"2024-{m:02d}-{d:02d}")
-                for i, (m, d) in enumerate([
-                    (1,5),(1,22),(2,8),(3,3),(3,27),(4,14),(5,9),(6,1)
-                ], 1)]
+                for i, (m, d) in enumerate([(1,5),(3,12),(6,20)], 1)]
         result = classify_recurrence(
             rows, Cadence.IRREGULAR,
-            norm_desc="COFFEE SHOP",
-            cat_id="entertainment",
+            norm_desc="TRANSFER 999",  # ambiguous → semantic=None
+            cat_id=None,
         )
-        # 8 >= 6 → POSSIBLE_RECURRING despite one-off semantics (irregular branch)
+        assert result != RecurrenceStatus.NON_RECURRING, (
+            f"3 irregular ambiguous observations must not be NON_RECURRING, got {result}"
+        )
+
+    def test_irregular_5_ambiguous_not_non_recurring(self):
+        # 5 irregular observations + ambiguous semantics → NOT NON_RECURRING
+        rows = [_make_expense(i, f"2024-{m:02d}-{d:02d}")
+                for i, (m, d) in enumerate([(1,5),(2,18),(4,3),(6,11),(8,27)], 1)]
+        result = classify_recurrence(
+            rows, Cadence.IRREGULAR,
+            norm_desc="UNKNOWN MERCHANT",
+            cat_id=None,
+        )
+        assert result != RecurrenceStatus.NON_RECURRING, (
+            f"5 irregular ambiguous observations must not be NON_RECURRING, got {result}"
+        )
+
+    def test_irregular_recurring_semantics_is_possible_recurring(self):
+        # Irregular cadence + recurring semantics → POSSIBLE_RECURRING (not RECURRING,
+        # because cadence evidence is not sufficient to confirm schedule)
+        rows = [_make_expense(i, f"2024-{m:02d}-{d:02d}")
+                for i, (m, d) in enumerate([(1,10),(3,5),(5,18),(8,2),(10,14)], 1)]
+        result = classify_recurrence(
+            rows, Cadence.IRREGULAR,
+            norm_desc="ביטוח בריאות",  # insurance → semantic=True
+            cat_id="insurance",
+        )
         assert result == RecurrenceStatus.POSSIBLE_RECURRING
+
+    def test_irregular_onetime_semantics_is_non_recurring(self):
+        # Irregular cadence + explicit one-off semantics → NON_RECURRING
+        rows = [_make_expense(i, f"2024-{m:02d}-{d:02d}")
+                for i, (m, d) in enumerate([(2,14),(4,20),(7,3)], 1)]
+        result = classify_recurrence(
+            rows, Cadence.IRREGULAR,
+            norm_desc="ZARA",
+            cat_id="shopping",
+        )
+        assert result == RecurrenceStatus.NON_RECURRING
 
     def test_possible_recurring_budget_class_is_uncertain(self):
         from intelligence.v4_contracts import derive_budget_class
