@@ -251,7 +251,8 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     ),
 
     # ── Mei Hof HaKarmel (מי חוף הכרמל) — every-2-months, variable ───────
-    # Monthly reserve 205.50 → planning_amount = 205.50 * 12 / 6 = 411.00
+    # Reviewed: 410.99 every 2 months (observed median).
+    # monthly_equivalent(410.99, EVERY_2_MONTHS) = 410.99 * 6/12 = 205.495 → rounds to 205.50.
     PatternOverride(
         description_key="מי חוף הכרמל",
         stream_label_hint="",
@@ -263,7 +264,7 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         description_key="מי חוף הכרמל",
         stream_label_hint="",
         field_name="planning_amount",
-        value=Decimal("411.00"),
+        value=Decimal("410.99"),
         override_id="ov-mei-hof-amount",
     ),
     PatternOverride(
@@ -427,6 +428,232 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="purpose_type",
         value=PurposeType.SAVINGS_INVESTMENT,
         override_id="ov-mor-gemel-purpose",
+    ),
+
+    # ── Harel Insurance parallel stream planning amounts ──────────────────
+    # Two parallel streams: 231.35 and 346.12.
+    # Classifier splits by bimodal detection; each stream should detect its own amount.
+    # Overrides encode the reviewed amounts explicitly per stream.
+    # Stream 0 (lower amount, no label suffix): 231.35
+    # Stream 1 (higher amount, label ends with "(stream 2)"): 346.12
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="stream 2",
+        field_name="planning_amount",
+        value=Decimal("346.12"),
+        override_id="ov-harel-ins-amount-stream2",
+    ),
+    PatternOverride(
+        description_key="הראל בטוח חיוב",
+        stream_label_hint="stream 2",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-harel-ins-committed-stream2",
+    ),
+
+    # ── Space Gym (149/month) ─────────────────────────────────────────────
+    # POSSIBLE_RECURRING automatically (semantic=None for gym category).
+    # Family Review: recurring committed active.
+    # description_key unconfirmed from runtime — best-effort normalization.
+    PatternOverride(
+        description_key="SPACE GYM",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-space-gym-recurrence",
+    ),
+    PatternOverride(
+        description_key="SPACE GYM",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-space-gym-committed",
+    ),
+    PatternOverride(
+        description_key="SPACE GYM",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-space-gym-active",
+    ),
+    PatternOverride(
+        description_key="SPACE GYM",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("149.00"),
+        override_id="ov-space-gym-amount",
+    ),
+
+    # ── Local house committee (ועד בית) ───────────────────────────────────
+    # POSSIBLE_RECURRING automatically (semantic=None for committee category).
+    # Family Review: recurring committed active, 743.64/month.
+    # description_key unconfirmed — best-effort.
+    PatternOverride(
+        description_key="ועד בית",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-vaad-bayit-recurrence",
+    ),
+    PatternOverride(
+        description_key="ועד בית",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-vaad-bayit-committed",
+    ),
+    PatternOverride(
+        description_key="ועד בית",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-vaad-bayit-active",
+    ),
+    PatternOverride(
+        description_key="ועד בית",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("743.64"),
+        override_id="ov-vaad-bayit-amount",
+    ),
+
+    # ── Nursing insurance (סיעוד) ─────────────────────────────────────────
+    # POSSIBLE_RECURRING automatically (semantic=None).
+    # Family Review: recurring committed active, 128.23/month.
+    # description_key unconfirmed — best-effort.
+    PatternOverride(
+        description_key="סיעוד",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-siyud-recurrence",
+    ),
+    PatternOverride(
+        description_key="סיעוד",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-siyud-committed",
+    ),
+    PatternOverride(
+        description_key="סיעוד",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-siyud-active",
+    ),
+    PatternOverride(
+        description_key="סיעוד",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("128.23"),
+        override_id="ov-siyud-amount",
+    ),
+
+    # ── Sewage (ביוב) ─────────────────────────────────────────────────────
+    # POSSIBLE_RECURRING automatically (semantic=None).
+    # Family Review: recurring committed active, 174/month.
+    # description_key unconfirmed — best-effort.
+    PatternOverride(
+        description_key="ביוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-biyuv-recurrence",
+    ),
+    PatternOverride(
+        description_key="ביוב",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-biyuv-committed",
+    ),
+    PatternOverride(
+        description_key="ביוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-biyuv-active",
+    ),
+    PatternOverride(
+        description_key="ביוב",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("174.00"),
+        override_id="ov-biyuv-amount",
+    ),
+
+    # ── Pango / Moovit — recurring NON_COMMITTED ──────────────────────────
+    # Classifier may assign COMMITTED (stable amounts). Family Review: NON_COMMITTED transport.
+    # description_keys unconfirmed — best-effort normalized forms.
+    PatternOverride(
+        description_key="פנגו",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.NON_COMMITTED,
+        override_id="ov-pango-non-committed",
+    ),
+    PatternOverride(
+        description_key="PANGO",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.NON_COMMITTED,
+        override_id="ov-pango-en-non-committed",
+    ),
+    PatternOverride(
+        description_key="מוביט",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.NON_COMMITTED,
+        override_id="ov-moovit-non-committed",
+    ),
+
+    # ── Sports association — recurring active, amount TBD ─────────────────
+    # description_key unconfirmed — best-effort.
+    PatternOverride(
+        description_key="אגודת ספורט",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=None,
+        override_id="ov-sports-assoc-tbd",
+    ),
+
+    # ── Discount card fees — two 19.80 charges = 39.60/month ─────────────
+    # FINANCIAL_FEE purpose. description_keys unconfirmed — best-effort.
+    PatternOverride(
+        description_key="דמי כרטיס",
+        stream_label_hint="",
+        field_name="purpose_type",
+        value=PurposeType.FINANCIAL_FEE,
+        override_id="ov-discount-fee1-purpose",
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-discount-fee1-recurrence",
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-discount-fee1-committed",
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-discount-fee1-active",
+    ),
+    PatternOverride(
+        description_key="דמי כרטיס",
+        stream_label_hint="",
+        field_name="planning_amount",
+        value=Decimal("19.80"),
+        override_id="ov-discount-fee1-amount",
     ),
 ]
 
