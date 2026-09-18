@@ -1669,23 +1669,18 @@ class TestFamilyReviewRegression:
                             canonical_identity="google-cloud-tbd"),
         ]
         updated, _, _ = apply_overrides((p1, p2), overrides)
-        # Both raw patterns are TBD (planning_amount=None, COMMITTED+RECURRING+ACTIVE)
-        tbd_raw = [p for p in updated
-                   if p.planning_amount is None
-                   and p.commitment_status == CommitmentStatus.COMMITTED
-                   and p.lifecycle_status == LifecycleStatus.ACTIVE
-                   and p.recurrence_status == RecurrenceStatus.RECURRING]
-        assert len(tbd_raw) == 2  # two raw patterns
-        # But canonical deduplication → count = 1
-        seen = set()
-        deduplicated = []
-        for p in tbd_raw:
-            if p.canonical_identity is not None:
-                if p.canonical_identity in seen:
-                    continue
-                seen.add(p.canonical_identity)
-            deduplicated.append(p)
-        assert len(deduplicated) == 1, "Google Cloud aliases must count as ONE canonical TBD"
+        # Phase 2b canonical consolidation: two raw aliases → ONE effective record
+        tbd_effective = [p for p in updated
+                         if p.planning_amount is None
+                         and p.commitment_status == CommitmentStatus.COMMITTED
+                         and p.lifecycle_status == LifecycleStatus.ACTIVE
+                         and p.recurrence_status == RecurrenceStatus.RECURRING]
+        assert len(tbd_effective) == 1, (
+            "Google Cloud aliases must consolidate to ONE canonical TBD in effective patterns"
+        )
+        assert tbd_effective[0].canonical_identity == "google-cloud-tbd"
+        # member_ids must include raw members from both raw streams
+        assert len(tbd_effective[0].member_ids) >= 1
 
     # ── Test 10: Mor Gemel → ONE TBD, classifier 90.08 not in reserve ──────
     def test_mor_gemel_classifier_amount_not_in_reserve(self):
@@ -2328,3 +2323,126 @@ class TestLegacyReservePreservation:
         result = compute_monthly_reserve(all_patterns)
         # 6641.59 + 171.67 + 443.70 + 107.28 + 95.38 + 67.20 = 7526.82
         assert result == Decimal("7526.82"), f"expected 7526.82 got {result}"
+
+    # ── Structural consolidation tests (A–E) — use apply_overrides directly ──
+    # These verify that Phase 2b produces ONE effective PatternResult per
+    # canonical_identity, deterministically, before any aggregation.
+
+    def _hot_overrides(self) -> list[PatternOverride]:
+        return [
+            PatternOverride("HOT", "", "recurrence_status", RecurrenceStatus.RECURRING,
+                            "ov-hot-r", expected_match_count=2, canonical_identity="hot-subscription"),
+            PatternOverride("HOT", "", "commitment_status", CommitmentStatus.COMMITTED,
+                            "ov-hot-c", expected_match_count=2, canonical_identity="hot-subscription"),
+            PatternOverride("HOT", "", "cadence", Cadence.MONTHLY,
+                            "ov-hot-cad", expected_match_count=2, canonical_identity="hot-subscription"),
+            PatternOverride("HOT", "", "planning_amount", Decimal("67.20"),
+                            "ov-hot-amt", expected_match_count=2, canonical_identity="hot-subscription"),
+        ]
+
+    def _raw_hot_stream(self, label_suffix: str, cadence: Cadence) -> PatternResult:
+        """Raw HOT stream as classifier would emit it (before override)."""
+        return _make_reserve_pattern(
+            "HOT",
+            RecurrenceStatus.POSSIBLE_RECURRING, CommitmentStatus.UNCERTAIN,
+            LifecycleStatus.ACTIVE, cadence,
+            None, canonical_identity=None,
+            member_ids=(f"hot-{label_suffix}",),
+        )
+
+    # A. Reversing the two raw HOT patterns produces identical canonical output
+    def test_A_hot_order_invariant_canonical_output(self):
+        s1 = self._raw_hot_stream("s1", Cadence.MONTHLY)
+        s2 = self._raw_hot_stream("s2", Cadence.QUARTERLY)
+        ovs = self._hot_overrides()
+        fwd, _, _ = apply_overrides((s1, s2), ovs)
+        rev, _, _ = apply_overrides((s2, s1), ovs)
+        assert len(fwd) == len(rev), "consolidated count must not depend on order"
+        hot_fwd = [p for p in fwd if p.description_key == "HOT"]
+        hot_rev = [p for p in rev if p.description_key == "HOT"]
+        assert len(hot_fwd) == 1, "exactly one HOT canonical record"
+        assert len(hot_rev) == 1, "exactly one HOT canonical record (reversed)"
+        assert hot_fwd[0].monthly_reserve_contrib == hot_rev[0].monthly_reserve_contrib
+        assert hot_fwd[0].canonical_identity == "hot-subscription"
+
+    # A (reserve). Reversing HOT order produces identical reserve total
+    def test_A_hot_order_invariant_reserve(self):
+        s1 = self._raw_hot_stream("s1", Cadence.MONTHLY)
+        s2 = self._raw_hot_stream("s2", Cadence.QUARTERLY)
+        ovs = self._hot_overrides()
+        fwd, _, _ = apply_overrides((s1, s2), ovs)
+        rev, _, _ = apply_overrides((s2, s1), ovs)
+        assert compute_monthly_reserve(fwd) == compute_monthly_reserve(rev)
+        assert compute_monthly_reserve(fwd) == Decimal("67.20")
+
+    # B. Reversing Migdal raw members produces identical canonical output
+    def test_B_migdal_order_invariant(self):
+        ended = _make_reserve_pattern(
+            "מגדל חיים/בריאות", RecurrenceStatus.POSSIBLE_RECURRING,
+            CommitmentStatus.COMMITTED, LifecycleStatus.ENDED,
+            Cadence.MONTHLY, Decimal("95.77"), canonical_identity=None,
+            member_ids=("m-ended",),
+        )
+        active = _make_reserve_pattern(
+            "מגדל חיים/בריאות", RecurrenceStatus.POSSIBLE_RECURRING,
+            CommitmentStatus.COMMITTED, LifecycleStatus.ACTIVE,
+            Cadence.MONTHLY, Decimal("118.79"), canonical_identity=None,
+            member_ids=("m-active",),
+        )
+        ovs = [
+            PatternOverride("מגדל חיים/בריאות", "", "recurrence_status",
+                            RecurrenceStatus.RECURRING, "ov-mg-r",
+                            expected_match_count=2, canonical_identity="migdal-hayim-briut"),
+            PatternOverride("מגדל חיים/בריאות", "", "commitment_status",
+                            CommitmentStatus.COMMITTED, "ov-mg-c",
+                            expected_match_count=2, canonical_identity="migdal-hayim-briut"),
+            PatternOverride("מגדל חיים/בריאות", "", "planning_amount",
+                            Decimal("107.28"), "ov-mg-amt",
+                            expected_match_count=2, canonical_identity="migdal-hayim-briut"),
+        ]
+        fwd, _, _ = apply_overrides((ended, active), ovs)
+        rev, _, _ = apply_overrides((active, ended), ovs)
+        mg_fwd = [p for p in fwd if p.description_key == "מגדל חיים/בריאות"]
+        mg_rev = [p for p in rev if p.description_key == "מגדל חיים/בריאות"]
+        assert len(mg_fwd) == 1
+        assert len(mg_rev) == 1
+        assert mg_fwd[0].monthly_reserve_contrib == mg_rev[0].monthly_reserve_contrib
+        assert mg_fwd[0].reserve_eligible == mg_rev[0].reserve_eligible
+
+    # C. Exactly one effective canonical commitment per reviewed canonical identity
+    def test_C_one_effective_record_per_canonical_identity(self):
+        s1 = self._raw_hot_stream("s1", Cadence.MONTHLY)
+        s2 = self._raw_hot_stream("s2", Cadence.QUARTERLY)
+        ovs = self._hot_overrides()
+        updated, _, _ = apply_overrides((s1, s2), ovs)
+        hot_records = [p for p in updated if p.description_key == "HOT"]
+        assert len(hot_records) == 1, (
+            f"expected 1 effective HOT record, got {len(hot_records)}"
+        )
+        assert hot_records[0].canonical_identity == "hot-subscription"
+
+    # D. Raw members remain in audit evidence (not silently dropped)
+    def test_D_raw_members_in_audit_evidence(self):
+        s1 = self._raw_hot_stream("s1", Cadence.MONTHLY)
+        s2 = self._raw_hot_stream("s2", Cadence.QUARTERLY)
+        ovs = self._hot_overrides()
+        _, _, audit = apply_overrides((s1, s2), ovs)
+        # Both raw HOT streams must appear in the audit trail
+        hot_audit = [a for a in audit if a.get("description_key") == "HOT"]
+        assert len(hot_audit) == 2, (
+            f"both raw HOT streams must be in audit, got {len(hot_audit)}"
+        )
+
+    # E. Reserve aggregation consumes the canonical record, not a raw member
+    def test_E_reserve_consumes_canonical_record_not_raw_member(self):
+        s1 = self._raw_hot_stream("s1", Cadence.QUARTERLY)  # quarterly raw
+        s2 = self._raw_hot_stream("s2", Cadence.MONTHLY)
+        ovs = self._hot_overrides()
+        updated, _, _ = apply_overrides((s1, s2), ovs)
+        hot = next(p for p in updated if p.description_key == "HOT")
+        # After consolidation the canonical record must have cadence=MONTHLY
+        # (override applied) and monthly_reserve_contrib = 67.20 (not 67.20*4/12)
+        assert hot.cadence == Cadence.MONTHLY
+        assert hot.reserve_eligible
+        assert hot.monthly_reserve_contrib == Decimal("67.20")
+        assert compute_monthly_reserve(updated) == Decimal("67.20")

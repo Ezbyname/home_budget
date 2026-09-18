@@ -337,6 +337,97 @@ def apply_overrides(
             },
         })
 
+    # --- Phase 2b: canonical consolidation ---
+    # For each canonical_identity group with >1 effective streams, replace ALL
+    # members with a SINGLE canonical PatternResult.  This is the authoritative
+    # consolidation step: one economic commitment → one effective PatternResult
+    # → one reserve contribution.  compute_monthly_reserve's seen_canonical
+    # guard is defensive-only after this step.
+    #
+    # Representative selection is deterministic and order-independent:
+    #   1. first reserve_eligible stream (sorted by label for tie-breaking)
+    #   2. if none eligible: first stream by label
+    # member_ids: union of all raw members, sorted — preserves full evidence.
+    # Audit entries: annotated with canonical_identity/is_representative so
+    # raw classifier evidence is visible but clearly labeled.
+
+    # Map canonical_identity → list of (position-in-updated, effective PatternResult)
+    canonical_groups: dict[str, list[tuple[int, PatternResult]]] = {}
+    for idx, p in enumerate(updated):
+        if p.canonical_identity is not None:
+            canonical_groups.setdefault(p.canonical_identity, []).append((idx, p))
+
+    indices_to_drop: set[int] = set()
+    index_to_canonical: dict[int, PatternResult] = {}  # rep_idx → canonical record
+
+    for identity, members in canonical_groups.items():
+        if len(members) == 1:
+            continue  # single-stream group: nothing to consolidate
+
+        # Deterministic representative: eligible streams first, then sort by label
+        eligible = sorted(
+            [(i, p) for i, p in members if p.reserve_eligible],
+            key=lambda x: x[1].label,
+        )
+        all_sorted = sorted(members, key=lambda x: x[1].label)
+        rep_idx, rep = eligible[0] if eligible else all_sorted[0]
+
+        # Merge member_ids (union, sorted) for full evidence coverage
+        all_member_ids: tuple[str, ...] = tuple(sorted(set(
+            mid for _, p in members for mid in p.member_ids
+        )))
+
+        canonical_record = PatternResult(
+            description_key=rep.description_key,
+            label=rep.label,
+            recurrence_status=rep.recurrence_status,
+            commitment_status=rep.commitment_status,
+            amount_behavior=rep.amount_behavior,
+            budget_class=rep.budget_class,
+            lifecycle_status=rep.lifecycle_status,
+            purpose_type=rep.purpose_type,
+            cadence=rep.cadence,
+            planning_amount=rep.planning_amount,
+            member_ids=all_member_ids,
+            membership_confidence=rep.membership_confidence,
+            evidence_sources=rep.evidence_sources,
+            decision_source=rep.decision_source,
+            family_review_required=rep.family_review_required,
+            review_reasons=rep.review_reasons,
+            reserve_eligible=rep.reserve_eligible,
+            monthly_reserve_contrib=rep.monthly_reserve_contrib,
+            canonical_identity=identity,
+        )
+
+        # Drop all group members except the representative slot;
+        # the representative slot is replaced by the canonical record.
+        for i, _ in members:
+            if i == rep_idx:
+                index_to_canonical[i] = canonical_record
+            else:
+                indices_to_drop.add(i)
+
+        # Annotate audit entries so raw evidence remains but is labeled
+        for audit_entry in audit:
+            if audit_entry.get("description_key") == rep.description_key:
+                audit_entry.setdefault("canonical_identity", identity)
+                # mark which raw stream is the canonical representative
+                if audit_entry.get("label") == rep.label:
+                    audit_entry["canonical_representative"] = True
+                else:
+                    audit_entry.setdefault("canonical_representative", False)
+
+    if indices_to_drop or index_to_canonical:
+        rebuilt: list[PatternResult] = []
+        for idx, p in enumerate(updated):
+            if idx in indices_to_drop:
+                continue  # non-representative raw stream: dropped from effective
+            if idx in index_to_canonical:
+                rebuilt.append(index_to_canonical[idx])  # canonical record
+            else:
+                rebuilt.append(p)
+        updated = rebuilt
+
     # --- Phase 3: fail-closed validation ---
     validated_groups: set[tuple] = set()
     conflicts: list[str] = []
@@ -369,8 +460,10 @@ def apply_overrides(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def compute_monthly_reserve(patterns: tuple[PatternResult, ...]) -> Decimal:
-    # Deduplicate by canonical_identity: multi-stream items share one economic
-    # commitment; only the first eligible stream per identity is counted.
+    # apply_overrides (Phase 2b) already consolidates multi-stream canonical
+    # groups into one PatternResult per identity before this function is called.
+    # seen_canonical is a defensive belt-and-suspenders guard only; after
+    # proper consolidation it should never skip a pattern.
     seen_canonical: set[str] = set()
     total = Decimal("0")
     for p in patterns:
@@ -378,7 +471,7 @@ def compute_monthly_reserve(patterns: tuple[PatternResult, ...]) -> Decimal:
             continue
         if p.canonical_identity is not None:
             if p.canonical_identity in seen_canonical:
-                continue
+                continue  # defensive: should not fire after Phase 2b consolidation
             seen_canonical.add(p.canonical_identity)
         total += p.monthly_reserve_contrib
     return quantize_ils(total)
