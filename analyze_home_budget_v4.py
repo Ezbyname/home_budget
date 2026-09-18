@@ -984,10 +984,11 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     # Transactions interleave month-by-month (Oct–Mar): one continuous economic
     # commitment split by classifier into two streams.
     # Stream 1: ACTIVE monthly; stream 2: POSSIBLY_STOPPED every_2_months.
-    # Both streams receive overrides and share canonical_identity.
-    # Classifier lifecycle preserved: stream 2 stays POSSIBLY_STOPPED →
-    # is_reserve_eligible() = False → only stream 1 contributes; canonical
-    # dedup provides fail-closed protection for future structural changes.
+    # Family Review declares: one ACTIVE MONTHLY commitment at 443.70/month.
+    # All four reviewed fields (recurrence, commitment, lifecycle, cadence,
+    # planning_amount) are explicit overrides → canonical record is authoritative
+    # from Family Review, not inherited from any raw classifier stream.
+    # Phase 2b consolidates to one canonical PatternResult; raw streams in audit.
     # Transaction median: 443.70.
     PatternOverride(
         description_key="כלל חיים/ב חיוב",
@@ -1010,6 +1011,24 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     PatternOverride(
         description_key="כלל חיים/ב חיוב",
         stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-klal-hayim-lifecycle",
+        expected_match_count=2,
+        canonical_identity="klal-hayim-b",
+    ),
+    PatternOverride(
+        description_key="כלל חיים/ב חיוב",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.MONTHLY,
+        override_id="ov-klal-hayim-cadence",
+        expected_match_count=2,
+        canonical_identity="klal-hayim-b",
+    ),
+    PatternOverride(
+        description_key="כלל חיים/ב חיוב",
+        stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("443.70"),
         override_id="ov-klal-hayim-amount",
@@ -1019,10 +1038,11 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
 
     # ── מגדל חיים/בריאות — canonical group, 2 streams ────────────────────────
     # One continuous monthly insurance commitment; premium jumped Jan 2026.
-    # Stream 1 (ENDED, pre-Jan 2026, ~95 NIS) and stream 2 (ACTIVE, Jan 2026+,
-    # ~119 NIS) both receive overrides; canonical_identity groups them.
-    # Classifier lifecycle preserved: stream 1 stays ENDED → not reserve_eligible.
-    # Only stream 2 (ACTIVE) contributes to the reserve.
+    # Classifier splits into stream 1 (ENDED, pre-Jan 2026) and stream 2
+    # (ACTIVE, Jan 2026+).  Family Review declares: one ACTIVE MONTHLY
+    # commitment at 107.28/month.  All reviewed fields are explicit overrides →
+    # canonical record authority is Family Review, not classifier inheritance.
+    # Phase 2b consolidates to one canonical PatternResult; raw streams in audit.
     # Full-history median ((95.77 + 118.79) / 2): 107.28.
     PatternOverride(
         description_key="מגדל חיים/בריאות",
@@ -1045,6 +1065,24 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     PatternOverride(
         description_key="מגדל חיים/בריאות",
         stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-migdal-lifecycle",
+        expected_match_count=2,
+        canonical_identity="migdal-hayim-briut",
+    ),
+    PatternOverride(
+        description_key="מגדל חיים/בריאות",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.MONTHLY,
+        override_id="ov-migdal-cadence",
+        expected_match_count=2,
+        canonical_identity="migdal-hayim-briut",
+    ),
+    PatternOverride(
+        description_key="מגדל חיים/בריאות",
+        stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("107.28"),
         override_id="ov-migdal-amount",
@@ -1054,10 +1092,11 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
 
     # ── מנורה מבטחים-חיים/בריאות — canonical group, 2 streams ───────────────
     # One continuous monthly insurance commitment; premium jumped Feb 2026.
-    # Stream 1 (POSSIBLY_STOPPED, pre-Feb 2026, ~95 NIS) and stream 2 (ACTIVE,
-    # Feb 2026+, ~116 NIS) receive overrides; canonical_identity groups them.
-    # Classifier lifecycle preserved: stream 1 stays POSSIBLY_STOPPED →
-    # lifecycle ≠ ACTIVE → not reserve_eligible.  Only stream 2 contributes.
+    # Classifier splits into stream 1 (POSSIBLY_STOPPED, pre-Feb 2026) and
+    # stream 2 (ACTIVE, Feb 2026+).  Family Review declares: one ACTIVE MONTHLY
+    # commitment at 95.38/month.  All reviewed fields are explicit overrides →
+    # canonical record authority is Family Review, not classifier inheritance.
+    # Phase 2b consolidates to one canonical PatternResult; raw streams in audit.
     # Reviewed median: 95.38.
     PatternOverride(
         description_key="מנורה מבטחים-חיים/בריאות",
@@ -1080,6 +1119,24 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     PatternOverride(
         description_key="מנורה מבטחים-חיים/בריאות",
         stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-menora-lifecycle",
+        expected_match_count=2,
+        canonical_identity="menora-mivtahim",
+    ),
+    PatternOverride(
+        description_key="מנורה מבטחים-חיים/בריאות",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.MONTHLY,
+        override_id="ov-menora-cadence",
+        expected_match_count=2,
+        canonical_identity="menora-mivtahim",
+    ),
+    PatternOverride(
+        description_key="מנורה מבטחים-חיים/בריאות",
+        stream_label_hint="",
         field_name="planning_amount",
         value=Decimal("95.38"),
         override_id="ov-menora-amount",
@@ -1088,14 +1145,14 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     ),
 
     # ── HOT — canonical group, 2 streams ──────────────────────────────────────
-    # One monthly subscription split by classifier into two ACTIVE streams due
-    # to amount variation (58.37 vs 67–79 NIS per payment).
+    # One monthly subscription split by classifier into two streams due to
+    # amount variation (58.37 vs 67–79 NIS per payment).
     # Transaction chronology: one payment per month — not two concurrent services.
-    # Stream 1: quarterly classifier cadence; stream 2: irregular classifier cadence.
-    # Both streams receive overrides including cadence=MONTHLY so
-    # monthly_reserve_contrib = planning_amount correctly for both streams.
-    # canonical_identity deduplication in compute_monthly_reserve ensures
-    # the 67.20 contribution is counted exactly once.
+    # Family Review declares: one ACTIVE MONTHLY commitment at 67.20/month.
+    # All reviewed fields (recurrence, commitment, lifecycle, cadence,
+    # planning_amount) are explicit overrides → canonical record authority is
+    # Family Review, not classifier inheritance.
+    # Phase 2b consolidates to one canonical PatternResult; raw streams in audit.
     # Reviewed median (Dec 2025 reference): 67.20.
     PatternOverride(
         description_key="HOT",
@@ -1112,6 +1169,15 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-hot-committed",
+        expected_match_count=2,
+        canonical_identity="hot-subscription",
+    ),
+    PatternOverride(
+        description_key="HOT",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-hot-lifecycle",
         expected_match_count=2,
         canonical_identity="hot-subscription",
     ),
