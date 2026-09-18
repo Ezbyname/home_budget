@@ -369,10 +369,19 @@ def apply_overrides(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def compute_monthly_reserve(patterns: tuple[PatternResult, ...]) -> Decimal:
-    return quantize_ils(sum(
-        (p.monthly_reserve_contrib for p in patterns if p.reserve_eligible),
-        Decimal("0"),
-    ))
+    # Deduplicate by canonical_identity: multi-stream items share one economic
+    # commitment; only the first eligible stream per identity is counted.
+    seen_canonical: set[str] = set()
+    total = Decimal("0")
+    for p in patterns:
+        if not p.reserve_eligible:
+            continue
+        if p.canonical_identity is not None:
+            if p.canonical_identity in seen_canonical:
+                continue
+            seen_canonical.add(p.canonical_identity)
+        total += p.monthly_reserve_contrib
+    return quantize_ils(total)
 
 
 def compute_planning_income(income_streams: tuple[IncomeStreamResult, ...]) -> Decimal:

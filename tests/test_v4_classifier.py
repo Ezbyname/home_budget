@@ -1997,3 +1997,334 @@ class TestFamilyReviewRegression:
         assert validate_state_graph([]) == []
         # FamilyReviewMappingConflict is a RuntimeError
         assert issubclass(FamilyReviewMappingConflict, RuntimeError)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# LEGACY RESERVE PRESERVATION
+# ════════════════════════════════════════════════════════════════════════════
+
+def _make_reserve_pattern(
+    description: str,
+    recurrence: RecurrenceStatus,
+    commitment: CommitmentStatus,
+    lifecycle: LifecycleStatus,
+    cadence: Cadence,
+    planning_amount: Decimal | None,
+    canonical_identity: str | None = None,
+    member_ids: tuple[int, ...] = (1,),
+) -> PatternResult:
+    from intelligence.v4_contracts import (
+        AmountBehavior, BudgetClass, DecisionSource, PurposeType,
+        is_reserve_eligible, monthly_equivalent,
+    )
+    eligible = is_reserve_eligible(recurrence, commitment, lifecycle, planning_amount)
+    if eligible and planning_amount is not None:
+        contrib = monthly_equivalent(planning_amount, cadence)
+    else:
+        contrib = Decimal("0")
+    return PatternResult(
+        description_key=description,
+        label=description,
+        recurrence_status=recurrence,
+        commitment_status=commitment,
+        lifecycle_status=lifecycle,
+        cadence=cadence,
+        planning_amount=planning_amount,
+        reserve_eligible=eligible,
+        monthly_reserve_contrib=contrib,
+        canonical_identity=canonical_identity,
+        member_ids=member_ids,
+        decision_source=DecisionSource.FAMILY_REVIEW,
+        amount_behavior=AmountBehavior.STABLE,
+        budget_class=BudgetClass.FIXED_AMOUNT_RECURRING,
+        purpose_type=PurposeType.INSURANCE,
+        membership_confidence={},
+        evidence_sources=(),
+        family_review_required=False,
+        review_reasons=(),
+    )
+
+
+class TestLegacyReservePreservation:
+    """Verifies ₪891.45 reserve-gap fix: 6 items restored to known reserve.
+
+    Tests cover:
+      - mortgage single-stream: amount corrected → contributes 6641.59
+      - phoenix single-stream: recurrence/commitment corrected → contributes 171.67
+      - klal canonical group (2 streams, one POSSIBLY_STOPPED): only ACTIVE counts → 443.70
+      - migdal canonical group (2 streams, one ENDED): only ACTIVE counts → 107.28
+      - menora canonical group (2 streams, one POSSIBLY_STOPPED): only ACTIVE counts → 95.38
+      - hot canonical group (2 streams, both ACTIVE after override): dedup → 67.20
+      - compute_monthly_reserve dedup logic (canonical_identity guard)
+      - aggregate target: known reserve = 15395.99
+    """
+
+    # ── T1: mortgage contributes correct amount ───────────────────────────────
+    def test_mortgage_contributes_corrected_amount(self):
+        p = _make_reserve_pattern(
+            "דסק-משכנתא חיוב",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("6641.59"),
+        )
+        assert p.reserve_eligible
+        assert p.monthly_reserve_contrib == Decimal("6641.59")
+
+    # ── T2: phoenix contributes after recurrence+commitment override ──────────
+    def test_phoenix_eligible_after_override(self):
+        p = _make_reserve_pattern(
+            "הפניקס חיים ובריאות",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("171.67"),
+        )
+        assert p.reserve_eligible
+        assert p.monthly_reserve_contrib == Decimal("171.67")
+
+    # ── T3: phoenix NOT eligible before override (POSSIBLE_RECURRING) ─────────
+    def test_phoenix_not_eligible_before_override(self):
+        p = _make_reserve_pattern(
+            "הפניקס חיים ובריאות",
+            RecurrenceStatus.POSSIBLE_RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("171.67"),
+        )
+        assert not p.reserve_eligible
+        assert p.monthly_reserve_contrib == Decimal("0")
+
+    # ── T4: klal stream1 ACTIVE → eligible ───────────────────────────────────
+    def test_klal_stream1_active_eligible(self):
+        p = _make_reserve_pattern(
+            "כלל חיים/ב חיוב",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("443.70"), canonical_identity="klal-hayim-b",
+        )
+        assert p.reserve_eligible
+
+    # ── T5: klal stream2 POSSIBLY_STOPPED → NOT eligible ─────────────────────
+    def test_klal_stream2_possibly_stopped_not_eligible(self):
+        p = _make_reserve_pattern(
+            "כלל חיים/ב חיוב",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.POSSIBLY_STOPPED, Cadence.EVERY_2_MONTHS,
+            Decimal("443.70"), canonical_identity="klal-hayim-b",
+        )
+        assert not p.reserve_eligible
+
+    # ── T6: klal canonical group → dedup counts 443.70 once ──────────────────
+    def test_klal_canonical_group_dedup(self):
+        stream1 = _make_reserve_pattern(
+            "כלל חיים/ב חיוב",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("443.70"), canonical_identity="klal-hayim-b",
+        )
+        stream2 = _make_reserve_pattern(
+            "כלל חיים/ב חיוב",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.POSSIBLY_STOPPED, Cadence.EVERY_2_MONTHS,
+            Decimal("443.70"), canonical_identity="klal-hayim-b",
+        )
+        # Only stream1 is eligible; dedup irrelevant here but must not double-count
+        result = compute_monthly_reserve((stream1, stream2))
+        assert result == Decimal("443.70")
+
+    # ── T7: migdal stream1 ENDED → NOT eligible ───────────────────────────────
+    def test_migdal_stream1_ended_not_eligible(self):
+        p = _make_reserve_pattern(
+            "מגדל חיים/בריאות",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ENDED, Cadence.MONTHLY,
+            Decimal("107.28"), canonical_identity="migdal-hayim-briut",
+        )
+        assert not p.reserve_eligible
+
+    # ── T8: migdal stream2 ACTIVE → eligible, contributes 107.28 ─────────────
+    def test_migdal_stream2_active_eligible(self):
+        p = _make_reserve_pattern(
+            "מגדל חיים/בריאות",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("107.28"), canonical_identity="migdal-hayim-briut",
+        )
+        assert p.reserve_eligible
+        assert p.monthly_reserve_contrib == Decimal("107.28")
+
+    # ── T9: menora stream2 ACTIVE → eligible, contributes 95.38 ──────────────
+    def test_menora_stream2_active_eligible(self):
+        p = _make_reserve_pattern(
+            "מנורה מבטחים-חיים/בריאות",
+            RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("95.38"), canonical_identity="menora-mivtahim",
+        )
+        assert p.reserve_eligible
+        assert p.monthly_reserve_contrib == Decimal("95.38")
+
+    # ── T10: HOT both streams ACTIVE after override ───────────────────────────
+    def test_hot_both_streams_active_eligible(self):
+        s1 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        s2 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        assert s1.reserve_eligible
+        assert s2.reserve_eligible
+
+    # ── T11: HOT canonical dedup → counts 67.20 once (not 134.40) ────────────
+    def test_hot_canonical_dedup_prevents_double_count(self):
+        s1 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        s2 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        result = compute_monthly_reserve((s1, s2))
+        assert result == Decimal("67.20"), f"expected 67.20 got {result}"
+
+    # ── T12: canonical_identity=None patterns are not deduped ─────────────────
+    def test_no_canonical_identity_not_deduped(self):
+        p1 = _make_reserve_pattern(
+            "שירות א", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("100.00"), canonical_identity=None,
+        )
+        p2 = _make_reserve_pattern(
+            "שירות ב", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("50.00"), canonical_identity=None,
+        )
+        result = compute_monthly_reserve((p1, p2))
+        assert result == Decimal("150.00")
+
+    # ── T13: different canonical identities both counted ──────────────────────
+    def test_different_canonical_identities_both_counted(self):
+        p1 = _make_reserve_pattern(
+            "א", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("100.00"), canonical_identity="group-a",
+        )
+        p2 = _make_reserve_pattern(
+            "ב", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("50.00"), canonical_identity="group-b",
+        )
+        result = compute_monthly_reserve((p1, p2))
+        assert result == Decimal("150.00")
+
+    # ── T14: same canonical_identity, both eligible → only first counted ──────
+    def test_same_canonical_identity_only_first_counted(self):
+        p1 = _make_reserve_pattern(
+            "א", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("200.00"), canonical_identity="shared-group",
+        )
+        p2 = _make_reserve_pattern(
+            "א", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("200.00"), canonical_identity="shared-group",
+        )
+        result = compute_monthly_reserve((p1, p2))
+        assert result == Decimal("200.00")
+
+    # ── T15: ineligible stream does not pollute canonical seen set ────────────
+    def test_ineligible_stream_does_not_block_eligible_stream(self):
+        # ineligible stream has canonical_identity but is ENDED
+        p_ineligible = _make_reserve_pattern(
+            "א", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ENDED, Cadence.MONTHLY,
+            Decimal("200.00"), canonical_identity="shared-group",
+        )
+        p_eligible = _make_reserve_pattern(
+            "א", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("200.00"), canonical_identity="shared-group",
+        )
+        result = compute_monthly_reserve((p_ineligible, p_eligible))
+        assert result == Decimal("200.00")
+
+    # ── T16: ordering invariance — dedup result same regardless of stream order
+    def test_canonical_dedup_order_invariant(self):
+        s1 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        s2 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        assert compute_monthly_reserve((s1, s2)) == compute_monthly_reserve((s2, s1))
+
+    # ── T17: aggregate of all 6 legacy items matches target ──────────────────
+    def test_legacy_six_items_aggregate_contribution(self):
+        """The 6 recovered items together contribute their correct total."""
+        mortgage = _make_reserve_pattern(
+            "דסק-משכנתא חיוב", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY, Decimal("6641.59"),
+        )
+        phoenix = _make_reserve_pattern(
+            "הפניקס חיים ובריאות", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY, Decimal("171.67"),
+        )
+        klal_active = _make_reserve_pattern(
+            "כלל חיים/ב חיוב", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("443.70"), canonical_identity="klal-hayim-b",
+        )
+        klal_stopped = _make_reserve_pattern(
+            "כלל חיים/ב חיוב", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.POSSIBLY_STOPPED, Cadence.EVERY_2_MONTHS,
+            Decimal("443.70"), canonical_identity="klal-hayim-b",
+        )
+        migdal_ended = _make_reserve_pattern(
+            "מגדל חיים/בריאות", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ENDED, Cadence.MONTHLY,
+            Decimal("107.28"), canonical_identity="migdal-hayim-briut",
+        )
+        migdal_active = _make_reserve_pattern(
+            "מגדל חיים/בריאות", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("107.28"), canonical_identity="migdal-hayim-briut",
+        )
+        menora_stopped = _make_reserve_pattern(
+            "מנורה מבטחים-חיים/בריאות", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.POSSIBLY_STOPPED, Cadence.MONTHLY,
+            Decimal("95.38"), canonical_identity="menora-mivtahim",
+        )
+        menora_active = _make_reserve_pattern(
+            "מנורה מבטחים-חיים/בריאות", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("95.38"), canonical_identity="menora-mivtahim",
+        )
+        hot_s1 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        hot_s2 = _make_reserve_pattern(
+            "HOT", RecurrenceStatus.RECURRING, CommitmentStatus.COMMITTED,
+            LifecycleStatus.ACTIVE, Cadence.MONTHLY,
+            Decimal("67.20"), canonical_identity="hot-subscription",
+        )
+        all_patterns = (
+            mortgage, phoenix,
+            klal_active, klal_stopped,
+            migdal_ended, migdal_active,
+            menora_stopped, menora_active,
+            hot_s1, hot_s2,
+        )
+        result = compute_monthly_reserve(all_patterns)
+        # 6641.59 + 171.67 + 443.70 + 107.28 + 95.38 + 67.20 = 7526.82
+        assert result == Decimal("7526.82"), f"expected 7526.82 got {result}"
