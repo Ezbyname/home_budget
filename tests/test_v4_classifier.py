@@ -2446,3 +2446,300 @@ class TestLegacyReservePreservation:
         assert hot.reserve_eligible
         assert hot.monthly_reserve_contrib == Decimal("67.20")
         assert compute_monthly_reserve(updated) == Decimal("67.20")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# REAL OVERRIDE PATH REGRESSION — exercises PATTERN_OVERRIDES + apply_overrides
+# ════════════════════════════════════════════════════════════════════════════
+#
+# These tests use the actual PATTERN_OVERRIDES list from analyze_home_budget_v4
+# and feed deliberately-wrong classifier output to apply_overrides.
+# They prove that Family Review authority is stable regardless of classifier
+# drift — and that the test file's SHA will change whenever the override list
+# or this test class changes.
+
+class TestFamilyReviewRealOverridePath:
+    """
+    Regression coverage for legacy reviewed commitments exercising the
+    real PATTERN_OVERRIDES list.  Raw classifier state is deliberately
+    set to wrong values; tests assert the reviewed canonical output is
+    correct regardless.
+    """
+
+    # ── shared helpers ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _raw(
+        description_key: str,
+        recurrence: RecurrenceStatus = RecurrenceStatus.POSSIBLE_RECURRING,
+        commitment: CommitmentStatus = CommitmentStatus.UNCERTAIN,
+        lifecycle: LifecycleStatus = LifecycleStatus.POSSIBLY_STOPPED,
+        cadence: Cadence = Cadence.IRREGULAR,
+        planning_amount: Decimal | None = Decimal("1.00"),
+        member_ids: tuple[str, ...] = ("raw-1",),
+    ) -> PatternResult:
+        """Build a raw classifier PatternResult with deliberately wrong state."""
+        from intelligence.v4_contracts import (
+            AmountBehavior, BudgetClass, DecisionSource, PurposeType,
+            is_reserve_eligible, monthly_equivalent,
+        )
+        eligible = is_reserve_eligible(recurrence, commitment, lifecycle, planning_amount)
+        return PatternResult(
+            description_key=description_key,
+            label=description_key,
+            recurrence_status=recurrence,
+            commitment_status=commitment,
+            lifecycle_status=lifecycle,
+            cadence=cadence,
+            planning_amount=planning_amount,
+            amount_behavior=AmountBehavior.STABLE,
+            budget_class=BudgetClass.UNCERTAIN,
+            purpose_type=PurposeType.INSURANCE,
+            member_ids=member_ids,
+            membership_confidence={},
+            evidence_sources=(),
+            decision_source=DecisionSource.CLASSIFIER,
+            family_review_required=True,
+            review_reasons=(),
+            reserve_eligible=eligible,
+            monthly_reserve_contrib=Decimal("0"),
+            canonical_identity=None,
+        )
+
+    @staticmethod
+    def _overrides_for(description_key: str) -> list[PatternOverride]:
+        """Extract overrides matching a given description_key from PATTERN_OVERRIDES."""
+        from analyze_home_budget_v4 import PATTERN_OVERRIDES
+        return [ov for ov in PATTERN_OVERRIDES if ov.description_key == description_key]
+
+    # ── Mortgage ──────────────────────────────────────────────────────────────
+
+    def test_mortgage_family_review_wins_over_wrong_classifier(self):
+        """Classifier emits wrong lifecycle/cadence/recurrence; Family Review corrects all."""
+        raw = self._raw(
+            "דסק-משכנתא חיוב",
+            recurrence=RecurrenceStatus.POSSIBLE_RECURRING,
+            commitment=CommitmentStatus.UNCERTAIN,
+            lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+            cadence=Cadence.IRREGULAR,
+            planning_amount=Decimal("6635.37"),
+        )
+        ovs = self._overrides_for("דסק-משכנתא חיוב")
+        assert len(ovs) >= 5, f"expected ≥5 mortgage overrides, got {len(ovs)}"
+        updated, _, audit = apply_overrides((raw,), ovs)
+        assert len(updated) == 1
+        eff = updated[0]
+        assert eff.recurrence_status == RecurrenceStatus.RECURRING
+        assert eff.commitment_status == CommitmentStatus.COMMITTED
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.planning_amount == Decimal("6641.59")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("6641.59")
+        # audit retains original raw state
+        assert audit[0]["classifier_result"]["lifecycle_status"] == "POSSIBLY_STOPPED"
+        assert audit[0]["classifier_result"]["cadence"] == Cadence.IRREGULAR.value
+        assert audit[0]["effective_result"]["lifecycle_status"] == "ACTIVE"
+        assert audit[0]["effective_result"]["cadence"] == Cadence.MONTHLY.value
+
+    def test_mortgage_reserve_stable_when_classifier_says_ended(self):
+        """Even if classifier emits ENDED, Family Review keeps mortgage in reserve."""
+        raw = self._raw(
+            "דסק-משכנתא חיוב",
+            recurrence=RecurrenceStatus.RECURRING,
+            commitment=CommitmentStatus.COMMITTED,
+            lifecycle=LifecycleStatus.ENDED,
+            cadence=Cadence.QUARTERLY,
+            planning_amount=Decimal("6635.37"),
+        )
+        updated, _, _ = apply_overrides((raw,), self._overrides_for("דסק-משכנתא חיוב"))
+        eff = updated[0]
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("6641.59")
+
+    # ── Phoenix ───────────────────────────────────────────────────────────────
+
+    def test_phoenix_family_review_wins_over_wrong_classifier(self):
+        """Classifier emits POSSIBLE_RECURRING + POSSIBLY_STOPPED; Family Review corrects."""
+        raw = self._raw(
+            "הפניקס חיים ובריאות",
+            recurrence=RecurrenceStatus.POSSIBLE_RECURRING,
+            commitment=CommitmentStatus.UNCERTAIN,
+            lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+            cadence=Cadence.IRREGULAR,
+            planning_amount=Decimal("171.58"),
+        )
+        ovs = self._overrides_for("הפניקס חיים ובריאות")
+        assert len(ovs) >= 5, f"expected ≥5 phoenix overrides, got {len(ovs)}"
+        updated, _, audit = apply_overrides((raw,), ovs)
+        assert len(updated) == 1
+        eff = updated[0]
+        assert eff.recurrence_status == RecurrenceStatus.RECURRING
+        assert eff.commitment_status == CommitmentStatus.COMMITTED
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.planning_amount == Decimal("171.67")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("171.67")
+        assert audit[0]["classifier_result"]["lifecycle_status"] == LifecycleStatus.POSSIBLY_STOPPED.value
+        assert audit[0]["effective_result"]["lifecycle_status"] == LifecycleStatus.ACTIVE.value
+
+    def test_phoenix_reserve_stable_when_classifier_says_ended(self):
+        raw = self._raw(
+            "הפניקס חיים ובריאות",
+            lifecycle=LifecycleStatus.ENDED,
+            cadence=Cadence.SEMIANNUAL,
+            planning_amount=Decimal("200.00"),
+        )
+        updated, _, _ = apply_overrides((raw,), self._overrides_for("הפניקס חיים ובריאות"))
+        eff = updated[0]
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("171.67")
+
+    # ── Migdal canonical group ────────────────────────────────────────────────
+
+    def test_migdal_both_possibly_stopped_canonical_still_active(self):
+        """Both classifier streams POSSIBLY_STOPPED; Family Review forces ACTIVE."""
+        s1 = self._raw("מגדל חיים/בריאות", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.IRREGULAR, planning_amount=Decimal("95.77"),
+                       member_ids=("m1",))
+        s2 = self._raw("מגדל חיים/בריאות", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.IRREGULAR, planning_amount=Decimal("118.79"),
+                       member_ids=("m2",))
+        ovs = self._overrides_for("מגדל חיים/בריאות")
+        updated, _, audit = apply_overrides((s1, s2), ovs)
+        assert len(updated) == 1, f"expected 1 canonical Migdal record, got {len(updated)}"
+        eff = updated[0]
+        assert eff.recurrence_status == RecurrenceStatus.RECURRING
+        assert eff.commitment_status == CommitmentStatus.COMMITTED
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.planning_amount == Decimal("107.28")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("107.28")
+        # both raw classifier states preserved in audit
+        audit_migdal = [a for a in audit if a["description_key"] == "מגדל חיים/בריאות"]
+        assert len(audit_migdal) == 2
+        for a in audit_migdal:
+            assert a["classifier_result"]["lifecycle_status"] == LifecycleStatus.POSSIBLY_STOPPED.value
+            assert a["effective_result"]["lifecycle_status"] == LifecycleStatus.ACTIVE.value
+
+    def test_migdal_order_invariant_with_real_overrides(self):
+        s1 = self._raw("מגדל חיים/בריאות", lifecycle=LifecycleStatus.ENDED,
+                       cadence=Cadence.QUARTERLY, member_ids=("m1",))
+        s2 = self._raw("מגדל חיים/בריאות", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.IRREGULAR, member_ids=("m2",))
+        ovs = self._overrides_for("מגדל חיים/בריאות")
+        fwd, _, _ = apply_overrides((s1, s2), ovs)
+        rev, _, _ = apply_overrides((s2, s1), ovs)
+        assert len(fwd) == 1 and len(rev) == 1
+        assert fwd[0].monthly_reserve_contrib == rev[0].monthly_reserve_contrib
+        assert fwd[0].lifecycle_status == LifecycleStatus.ACTIVE
+        assert rev[0].lifecycle_status == LifecycleStatus.ACTIVE
+
+    # ── Menora canonical group ────────────────────────────────────────────────
+
+    def test_menora_both_ended_canonical_still_active(self):
+        """Both classifier streams ENDED; Family Review forces ACTIVE."""
+        s1 = self._raw("מנורה מבטחים-חיים/בריאות", lifecycle=LifecycleStatus.ENDED,
+                       cadence=Cadence.IRREGULAR, member_ids=("n1",))
+        s2 = self._raw("מנורה מבטחים-חיים/בריאות", lifecycle=LifecycleStatus.ENDED,
+                       cadence=Cadence.QUARTERLY, member_ids=("n2",))
+        ovs = self._overrides_for("מנורה מבטחים-חיים/בריאות")
+        updated, _, audit = apply_overrides((s1, s2), ovs)
+        assert len(updated) == 1
+        eff = updated[0]
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.planning_amount == Decimal("95.38")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("95.38")
+        for a in audit:
+            if a["description_key"] == "מנורה מבטחים-חיים/בריאות":
+                assert a["classifier_result"]["lifecycle_status"] == LifecycleStatus.ENDED.value
+                assert a["effective_result"]["lifecycle_status"] == LifecycleStatus.ACTIVE.value
+
+    def test_menora_order_invariant_with_real_overrides(self):
+        s1 = self._raw("מנורה מבטחים-חיים/בריאות", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       member_ids=("n1",))
+        s2 = self._raw("מנורה מבטחים-חיים/בריאות", lifecycle=LifecycleStatus.ENDED,
+                       member_ids=("n2",))
+        ovs = self._overrides_for("מנורה מבטחים-חיים/בריאות")
+        fwd, _, _ = apply_overrides((s1, s2), ovs)
+        rev, _, _ = apply_overrides((s2, s1), ovs)
+        assert fwd[0].monthly_reserve_contrib == rev[0].monthly_reserve_contrib == Decimal("95.38")
+
+    # ── Clal canonical group ──────────────────────────────────────────────────
+
+    def test_clal_both_possibly_stopped_canonical_still_active(self):
+        """Both Clal classifier streams POSSIBLY_STOPPED; Family Review forces ACTIVE."""
+        s1 = self._raw("כלל חיים/ב חיוב", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.EVERY_2_MONTHS, member_ids=("c1",))
+        s2 = self._raw("כלל חיים/ב חיוב", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.IRREGULAR, member_ids=("c2",))
+        ovs = self._overrides_for("כלל חיים/ב חיוב")
+        updated, _, audit = apply_overrides((s1, s2), ovs)
+        assert len(updated) == 1
+        eff = updated[0]
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.planning_amount == Decimal("443.70")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("443.70")
+        for a in audit:
+            if a["description_key"] == "כלל חיים/ב חיוב":
+                assert a["classifier_result"]["lifecycle_status"] == LifecycleStatus.POSSIBLY_STOPPED.value
+                assert a["effective_result"]["lifecycle_status"] == LifecycleStatus.ACTIVE.value
+
+    def test_clal_order_invariant_with_real_overrides(self):
+        s1 = self._raw("כלל חיים/ב חיוב", lifecycle=LifecycleStatus.ENDED,
+                       cadence=Cadence.EVERY_2_MONTHS, member_ids=("c1",))
+        s2 = self._raw("כלל חיים/ב חיוב", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.QUARTERLY, member_ids=("c2",))
+        ovs = self._overrides_for("כלל חיים/ב חיוב")
+        fwd, _, _ = apply_overrides((s1, s2), ovs)
+        rev, _, _ = apply_overrides((s2, s1), ovs)
+        assert fwd[0].monthly_reserve_contrib == rev[0].monthly_reserve_contrib == Decimal("443.70")
+
+    # ── HOT canonical group ───────────────────────────────────────────────────
+
+    def test_hot_arbitrary_classifier_states_canonical_still_active(self):
+        """Classifier emits arbitrary lifecycle/cadence; Family Review produces ACTIVE+MONTHLY."""
+        s1 = self._raw("HOT", lifecycle=LifecycleStatus.ENDED,
+                       cadence=Cadence.QUARTERLY, planning_amount=Decimal("58.37"),
+                       member_ids=("h1",))
+        s2 = self._raw("HOT", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.IRREGULAR, planning_amount=Decimal("72.00"),
+                       member_ids=("h2",))
+        ovs = self._overrides_for("HOT")
+        updated, _, audit = apply_overrides((s1, s2), ovs)
+        assert len(updated) == 1
+        eff = updated[0]
+        assert eff.lifecycle_status == LifecycleStatus.ACTIVE
+        assert eff.cadence == Cadence.MONTHLY
+        assert eff.planning_amount == Decimal("67.20")
+        assert eff.reserve_eligible is True
+        assert eff.monthly_reserve_contrib == Decimal("67.20")
+        assert compute_monthly_reserve(updated) == Decimal("67.20")
+        hot_audit = [a for a in audit if a["description_key"] == "HOT"]
+        assert len(hot_audit) == 2
+        raw_lifecycles = {a["classifier_result"]["lifecycle_status"] for a in hot_audit}
+        assert raw_lifecycles == {LifecycleStatus.ENDED.value, LifecycleStatus.POSSIBLY_STOPPED.value}
+        for a in hot_audit:
+            assert a["effective_result"]["lifecycle_status"] == LifecycleStatus.ACTIVE.value
+            assert a["effective_result"]["cadence"] == Cadence.MONTHLY.value
+
+    def test_hot_order_invariant_with_real_overrides(self):
+        s1 = self._raw("HOT", lifecycle=LifecycleStatus.ENDED,
+                       cadence=Cadence.QUARTERLY, member_ids=("h1",))
+        s2 = self._raw("HOT", lifecycle=LifecycleStatus.POSSIBLY_STOPPED,
+                       cadence=Cadence.IRREGULAR, member_ids=("h2",))
+        ovs = self._overrides_for("HOT")
+        fwd, _, _ = apply_overrides((s1, s2), ovs)
+        rev, _, _ = apply_overrides((s2, s1), ovs)
+        assert len(fwd) == 1 and len(rev) == 1
+        assert fwd[0].monthly_reserve_contrib == rev[0].monthly_reserve_contrib == Decimal("67.20")
+        assert fwd[0].lifecycle_status == rev[0].lifecycle_status == LifecycleStatus.ACTIVE

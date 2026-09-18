@@ -939,9 +939,42 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     #     expected_match_count validates cardinality fail-closed.
 
     # ── Mortgage: דסק-משכנתא חיוב — single stream ────────────────────────────
-    # Classifier: RECURRING + COMMITTED + ACTIVE, amount=6635.37.
+    # Family Review declares: RECURRING + COMMITTED + ACTIVE + MONTHLY at 6641.59.
+    # All five reserve-critical fields are explicit overrides so the reviewed
+    # commitment is stable regardless of future classifier changes.
     # Transaction median (6 months): Decimal("6641.585") → ROUND_HALF_UP = 6641.59.
-    # Override planning_amount only; all other axes already correct.
+    PatternOverride(
+        description_key="דסק-משכנתא חיוב",
+        stream_label_hint="",
+        field_name="recurrence_status",
+        value=RecurrenceStatus.RECURRING,
+        override_id="ov-mortgage-recurrence",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דסק-משכנתא חיוב",
+        stream_label_hint="",
+        field_name="commitment_status",
+        value=CommitmentStatus.COMMITTED,
+        override_id="ov-mortgage-committed",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דסק-משכנתא חיוב",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-mortgage-lifecycle",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="דסק-משכנתא חיוב",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.MONTHLY,
+        override_id="ov-mortgage-cadence",
+        expected_match_count=1,
+    ),
     PatternOverride(
         description_key="דסק-משכנתא חיוב",
         stream_label_hint="",
@@ -952,9 +985,9 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
     ),
 
     # ── הפניקס חיים ובריאות — single stream ──────────────────────────────────
-    # Classifier: POSSIBLE_RECURRING + COMMITTED + ACTIVE, amount=171.58.
+    # Family Review declares: RECURRING + COMMITTED + ACTIVE + MONTHLY at 171.67.
+    # All five reserve-critical fields are explicit overrides.
     # Transaction median (6 observations): 171.67.
-    # Fix: recurrence + commitment + lock planning_amount.
     PatternOverride(
         description_key="הפניקס חיים ובריאות",
         stream_label_hint="",
@@ -969,6 +1002,22 @@ PATTERN_OVERRIDES: list[PatternOverride] = [
         field_name="commitment_status",
         value=CommitmentStatus.COMMITTED,
         override_id="ov-phoenix-committed",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="הפניקס חיים ובריאות",
+        stream_label_hint="",
+        field_name="lifecycle_status",
+        value=LifecycleStatus.ACTIVE,
+        override_id="ov-phoenix-lifecycle",
+        expected_match_count=1,
+    ),
+    PatternOverride(
+        description_key="הפניקס חיים ובריאות",
+        stream_label_hint="",
+        field_name="cadence",
+        value=Cadence.MONTHLY,
+        override_id="ov-phoenix-cadence",
         expected_match_count=1,
     ),
     PatternOverride(
