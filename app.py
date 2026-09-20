@@ -2248,6 +2248,9 @@ def update_expense(expense_id):
     if not fields:
         conn.close()
         return jsonify({'error': 'No fields to update'}), 400
+    # Direct category change always marks this row as user-resolved.
+    if 'category_id' in data:
+        fields.append("category_source='user'")
     values.append(expense_id)
     values.append(get_uid())
     conn.execute(f"UPDATE expenses SET {','.join(fields)} WHERE id=? AND user_id=?", values)
@@ -5101,6 +5104,97 @@ def set_recurring():
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok', 'description': description, 'frequency': frequency})
+
+
+# ---- Expense Followup ----
+
+def _get_recurring_candidates(conn, uid):
+    """Return recurring candidates for uid using the same logic as detect_recurring()."""
+    rows = conn.execute("""
+        SELECT description,
+               COUNT(DISTINCT substr(date,1,7)) as months_count,
+               ROUND(AVG(amount),2) as avg_amount,
+               MIN(amount) as min_amount,
+               MAX(amount) as max_amount,
+               GROUP_CONCAT(DISTINCT substr(date,1,7)) as months,
+               GROUP_CONCAT(id) as expense_ids
+        FROM expenses
+        WHERE user_id = ? AND frequency = 'random'
+          AND description != '' AND source IN ('bank_csv', 'visa_import')
+        GROUP BY description
+        HAVING months_count >= 2
+           AND (max_amount - min_amount) <= avg_amount * 0.15
+        ORDER BY months_count DESC, avg_amount DESC
+    """, (uid,)).fetchall()
+
+    candidates = []
+    for r in rows:
+        key = 'recurring:' + r['description']
+        candidates.append({
+            'type': 'recurring_candidate',
+            'key': key,
+            'description': r['description'],
+            'amount_hint': r['avg_amount'],
+            'months_seen': r['months_count'],
+            'reason': 'נראה כהוצאה חוזרת',
+        })
+    return candidates
+
+
+@app.route('/api/followup', methods=['GET'])
+@login_required
+def get_followup():
+    """Return actionable followup items for the current user."""
+    import datetime
+    uid = get_uid()
+    conn = get_db()
+
+    cutoff = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+
+    # Recurring candidates (reuses exact detect_recurring logic)
+    recurring = _get_recurring_candidates(conn, uid)
+
+    # Unresolved category — strict P5 only, within 90-day window, display limit 20
+    unresolved_rows = conn.execute("""
+        SELECT id, description, amount, date, merchant_key
+        FROM expenses
+        WHERE user_id = ?
+          AND category_source = 'unresolved'
+          AND date >= ?
+        ORDER BY date DESC
+        LIMIT 20
+    """, (uid, cutoff)).fetchall()
+
+    unresolved_count = conn.execute("""
+        SELECT COUNT(*)
+        FROM expenses
+        WHERE user_id = ?
+          AND category_source = 'unresolved'
+          AND date >= ?
+    """, (uid, cutoff)).fetchone()[0]
+
+    conn.close()
+
+    unresolved_items = []
+    for row in unresolved_rows:
+        unresolved_items.append({
+            'type': 'unresolved_category',
+            'key': f'unresolved:{row["id"]}',
+            'expense_id': row['id'],
+            'description': row['description'],
+            'amount': row['amount'],
+            'date': row['date'],
+            'merchant_key': row['merchant_key'],
+            'reason': 'קטגוריה לא הוכרעה',
+        })
+
+    items = recurring + unresolved_items
+    counts = {
+        'recurring_candidate': len(recurring),
+        'unresolved_category': unresolved_count,
+        'total': len(recurring) + unresolved_count,
+    }
+    return jsonify({'items': items, 'counts': counts})
 
 
 # ---- Smart Budget Tips v2 ----
