@@ -371,6 +371,38 @@ class TestFollowupMutationResolution:
             data3 = json.loads(r3.data)
             assert data3['counts']['recurring_candidate'] == 0
 
+    def test_recurring_resolves_after_mark_once(self, app):
+        """POST set-recurring with frequency='once' → candidate absent from followup.
+
+        Regression for the blocker where 'random' was sent instead of 'once':
+        detect_recurring() queries frequency='random', so writing 'random' leaves
+        the candidate in the pool and the card reappears immediately.
+        Writing 'once' removes it from the detection pool correctly.
+        """
+        with app.test_client() as c:
+            uid = _create_user('res_once', 'resonce@test.com')
+            import app as mod
+            conn = mod.get_db()
+            _insert_expense(conn, uid, 'ביטוח חד פעמי', 200.0, '2026-07-20')
+            _insert_expense(conn, uid, 'ביטוח חד פעמי', 200.0, '2026-08-20')
+            conn.close()
+            _login(c, 'res_once')
+            # Confirm candidate present before action
+            r = c.get('/api/followup')
+            data = json.loads(r.data)
+            assert data['counts']['recurring_candidate'] == 1
+            # Mark as חד פעמי → must write 'once', not 'random'
+            r2 = c.post('/api/expenses/set-recurring',
+                        json={'description': 'ביטוח חד פעמי', 'frequency': 'once'})
+            assert r2.status_code == 200
+            # Candidate must be gone: 'once' is excluded from detection predicate
+            r3 = c.get('/api/followup')
+            data3 = json.loads(r3.data)
+            assert data3['counts']['recurring_candidate'] == 0, (
+                "Writing frequency='once' must remove candidate; "
+                "if 'random' were sent instead, the card would reappear"
+            )
+
     def test_unresolved_resolves_after_category_update(self, app):
         """PUT /api/expenses/<id> with category → unresolved item disappears."""
         with app.test_client() as c:
