@@ -41,7 +41,7 @@ else:
     BASE_DIR = os.path.dirname(__file__)
     STATIC_DIR = os.path.join(BASE_DIR, 'static')
 
-APP_VERSION = '1.4.5'
+APP_VERSION = '2.1.0'
 
 # In frozen (PyWebView) mode the app is single-user on a local machine.
 # Authentication adds no security value — auto-login as the user with most data.
