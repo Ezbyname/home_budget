@@ -153,6 +153,12 @@
                 <i class="bi bi-upload me-1"></i><span data-t="tab_import">ייבוא</span>
             </a>
         </li>
+        <li class="nav-item">
+            <a class="nav-link" data-bs-toggle="pill" href="#followupTab" id="followupTabLink">
+                <i class="bi bi-check2-circle me-1"></i><span>לטיפול</span>
+                <span id="followupBadge" class="badge bg-danger rounded-pill ms-1" style="display:none;font-size:.7rem"></span>
+            </a>
+        </li>
         <li class="nav-item" id="adminTabNav" style="display:none">
             <a class="nav-link" data-bs-toggle="pill" href="#adminTab">
                 <i class="bi bi-shield-lock me-1"></i><span data-t="tab_admin">ניהול</span>
@@ -1526,6 +1532,29 @@
                     </div>
                     <div id="bankBalancesEmpty" class="text-muted text-center py-3 d-none" data-t="no_bank_balances">אין יתרות מיובאות</div>
                 </div>
+            </div>
+        </div>
+
+        <!-- ========== FOLLOWUP TAB ========== -->
+        <div class="tab-pane fade" id="followupTab">
+            <div class="card p-4 mb-4">
+                <h5 class="d-flex align-items-center gap-2 mb-3">
+                    <i class="bi bi-check2-circle text-primary"></i>
+                    <span>פריטים לטיפול</span>
+                    <span id="followupPanelBadge" class="badge bg-danger rounded-pill" style="display:none"></span>
+                </h5>
+                <div id="followupLoading" style="display:none" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status"><span class="visually-hidden">טוען...</span></div>
+                </div>
+                <div id="followupError" style="display:none" class="alert alert-danger py-2 px-3">
+                    <i class="bi bi-exclamation-triangle me-2"></i><span id="followupErrorMsg">שגיאה בטעינת פריטים לטיפול</span>
+                </div>
+                <div id="followupEmpty" style="display:none" class="text-center py-5 text-muted">
+                    <i class="bi bi-check-circle display-4 d-block mb-3 text-success"></i>
+                    <div class="fw-semibold mb-1">אין פריטים שדורשים טיפול</div>
+                    <div class="small">כל ההוצאות מסווגות ואין חיובים חוזרים לאישור</div>
+                </div>
+                <div id="followupItems"></div>
             </div>
         </div>
 
@@ -5690,6 +5719,25 @@ function openEditExpense(expId) {
 
 async function saveExpenseEdit() {
     const id = document.getElementById('editExpId').value;
+
+    if (followupEditExpenseId !== null) {
+        // Followup context: send only category_id to avoid overwriting real field values
+        const category_id = document.getElementById('editExpCategory').value;
+        try {
+            const res = await fetch(`/api/expenses/${id}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({category_id}),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            bootstrap.Modal.getInstance(document.getElementById('editExpenseModal')).hide();
+            await loadFollowup();
+        } catch (e) {
+            showToast('שגיאה בשמירת הקטגוריה', 'danger');
+        }
+        return;
+    }
+
     const data = {
         date: document.getElementById('editExpDate').value,
         description: document.getElementById('editExpDesc').value,
@@ -6432,6 +6480,166 @@ async function deleteBudgetPlanFromModal() {
     await loadBudget();
     loadDashboard();
 }
+
+// ============================================================
+// Expense Followup
+// ============================================================
+
+let followupEditExpenseId = null; // set when followup category-edit modal is open
+
+async function loadFollowup() {
+    const elLoading = document.getElementById('followupLoading');
+    const elError   = document.getElementById('followupError');
+    const elEmpty   = document.getElementById('followupEmpty');
+    const elItems   = document.getElementById('followupItems');
+    if (!elLoading) return; // tab not yet in DOM
+
+    elLoading.style.display = '';
+    elError.style.display   = 'none';
+    elEmpty.style.display   = 'none';
+    elItems.innerHTML       = '';
+
+    let data;
+    try {
+        const res = await fetch('/api/followup');
+        if (res.status === 401) { elLoading.style.display = 'none'; return; }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        data = await res.json();
+    } catch (e) {
+        elLoading.style.display = 'none';
+        elError.style.display   = '';
+        document.getElementById('followupErrorMsg').textContent = 'שגיאה בטעינת פריטים לטיפול';
+        _updateFollowupBadge(0);
+        return;
+    }
+
+    elLoading.style.display = 'none';
+    const total = (data.counts && data.counts.total) || 0;
+    _updateFollowupBadge(total);
+
+    const items = data.items || [];
+    if (items.length === 0) {
+        elEmpty.style.display = '';
+        return;
+    }
+
+    const unresolvedCount  = (data.counts && data.counts.unresolved_category) || 0;
+    const unresolvedShown  = items.filter(i => i.type === 'unresolved_category').length;
+    let html = '';
+
+    items.forEach(item => {
+        if (item.type === 'recurring_candidate') {
+            html += _renderRecurringCard(item);
+        } else if (item.type === 'unresolved_category') {
+            html += _renderUnresolvedCard(item);
+        }
+        // unknown types silently skipped
+    });
+
+    if (unresolvedCount > unresolvedShown) {
+        html += `<div class="text-muted small mt-2 mb-1 px-1">מוצגים ${unresolvedShown} מתוך ${unresolvedCount} פריטים לא מסווגים</div>`;
+    }
+
+    elItems.innerHTML = html;
+}
+
+function _updateFollowupBadge(total) {
+    const navBadge   = document.getElementById('followupBadge');
+    const panelBadge = document.getElementById('followupPanelBadge');
+    [navBadge, panelBadge].forEach(b => {
+        if (!b) return;
+        if (total > 0) {
+            b.textContent    = total;
+            b.style.display  = '';
+        } else {
+            b.style.display  = 'none';
+        }
+    });
+}
+
+function _renderRecurringCard(item) {
+    const amtLabel = item.amount_hint ? fmt(item.amount_hint) : '';
+    const monthsLabel = item.months_seen ? `${item.months_seen} חודשים` : '';
+    const meta = [amtLabel, monthsLabel].filter(Boolean).join(' · ');
+    return `
+    <div class="card mb-3 border-0 shadow-sm" style="border-right:4px solid #6366f1 !important;border-radius:12px">
+      <div class="card-body py-3 px-4">
+        <div class="d-flex align-items-start gap-3">
+          <span style="font-size:1.4rem;line-height:1">🔄</span>
+          <div class="flex-grow-1">
+            <div class="fw-semibold mb-1">${_esc(item.description)}</div>
+            ${meta ? `<div class="text-muted small mb-2">${meta}</div>` : ''}
+            <div class="text-muted small mb-3">${_esc(item.reason || '')}</div>
+            <div class="d-flex flex-wrap gap-2">
+              <button class="btn btn-sm btn-outline-primary" onclick="_setRecurring(${JSON.stringify(item.description)}, 'monthly')">קבוע חודשי</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="_setRecurring(${JSON.stringify(item.description)}, 'bimonthly')">קבוע דו-חודשי</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="_setRecurring(${JSON.stringify(item.description)}, 'random')">חד פעמי</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function _renderUnresolvedCard(item) {
+    const dateLabel = item.date ? formatDate(item.date) : '';
+    const amtLabel  = item.amount != null ? fmt(item.amount) : '';
+    const meta = [dateLabel, amtLabel].filter(Boolean).join(' · ');
+    return `
+    <div class="card mb-3 border-0 shadow-sm" style="border-right:4px solid #f59e0b !important;border-radius:12px">
+      <div class="card-body py-3 px-4">
+        <div class="d-flex align-items-start gap-3">
+          <span style="font-size:1.4rem;line-height:1">❓</span>
+          <div class="flex-grow-1">
+            <div class="fw-semibold mb-1">${_esc(item.description)}</div>
+            ${meta ? `<div class="text-muted small mb-2">${meta}</div>` : ''}
+            <div class="text-muted small mb-3">${_esc(item.reason || '')}</div>
+            <button class="btn btn-sm btn-outline-warning" onclick="_openFollowupExpenseEdit(${JSON.stringify(item)})">בחר קטגוריה</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function _esc(str) {
+    return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function _setRecurring(description, frequency) {
+    try {
+        const res = await fetch('/api/expenses/set-recurring', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({description, frequency}),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await loadFollowup();
+    } catch (e) {
+        showToast('שגיאה בשמירת סטטוס החיוב', 'danger');
+    }
+}
+
+function _openFollowupExpenseEdit(item) {
+    followupEditExpenseId = item.expense_id;
+
+    document.getElementById('editExpId').value        = item.expense_id;
+    document.getElementById('editExpDate').value      = item.date || '';
+    document.getElementById('editExpDesc').value      = item.description || '';
+    document.getElementById('editExpAmount').value    = item.amount != null ? item.amount : '';
+    document.getElementById('editExpFreq').value      = 'random';
+    document.getElementById('editExpCard').value      = '';
+    document.getElementById('editExpUnusual').checked = false;
+    document.getElementById('editExpCategory').innerHTML = categoryOptionsHtml('');
+
+    new bootstrap.Modal(document.getElementById('editExpenseModal')).show();
+}
+
+// Clean up followup context whenever the edit modal closes (cancel, X, outside click)
+document.addEventListener('hidden.bs.modal', (e) => {
+    if (e.target.id === 'editExpenseModal') {
+        followupEditExpenseId = null;
+    }
+});
 
 async function refreshAll() {
     resetInsightsCache();
@@ -10973,6 +11181,11 @@ async function init() {
     // Load net worth when tab is shown
     document.querySelector('a[href="#netWorthTab"]').addEventListener('shown.bs.tab', () => {
         loadNetWorth();
+    });
+
+    // Load followup when tab is shown
+    document.querySelector('a[href="#followupTab"]').addEventListener('shown.bs.tab', () => {
+        loadFollowup();
     });
 
     // Load insights when tab is shown
