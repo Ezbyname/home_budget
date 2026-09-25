@@ -136,6 +136,10 @@ class TestStageDbAuth:
             'ADMIN_EMAIL': None,
             'ADMIN_PASSWORD': None,
             'ADMIN_USERNAME': None,
+            # Local mode resolves the DB under expanduser('~')/.budget_tracker_data.
+            # Redirect HOME/USERPROFILE to tmp_path to prevent writes to the real user DB.
+            'HOME': str(tmp_path),
+            'USERPROFILE': str(tmp_path),
         }
         orig = {k: os.environ.get(k) for k in env}
         for k, v in env.items():
@@ -149,6 +153,15 @@ class TestStageDbAuth:
         try:
             import app as local_mod
             local_mod.app.config['TESTING'] = True
+
+            expected_dir = os.path.abspath(
+                os.path.join(str(tmp_path), '.budget_tracker_data')
+            )
+            actual_dir = os.path.abspath(os.path.dirname(local_mod.DB_PATH))
+            assert actual_dir == expected_dir, (
+                f"TEST ISOLATION FAILURE: DB_PATH={local_mod.DB_PATH!r}, "
+                f"expected under {expected_dir!r}"
+            )
             uname = 'adm_' + uuid.uuid4().hex[:6]
             conn = local_mod.get_db()
             pw = local_mod.hash_password('pw')

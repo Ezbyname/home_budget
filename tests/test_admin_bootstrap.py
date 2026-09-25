@@ -135,9 +135,22 @@ class TestCloudAdminBootstrap:
             'ADMIN_EMAIL': 'hacker@example.com',
             'ADMIN_PASSWORD': 'evilpassword',
             'ADMIN_USERNAME': 'hacker',
+            # Local mode stores data under expanduser('~')/.budget_tracker_data.
+            # Redirect HOME/USERPROFILE to tmp_path so the test cannot access the real user DB.
+            'HOME': str(tmp_path),
+            'USERPROFILE': str(tmp_path),
         }
         _make_app(env)
         import app as mod
+
+        expected_dir = os.path.abspath(
+            os.path.join(str(tmp_path), '.budget_tracker_data')
+        )
+        actual_dir = os.path.abspath(os.path.dirname(mod.DB_PATH))
+        assert actual_dir == expected_dir, (
+            f"TEST ISOLATION FAILURE: DB_PATH={mod.DB_PATH!r}, "
+            f"expected under {expected_dir!r}"
+        )
         conn = mod.get_db()
         # The specific env-var username must NOT exist — env vars must be ignored in local mode
         row = conn.execute("SELECT id FROM users WHERE username=?", ('hacker',)).fetchone()

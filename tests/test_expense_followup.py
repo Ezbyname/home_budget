@@ -24,10 +24,21 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _make_app(tmp_path):
+    # Redirect HOME/USERPROFILE before import so expanduser('~') → tmp_path,
+    # preventing any write to the real user DB in local-dev mode.
+    orig_home = os.environ.get('HOME')
+    orig_up   = os.environ.get('USERPROFILE')
+    os.environ['HOME']        = str(tmp_path)
+    os.environ['USERPROFILE'] = str(tmp_path)
+
     env = {
         'APP_ENV': None,
         'SECRET_KEY': None,
         'RAILWAY_VOLUME_MOUNT_PATH': None,
+        # Local mode stores data under expanduser('~')/.budget_tracker_data.
+        # Redirect the home directory so tests can never use the real user DB.
+        'HOME': str(tmp_path),
+        'USERPROFILE': str(tmp_path),
     }
     orig = {k: os.environ.get(k) for k in env}
     for k, v in env.items():
@@ -40,6 +51,12 @@ def _make_app(tmp_path):
             del sys.modules[mod]
     try:
         import app as flask_app
+        import importlib
+        # Safety: DB must be under tmp_path
+        assert str(tmp_path) in flask_app.DB_PATH, (
+            f"TEST ISOLATION FAILURE: DB_PATH={flask_app.DB_PATH!r} "
+            f"not under tmp_path={tmp_path!r}"
+        )
         return flask_app.app
     except Exception:
         for mod in list(sys.modules):
@@ -52,12 +69,33 @@ def _make_app(tmp_path):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = orig_v
+        if orig_home is None:
+            os.environ.pop('HOME', None)
+        else:
+            os.environ['HOME'] = orig_home
+        if orig_up is None:
+            os.environ.pop('USERPROFILE', None)
+        else:
+            os.environ['USERPROFILE'] = orig_up
 
 
 @pytest.fixture
 def app(tmp_path):
     flask_app = _make_app(tmp_path)
     flask_app.config['TESTING'] = True
+
+    # Hard safety guard: followup tests must use pytest's temporary database.
+    import app as mod
+    expected_dir = os.path.abspath(
+        os.path.join(str(tmp_path), '.budget_tracker_data')
+    )
+    actual_dir = os.path.abspath(os.path.dirname(mod.DB_PATH))
+
+    assert actual_dir == expected_dir, (
+        f"TEST ISOLATION FAILURE: DB_PATH={mod.DB_PATH!r}, "
+        f"expected under {expected_dir!r}"
+    )
+
     return flask_app
 
 

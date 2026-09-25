@@ -84,6 +84,7 @@
                     <!-- Actions -->
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="startTutorial();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#eef2ff;color:#6366f1;font-size:.9rem"><i class="bi bi-mortarboard"></i></span><span data-t="tut_restart">מדריך למשתמש</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openReminders();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef3c7;color:#d97706;font-size:.9rem"><i class="bi bi-bell"></i></span><span data-t="nav_reminders">תזכורות</span></a></li>
+                    <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openManageCategories();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef9c3;color:#a16207;font-size:.9rem"><i class="bi bi-tags"></i></span><span>ניהול קטגוריות</span></a></li>
                     <li><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openSmtpSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f0fdf4;color:#16a34a;font-size:.9rem"><i class="bi bi-gear"></i></span><span data-t="nav_email_settings">הגדרות דוא״ל / SMS</span></a></li>
                     <li id="navAiSettingsItem"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="openAiSettings();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#f5f3ff;color:#8b5cf6;font-size:.9rem"><i class="bi bi-robot"></i></span><span data-t="nav_ai_settings">הגדרות AI</span></a></li>
                     <li id="navResetItem" style="display:none"><hr class="dropdown-divider my-1"><a class="dropdown-item px-3 py-2 d-flex align-items-center gap-3" href="#" onclick="resetAllData();return false"><span class="d-flex align-items-center justify-content-center" style="width:30px;height:30px;border-radius:8px;background:#fef2f2;color:#ef4444;font-size:.9rem"><i class="bi bi-arrow-counterclockwise"></i></span><span data-t="reset_data">איפוס נתונים</span></a></li>
@@ -1882,19 +1883,49 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
     </div>
     <div class="modal-body">
+        <div id="addCatError" class="alert alert-warning py-2 small d-none"></div>
         <div class="mb-2">
-            <label class="form-label small fw-bold" data-t="cat_id_label">מזהה (באנגלית)</label>
-            <input type="text" class="form-control form-control-sm" id="newCatId" placeholder="e.g. clothing" dir="ltr">
+            <label class="form-label small fw-bold">שם קטגוריה *</label>
+            <input type="text" class="form-control form-control-sm" id="newCatName" placeholder="למשל: ביגוד">
         </div>
         <div class="mb-2">
-            <label class="form-label small fw-bold" data-t="cat_name_label">שם בעברית</label>
-            <input type="text" class="form-control form-control-sm" id="newCatName" data-t-placeholder="cat_example" placeholder="למשל: ביגוד">
+            <label class="form-label small fw-bold">אייקון (אופציונלי)</label>
+            <input type="text" class="form-control form-control-sm" id="newCatIcon" placeholder="למשל: 🛍️" maxlength="8">
         </div>
         <div class="mb-3">
             <label class="form-label small fw-bold" data-t="cat_color_label">צבע</label>
             <input type="color" class="form-control form-control-sm form-control-color" id="newCatColor" value="#6366f1">
         </div>
         <button class="btn btn-primary btn-sm w-100" onclick="addNewCategory()"><i class="bi bi-plus me-1"></i><span data-t="cat_add_btn">הוסף קטגוריה</span></button>
+    </div>
+</div>
+</div>
+</div>
+
+<!-- Manage Categories Modal -->
+<div class="modal fade" id="manageCategoriesModal" tabindex="-1" dir="rtl">
+<div class="modal-dialog modal-lg">
+<div class="modal-content" style="border-radius:20px">
+    <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title"><i class="bi bi-gear me-2"></i>ניהול קטגוריות</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+    </div>
+    <div class="modal-body">
+        <ul class="nav nav-tabs mb-3" id="manageCatTabs">
+            <li class="nav-item"><button class="nav-link active" data-tab="active" onclick="switchManageTab('active',this)">פעילות</button></li>
+            <li class="nav-item"><button class="nav-link" data-tab="hidden" onclick="switchManageTab('hidden',this)">מוסתרות</button></li>
+        </ul>
+        <div id="manageCatList"></div>
+        <!-- Inline edit form -->
+        <div id="manageCatEditForm" class="d-none border rounded p-3 mt-3">
+            <div class="mb-2"><label class="form-label small fw-bold">שם</label><input type="text" class="form-control form-control-sm" id="editCatName"></div>
+            <div class="mb-2"><label class="form-label small fw-bold">אייקון</label><input type="text" class="form-control form-control-sm" id="editCatIcon" maxlength="8"></div>
+            <div class="mb-3"><label class="form-label small fw-bold">צבע</label><input type="color" class="form-control form-control-sm form-control-color" id="editCatColor"></div>
+            <div class="d-flex gap-2">
+                <button class="btn btn-primary btn-sm" onclick="saveEditCategory()">שמור</button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="cancelEditCategory()">ביטול</button>
+            </div>
+        </div>
     </div>
 </div>
 </div>
@@ -2362,7 +2393,9 @@
 // State
 // ============================================================
 let currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
-let categories = [];
+let categories = [];         // default scope (visible, for pickers)
+let managementCategories = []; // manage scope (all accessible, for settings screen)
+let categoryDisplayLookup = {}; // id → {name_he, color} for historical display (populated from manage scope)
 let charts = {};
 let dashboardExpenses = []; // cached for filtering
 let standingOrdersData = []; // cached for sorting
@@ -4940,17 +4973,17 @@ async function loadAdminPanel() {
         // Categories table
         document.getElementById('adminCatsBody').innerHTML = cats.map(c => `
             <tr>
-                <td class="small text-muted">${c.id}</td>
+                <td class="small text-muted">${esc(c.id)}</td>
                 <td>
-                    <input type="text" class="form-control form-control-sm" value="${c.name_he}" id="adminCatName_${c.id}" style="border-radius:8px">
+                    <input type="text" class="form-control form-control-sm" value="${esc(c.name_he)}" id="adminCatName_${esc(c.id)}" style="border-radius:8px">
                 </td>
                 <td>
-                    <input type="color" class="form-control form-control-sm form-control-color" value="${c.color}" id="adminCatColor_${c.id}" style="width:40px;height:30px;border-radius:8px">
+                    <input type="color" class="form-control form-control-sm form-control-color" value="${esc(c.color)}" id="adminCatColor_${esc(c.id)}" style="width:40px;height:30px;border-radius:8px">
                 </td>
                 <td>
                     <div class="d-flex gap-1">
-                        <button class="btn btn-outline-primary btn-sm" style="border-radius:8px" onclick="adminSaveCategory('${c.id}')"><i class="bi bi-check-lg"></i></button>
-                        <button class="btn btn-outline-danger btn-sm" style="border-radius:8px" onclick="adminDeleteCategory('${c.id}')"><i class="bi bi-trash3"></i></button>
+                        <button class="btn btn-outline-primary btn-sm" style="border-radius:8px" onclick="adminSaveCategory('${esc(c.id)}')"><i class="bi bi-check-lg"></i></button>
+                        <button class="btn btn-outline-danger btn-sm" style="border-radius:8px" onclick="adminDeleteCategory('${esc(c.id)}')"><i class="bi bi-trash3"></i></button>
                     </div>
                 </td>
             </tr>
@@ -5083,18 +5116,22 @@ function changeMonth(delta) {
 // ============================================================
 async function loadCategories() {
     categories = await api('/api/categories') || [];
+    managementCategories = await api('/api/categories?scope=manage') || [];
+    categoryDisplayLookup = {};
+    managementCategories.forEach(c => { categoryDisplayLookup[c.id] = {name_he: c.name_he, color: c.color}; });
     // Populate category select
     const sel = document.getElementById('expenseCategory');
     sel.innerHTML = categoryOptionsHtml();
 }
 
-// Build category <option> HTML with "New Category" at bottom
+// Build category <option> HTML with "New Category" and "Manage" at bottom
 function categoryOptionsHtml(selectedId) {
     let html = categories.map(c =>
-        `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.name_he}</option>`
+        `<option value="${esc(c.id)}" ${c.id === selectedId ? 'selected' : ''}>${esc(c.name_he)}</option>`
     ).join('');
     html += `<option disabled>──────────</option>`;
     html += `<option value="__new__">➕ ${t('new_category')}</option>`;
+    html += `<option value="__manage__">⚙ ניהול קטגוריות</option>`;
     return html;
 }
 
@@ -5104,9 +5141,11 @@ let _newCatSourceSelect = null;
 function handleCategorySelect(selectEl) {
     if (selectEl.value === '__new__') {
         _newCatSourceSelect = selectEl;
-        // Reset to first real option
         selectEl.selectedIndex = 0;
         new bootstrap.Modal(document.getElementById('addCategoryModal')).show();
+    } else if (selectEl.value === '__manage__') {
+        selectEl.selectedIndex = 0;
+        openManageCategories();
     }
 }
 
@@ -5656,7 +5695,7 @@ function quickChangeCategory(expId, currentCatId) {
         const btn = document.createElement('button');
         btn.className = 'btn btn-sm w-100 mb-1 d-flex align-items-center justify-content-between';
         btn.style.cssText = isCurrent ? 'background:#eef2ff;border:2px solid #6366f1;border-radius:10px' : 'border:1px solid #e2e8f0;border-radius:10px';
-        btn.innerHTML = `<span class="category-badge" style="background:${c.color};font-size:0.75rem">${c.name_he}</span>${isCurrent ? '<i class="bi bi-check-lg text-primary"></i>' : ''}`;
+        btn.innerHTML = `<span class="category-badge" style="background:${esc(c.color)};font-size:0.75rem">${esc(c.name_he)}</span>${isCurrent ? '<i class="bi bi-check-lg text-primary"></i>' : ''}`;
         btn.onclick = async (e) => {
             e.stopPropagation();
             if (isCurrent) { div.remove(); return; }
@@ -5691,6 +5730,21 @@ function quickChangeCategory(expId, currentCatId) {
         };
         list.appendChild(btn);
     });
+
+    // Footer: Add new + Manage
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;gap:8px;margin-top:8px;border-top:1px solid #e2e8f0;padding-top:8px';
+    const btnAdd = document.createElement('button');
+    btnAdd.className = 'btn btn-sm btn-outline-primary flex-fill';
+    btnAdd.textContent = '➕ הוסף קטגוריה';
+    btnAdd.onclick = () => { div.remove(); new bootstrap.Modal(document.getElementById('addCategoryModal')).show(); };
+    const btnManage = document.createElement('button');
+    btnManage.className = 'btn btn-sm btn-outline-secondary flex-fill';
+    btnManage.textContent = '⚙ ניהול';
+    btnManage.onclick = () => { div.remove(); openManageCategories(); };
+    footer.appendChild(btnAdd);
+    footer.appendChild(btnManage);
+    list.appendChild(footer);
 
     div.appendChild(list);
     document.body.appendChild(div);
@@ -5974,7 +6028,10 @@ function populateFilterCategories() {
     const current = sel.value;
     sel.innerHTML = `<option value="" data-t="filter_all_categories">${t('filter_all_categories')}</option>`;
     (categories || []).forEach(c => {
-        sel.innerHTML += `<option value="${c.id}">${currentLang === 'en' ? (c.name_en || c.name_he) : c.name_he}</option>`;
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = currentLang === 'en' ? (c.name_en || c.name_he) : c.name_he;
+        sel.appendChild(opt);
     });
     sel.value = current;
 }
@@ -6289,7 +6346,7 @@ function _budgetCategoryCard(c, avg, budgetVal) {
     <div class="col-md-4 col-sm-6">
         <div class="budget-cat-card">
             <div class="d-flex justify-content-between align-items-center mb-1">
-                <label class="form-label fw-bold mb-0" style="font-size:.85rem">${catName}</label>
+                <label class="form-label fw-bold mb-0" style="font-size:.85rem">${esc(catName)}</label>
                 ${avg > 0 ? `<span class="text-muted" style="font-size:.7rem">${t('avg_monthly')}: ${fmt(avg)}</span>` : ''}
             </div>
             <div class="input-group input-group-sm">
@@ -11123,16 +11180,61 @@ async function saveAiSettings() {
 // Add Category
 // ============================================================
 async function addNewCategory() {
-    const id = document.getElementById('newCatId').value.trim().toLowerCase().replace(/\s+/g, '_');
     const name = document.getElementById('newCatName').value.trim();
+    const icon = document.getElementById('newCatIcon').value.trim();
     const color = document.getElementById('newCatColor').value;
-    if (!id || !name) { await appAlert(t('cat_fill_fields'), 'warning'); return; }
+    const errEl = document.getElementById('addCatError');
+    errEl.classList.add('d-none');
+    errEl.textContent = '';
 
-    await api('/api/categories', {
+    if (!name) {
+        errEl.textContent = 'יש להזין שם קטגוריה.';
+        errEl.classList.remove('d-none');
+        return;
+    }
+
+    const res = await api('/api/categories', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ id, name_he: name, color, sort_order: 99 })
+        body: JSON.stringify({ name, icon: icon || null, color })
     });
+
+    if (res && res.error) {
+        const code = res.error;
+        if (code === 'duplicate_active') {
+            errEl.textContent = 'קטגוריה עם שם זה כבר קיימת.';
+        } else if (code === 'duplicate_hidden') {
+            errEl.textContent = '';
+            const msg = document.createTextNode('קטגוריה עם שם זה מוסתרת. ');
+            const restoreBtn = document.createElement('button');
+            restoreBtn.className = 'btn btn-sm btn-link p-0';
+            restoreBtn.textContent = 'לשחזר?';
+            const catId = res.category_id || '';
+            restoreBtn.onclick = () => restoreCategoryById(catId);
+            errEl.appendChild(msg);
+            errEl.appendChild(restoreBtn);
+        } else if (code === 'duplicate_inherited_hidden') {
+            errEl.textContent = '';
+            const ancestorId = res.hidden_by_ancestor_id || '';
+            const ancestorName = (managementCategories.find(x => x.id === ancestorId) || {}).name_he || ancestorId;
+            const msg = document.createTextNode(`הקטגוריה קיימת אך מוסתרת בגלל "${ancestorName}". `);
+            const manageBtn = document.createElement('button');
+            manageBtn.className = 'btn btn-sm btn-link p-0';
+            manageBtn.textContent = 'פתח ניהול קטגוריות';
+            manageBtn.onclick = () => {
+                bootstrap.Modal.getInstance(document.getElementById('addCategoryModal')).hide();
+                openManageCategories();
+            };
+            errEl.appendChild(msg);
+            errEl.appendChild(manageBtn);
+        } else {
+            errEl.textContent = 'שגיאה ביצירת הקטגוריה.';
+        }
+        errEl.classList.remove('d-none');
+        return;
+    }
+
+    const newId = res && res.id;
 
     // Refresh categories and budget form
     await loadCategories();
@@ -11140,13 +11242,132 @@ async function addNewCategory() {
 
     // If triggered from a dropdown, update it and select the new category
     if (_newCatSourceSelect) {
-        _newCatSourceSelect.innerHTML = categoryOptionsHtml(id);
+        _newCatSourceSelect.innerHTML = categoryOptionsHtml(newId);
         _newCatSourceSelect = null;
     }
 
     bootstrap.Modal.getInstance(document.getElementById('addCategoryModal')).hide();
-    document.getElementById('newCatId').value = '';
     document.getElementById('newCatName').value = '';
+    document.getElementById('newCatIcon').value = '';
+}
+
+async function restoreCategoryById(catId) {
+    if (!catId) return;
+    await api(`/api/categories/${catId}/restore`, { method: 'POST' });
+    await loadCategories();
+    await loadBudget();
+    bootstrap.Modal.getInstance(document.getElementById('addCategoryModal')).hide();
+    document.getElementById('newCatName').value = '';
+    document.getElementById('newCatIcon').value = '';
+}
+
+// ============================================================
+// Category Management Screen
+// ============================================================
+let _manageCatTab = 'active';
+let _editingCatId = null;
+
+function openManageCategories() {
+    _manageCatTab = 'active';
+    renderManageCatList();
+    new bootstrap.Modal(document.getElementById('manageCategoriesModal')).show();
+}
+
+function switchManageTab(tab, btn) {
+    _manageCatTab = tab;
+    document.querySelectorAll('#manageCatTabs .nav-link').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderManageCatList();
+}
+
+function renderManageCatList() {
+    cancelEditCategory();
+    const container = document.getElementById('manageCatList');
+    const isHiddenTab = _manageCatTab === 'hidden';
+
+    const shown = isHiddenTab
+        ? managementCategories.filter(c => c.is_effectively_hidden)
+        : managementCategories.filter(c => !c.is_effectively_hidden);
+
+    if (!shown.length) {
+        container.innerHTML = `<div class="text-muted text-center py-3">${isHiddenTab ? 'אין קטגוריות מוסתרות' : 'אין קטגוריות פעילות'}</div>`;
+        return;
+    }
+
+    container.innerHTML = shown.map(c => {
+        const isSystem = c.is_system;
+        const isMisc = c.id === 'misc';
+        const ancestorName = (!isHiddenTab || c.is_directly_hidden)
+            ? ''
+            : (managementCategories.find(x => x.id === c.hidden_by_ancestor_id) || {}).name_he || c.hidden_by_ancestor_id || 'קטגוריית אב';
+        const actions = isHiddenTab
+            ? (c.is_directly_hidden
+                ? `<button class="btn btn-sm btn-outline-success" onclick="manageCatAction('restore','${esc(c.id)}')">שחזר</button>`
+                : `<span class="text-muted small">מוסתר ע"י "${esc(ancestorName)}"</span>`)
+            : `${!isSystem ? `<button class="btn btn-sm btn-outline-primary" onclick="manageCatAction('edit','${esc(c.id)}')">עריכה</button>` : ''}${!isMisc ? `<button class="btn btn-sm btn-outline-secondary" onclick="manageCatAction('hide','${esc(c.id)}')">הסתר</button>` : ''}`;
+        return `<div class="d-flex align-items-center gap-2 mb-2 p-2 border rounded">
+            <span class="category-badge" style="background:${esc(c.color)}">${esc(c.icon || '')}${esc(c.name_he)}</span>
+            <span class="text-muted small flex-fill">${isSystem ? '(מערכת)' : ''}</span>
+            <div class="d-flex gap-1">${actions}</div>
+        </div>`;
+    }).join('');
+}
+
+async function manageCatAction(action, catId) {
+    if (action === 'hide') {
+        const res = await api(`/api/categories/${catId}/hide`, { method: 'POST' });
+        if (res && res.error) {
+            showToast(res.error === 'protected_category' ? 'לא ניתן להסתיר קטגוריה זו' : 'שגיאה', 'warning');
+            return;
+        }
+        await loadCategories();
+        renderManageCatList();
+    } else if (action === 'restore') {
+        const res = await api(`/api/categories/${catId}/restore`, { method: 'POST' });
+        if (res && res.error) {
+            showToast('שגיאה בשחזור הקטגוריה', 'warning');
+            return;
+        }
+        await loadCategories();
+        renderManageCatList();
+    } else if (action === 'edit') {
+        startEditCategory(catId);
+    }
+}
+
+function startEditCategory(catId) {
+    _editingCatId = catId;
+    const c = managementCategories.find(x => x.id === catId);
+    if (!c) return;
+    document.getElementById('editCatName').value = c.name_he;
+    document.getElementById('editCatIcon').value = c.icon || '';
+    document.getElementById('editCatColor').value = c.color || '#6366f1';
+    document.getElementById('manageCatEditForm').classList.remove('d-none');
+}
+
+function cancelEditCategory() {
+    _editingCatId = null;
+    document.getElementById('manageCatEditForm').classList.add('d-none');
+}
+
+async function saveEditCategory() {
+    if (!_editingCatId) return;
+    const name = document.getElementById('editCatName').value.trim();
+    const icon = document.getElementById('editCatIcon').value.trim();
+    const color = document.getElementById('editCatColor').value;
+    if (!name) return;
+    const res = await api(`/api/categories/${_editingCatId}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ name, icon: icon || null, color })
+    });
+    if (res && res.error) {
+        showToast(res.message || 'שגיאה בעדכון הקטגוריה', 'danger');
+        return;
+    }
+    await loadCategories();
+    cancelEditCategory();
+    renderManageCatList();
 }
 
 // ============================================================

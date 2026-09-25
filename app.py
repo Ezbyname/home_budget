@@ -191,7 +191,10 @@ else:
 
 # Hebrew category mapping from the XLS structure
 CATEGORY_MAP = {
-    'דיור ואחזקת בית': 'housing',
+    'דיור ואחזקת בית': 'housing',   # original XLS header — kept as permanent alias
+    'דיור':            'housing',   # Q1-A: new display name alias
+    'הוצאות בית':      'home_maintenance',  # Q1-A: new top-level category
+    'אחזקת בית':       'home_maintenance',  # Q1-A: alternate alias
     'מזון': 'food',
     'הורים': 'parents',
     'ילדים': 'children',
@@ -230,6 +233,7 @@ DEFAULT_CATEGORIES = [
     ('education', 'חינוך ולימודים', '#bcbd22'),
     ('dining_out', 'אוכל בחוץ', '#ff6b6b'),
     ('gifts', 'מתנות', '#c084fc'),
+    ('home_maintenance', 'הוצאות בית', '#c08040'),   # Q1-A: top-level, no parent
 ]
 
 
@@ -239,6 +243,147 @@ def get_db():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+# ── Q1-B: Category access / visibility helpers ───────────────────────────────
+
+def category_accessible(conn, user_id: int, category_id: str) -> bool:
+    """
+    True if category exists AND (owner_user_id IS NULL OR owner_user_id == user_id).
+    Visibility does not affect accessibility.
+    """
+    row = conn.execute(
+        "SELECT owner_user_id FROM categories WHERE id=?", (category_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    return row['owner_user_id'] is None or row['owner_user_id'] == user_id
+
+
+def category_hidden(conn, user_id: int, category_id: str) -> bool:
+    """True only if there is a direct preference row for (user_id, category_id)."""
+    row = conn.execute(
+        "SELECT 1 FROM user_category_preferences WHERE user_id=? AND category_id=?",
+        (user_id, category_id)
+    ).fetchone()
+    return row is not None
+
+
+def effective_visible(conn, user_id: int, category_id: str) -> bool:
+    """
+    A category is effectively visible only when the category itself AND every
+    ancestor in its parent_id chain are all not directly hidden for user_id.
+
+    Fail-closed: returns False for missing nodes and detected cycles.
+    """
+    visited: set = set()
+    current: str | None = category_id
+    while current is not None:
+        if current in visited:
+            return False            # cycle detected — fail closed
+        visited.add(current)
+        row = conn.execute(
+            "SELECT parent_id FROM categories WHERE id=?", (current,)
+        ).fetchone()
+        if row is None:
+            return False            # missing node — fail closed
+        if category_hidden(conn, user_id, current):
+            return False
+        current = row['parent_id']
+    return True
+
+
+def is_auto_assignable(conn, user_id: int, category_id: str) -> bool:
+    """
+    For automatic categorization only.
+    True when the category is both accessible and effectively visible for user_id.
+    """
+    return (
+        category_accessible(conn, user_id, category_id)
+        and effective_visible(conn, user_id, category_id)
+    )
+
+
+def is_system_category(conn, category_id: str) -> bool:
+    """True only when the category exists and owner_user_id IS NULL (system/global)."""
+    row = conn.execute(
+        "SELECT owner_user_id FROM categories WHERE id=?", (category_id,)
+    ).fetchone()
+    return row is not None and row['owner_user_id'] is None
+
+
+# ── Q1-C: Category name normalisation ────────────────────────────────────────
+
+import unicodedata as _unicodedata
+
+def normalize_category_name(name: str) -> str:
+    """
+    Canonical normalisation for category names used in duplicate detection.
+    NFC → strip → collapse internal whitespace → casefold.
+    The stored display value may preserve mixed case; use this only for comparison.
+    """
+    nfc = _unicodedata.normalize('NFC', name)
+    stripped = nfc.strip()
+    collapsed = ' '.join(stripped.split())
+    return collapsed.casefold()
+
+
+# ── Q1-C: Duplicate detection within accessible set ──────────────────────────
+
+def _find_category_duplicate(conn, user_id: int, normalized_name: str,
+                              exclude_id: str | None = None):
+    """
+    Search accessible categories (system + own custom) for a duplicate name.
+    Returns (row, duplicate_kind) where kind is one of:
+        'active'             — visible duplicate
+        'direct_hidden'      — directly hidden by user
+        'inherited_hidden'   — effectively hidden only via ancestor
+    Returns (None, None) if no duplicate.
+    """
+    rows = conn.execute(
+        "SELECT id, name_he, owner_user_id, parent_id FROM categories "
+        "WHERE owner_user_id IS NULL OR owner_user_id=?",
+        (user_id,)
+    ).fetchall()
+
+    for row in rows:
+        if exclude_id and row['id'] == exclude_id:
+            continue
+        if normalize_category_name(row['name_he']) != normalized_name:
+            continue
+        # Found a name match — determine hidden state
+        direct = category_hidden(conn, user_id, row['id'])
+        if direct:
+            return row, 'direct_hidden'
+        eff = effective_visible(conn, user_id, row['id'])
+        if not eff:
+            return row, 'inherited_hidden'
+        return row, 'active'
+    return None, None
+
+
+def _find_hidden_ancestor(conn, user_id: int, category_id: str) -> str | None:
+    """Return the id of the nearest directly-hidden ancestor, or None."""
+    visited: set = set()
+    current = conn.execute(
+        "SELECT parent_id FROM categories WHERE id=?", (category_id,)
+    ).fetchone()
+    if current is None:
+        return None
+    current = current['parent_id']
+    while current is not None:
+        if current in visited:
+            return None
+        visited.add(current)
+        if category_hidden(conn, user_id, current):
+            return current
+        row = conn.execute(
+            "SELECT parent_id FROM categories WHERE id=?", (current,)
+        ).fetchone()
+        if row is None:
+            return None
+        current = row['parent_id']
+    return None
 
 
 def apply_category_rule(conn, description, category_id, frequency='random', user_id=None):
@@ -301,6 +446,9 @@ def smart_categorize(conn, description: str, amount: float, user_id: int,
 
     # Legacy fallback — wrap in a CategoryResult-like object
     cat, freq = apply_category_rule(conn, description, 'misc', 'random', user_id)
+    # Q1-B: validate the proposed category is auto-assignable; fall back to misc otherwise
+    if cat != 'misc' and not is_auto_assignable(conn, user_id, cat):
+        cat = 'misc'
     from types import SimpleNamespace
     r = SimpleNamespace(
         category_id=cat, source='legacy', confidence=None,
@@ -904,6 +1052,40 @@ def init_db():
     if 'parent_id' not in cat_cols:
         conn.execute("ALTER TABLE categories ADD COLUMN parent_id TEXT DEFAULT NULL")
         conn.commit()
+
+    # Q1-A: categories.owner_user_id — NULL=system, int=user-owned custom category
+    cat_cols = [r[1] for r in conn.execute("PRAGMA table_info(categories)").fetchall()]
+    if 'owner_user_id' not in cat_cols:
+        conn.execute("ALTER TABLE categories ADD COLUMN owner_user_id INTEGER DEFAULT NULL")
+        conn.commit()
+
+    # Q1-A: categories.icon — optional emoji/icon key
+    cat_cols = [r[1] for r in conn.execute("PRAGMA table_info(categories)").fetchall()]
+    if 'icon' not in cat_cols:
+        conn.execute("ALTER TABLE categories ADD COLUMN icon TEXT DEFAULT NULL")
+        conn.commit()
+
+    # Q1-A: user_category_preferences — row = category hidden for that user
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_category_preferences (
+            user_id     INTEGER NOT NULL,
+            category_id TEXT    NOT NULL,
+            PRIMARY KEY (user_id, category_id),
+            FOREIGN KEY (user_id)     REFERENCES users(id),
+            FOREIGN KEY (category_id) REFERENCES categories(id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ucp_user ON user_category_preferences(user_id)"
+    )
+    conn.commit()
+
+    # Q1-A: housing display rename — idempotent, guarded by old value
+    conn.execute(
+        "UPDATE categories SET name_he=? WHERE id=? AND name_he=?",
+        ('דיור', 'housing', 'דיור ואחזקת בית')
+    )
+    conn.commit()
 
     # 2. schema_version — tracks migration state
     conn.execute("""
@@ -2065,24 +2247,271 @@ def static_files(path):
     return send_from_directory('static', path)
 
 
-# --- Categories API ---
+# --- Categories API (Q1-C) ---
+
+import re as _re
+import uuid as _uuid
+
+_COLOR_RE = _re.compile(r'^#[0-9A-Fa-f]{6}$')
+_PROTECTED_CATEGORIES = frozenset({'misc'})
+_CAT_NAME_MAX = 60
+_CAT_ICON_MAX = 64
+
+
+def _validate_category_fields(data: dict) -> tuple[str | None, str | None, str | None]:
+    """
+    Validate and return (name_he, icon, color) from client data.
+    Returns (None, None, None) + raises ValueError on bad input.
+    Raises ValueError with a descriptive message on failure.
+    """
+    name_he = data.get('name') or data.get('name_he', '')
+    if not name_he or not name_he.strip():
+        raise ValueError('name is required')
+    # Display form: NFC + strip + collapse whitespace (preserves mixed case)
+    display_name = ' '.join(_unicodedata.normalize('NFC', name_he).strip().split())
+    norm = normalize_category_name(name_he)  # casefolded — for duplicate detection only
+    if not norm:
+        raise ValueError('name is required')
+    if len(display_name) > _CAT_NAME_MAX:
+        raise ValueError(f'name must be at most {_CAT_NAME_MAX} characters')
+
+    icon = data.get('icon')
+    if icon is not None:
+        icon = str(icon).strip()
+        if len(icon) > _CAT_ICON_MAX:
+            raise ValueError(f'icon must be at most {_CAT_ICON_MAX} characters')
+        if not icon:
+            icon = None
+
+    color = data.get('color')
+    if color is not None:
+        color = str(color).strip()
+        if color and not _COLOR_RE.match(color):
+            raise ValueError('color must be a #RRGGBB hex value')
+        if not color:
+            color = None
+
+    return display_name, icon, color or '#888888'
+
+
 @app.route('/api/categories', methods=['GET'])
 @login_required
 def get_categories():
+    """
+    Q1-C GET /api/categories
+
+    Default (picker) mode:
+        Returns accessible categories that are effectively visible for the
+        session user. Does not return other users' custom categories.
+
+    Management mode (?scope=manage):
+        Returns all accessible categories with visibility metadata.
+    """
+    uid = get_uid()
+    scope = request.args.get('scope', '')
     conn = get_db()
-    rows = conn.execute("SELECT * FROM categories ORDER BY sort_order").fetchall()
+
+    # Accessible = system (NULL owner) OR owned by this user
+    rows = conn.execute(
+        "SELECT * FROM categories "
+        "WHERE owner_user_id IS NULL OR owner_user_id=? "
+        "ORDER BY sort_order",
+        (uid,)
+    ).fetchall()
+
+    if scope == 'manage':
+        result = []
+        for row in rows:
+            is_directly_hidden = category_hidden(conn, uid, row['id'])
+            is_effectively_hidden = not effective_visible(conn, uid, row['id'])
+            hidden_by_ancestor = None
+            if is_effectively_hidden and not is_directly_hidden:
+                hidden_by_ancestor = _find_hidden_ancestor(conn, uid, row['id'])
+            result.append({
+                'id': row['id'],
+                'name_he': row['name_he'],
+                'color': row['color'],
+                'icon': row['icon'],
+                'parent_id': row['parent_id'],
+                'owner_user_id': row['owner_user_id'],
+                'is_system': row['owner_user_id'] is None,
+                'sort_order': row['sort_order'],
+                'is_directly_hidden': is_directly_hidden,
+                'is_effectively_hidden': is_effectively_hidden,
+                'hidden_by_ancestor_id': hidden_by_ancestor,
+            })
+        conn.close()
+        return jsonify(result)
+
+    # Default picker mode: accessible AND effectively visible
+    result = []
+    for row in rows:
+        if effective_visible(conn, uid, row['id']):
+            result.append(dict(row))
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(result)
 
 
 @app.route('/api/categories', methods=['POST'])
 @login_required
 def add_category():
-    data = request.json
+    """
+    Q1-C POST /api/categories — create a user-owned custom category.
+
+    Server always generates the ID (custom_<uuid4hex>).
+    Server always sets owner_user_id from session.
+    Client-supplied id and owner_user_id are ignored.
+    Uses plain INSERT (never INSERT OR REPLACE).
+    """
+    uid = get_uid()
+    data = request.json or {}
+
+    try:
+        name_he, icon, color = _validate_category_fields(data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
     conn = get_db()
+    norm = normalize_category_name(name_he)
+    dup_row, dup_kind = _find_category_duplicate(conn, uid, norm)
+
+    if dup_kind == 'active':
+        conn.close()
+        return jsonify({'error': 'duplicate_active', 'category_id': dup_row['id']}), 409
+
+    if dup_kind == 'direct_hidden':
+        conn.close()
+        return jsonify({'error': 'duplicate_hidden', 'category_id': dup_row['id']}), 409
+
+    if dup_kind == 'inherited_hidden':
+        ancestor = _find_hidden_ancestor(conn, uid, dup_row['id'])
+        conn.close()
+        return jsonify({
+            'error': 'duplicate_inherited_hidden',
+            'category_id': dup_row['id'],
+            'hidden_by_ancestor_id': ancestor,
+        }), 409
+
+    new_id = 'custom_' + _uuid.uuid4().hex
     conn.execute(
-        "INSERT OR REPLACE INTO categories (id, name_he, color, sort_order) VALUES (?, ?, ?, ?)",
-        (data['id'], data['name_he'], data.get('color', '#888888'), data.get('sort_order', 99))
+        "INSERT INTO categories (id, name_he, color, icon, sort_order, owner_user_id) "
+        "VALUES (?, ?, ?, ?, 99, ?)",
+        (new_id, name_he, color, icon, uid)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok', 'id': new_id}), 201
+
+
+@app.route('/api/categories/<cat_id>', methods=['PATCH'])
+@login_required
+def patch_category(cat_id):
+    """
+    Q1-C PATCH /api/categories/<id> — rename/recolor/reicon own custom category.
+
+    System categories: 403.
+    Another user's custom category: 404 (non-leaking).
+    """
+    uid = get_uid()
+    data = request.json or {}
+    conn = get_db()
+
+    row = conn.execute(
+        "SELECT id, owner_user_id FROM categories WHERE id=?", (cat_id,)
+    ).fetchone()
+
+    if row is None or (row['owner_user_id'] is not None and row['owner_user_id'] != uid):
+        conn.close()
+        return jsonify({'error': 'not_found'}), 404
+
+    if row['owner_user_id'] is None:
+        conn.close()
+        return jsonify({'error': 'system_category'}), 403
+
+    try:
+        name_he, icon, color = _validate_category_fields(data)
+    except ValueError as exc:
+        conn.close()
+        return jsonify({'error': str(exc)}), 400
+
+    norm = normalize_category_name(name_he)
+    dup_row, dup_kind = _find_category_duplicate(conn, uid, norm, exclude_id=cat_id)
+
+    if dup_kind == 'active':
+        conn.close()
+        return jsonify({'error': 'duplicate_active', 'category_id': dup_row['id']}), 409
+
+    if dup_kind == 'direct_hidden':
+        conn.close()
+        return jsonify({'error': 'duplicate_hidden', 'category_id': dup_row['id']}), 409
+
+    if dup_kind == 'inherited_hidden':
+        ancestor = _find_hidden_ancestor(conn, uid, dup_row['id'])
+        conn.close()
+        return jsonify({
+            'error': 'duplicate_inherited_hidden',
+            'category_id': dup_row['id'],
+            'hidden_by_ancestor_id': ancestor,
+        }), 409
+
+    conn.execute(
+        "UPDATE categories SET name_he=?, color=?, icon=? WHERE id=?",
+        (name_he, color, icon, cat_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/categories/<cat_id>/hide', methods=['POST'])
+@login_required
+def hide_category(cat_id):
+    """
+    Q1-C hide endpoint.
+    Accessible (system or own custom) → insert preference row.
+    Protected (misc) → 400.
+    Other user's custom or nonexistent → 404.
+    Idempotent.
+    """
+    uid = get_uid()
+    conn = get_db()
+
+    if not category_accessible(conn, uid, cat_id):
+        conn.close()
+        return jsonify({'error': 'not_found'}), 404
+
+    if cat_id in _PROTECTED_CATEGORIES:
+        conn.close()
+        return jsonify({'error': 'protected_category'}), 400
+
+    conn.execute(
+        "INSERT OR IGNORE INTO user_category_preferences (user_id, category_id) VALUES (?, ?)",
+        (uid, cat_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/categories/<cat_id>/restore', methods=['POST'])
+@login_required
+def restore_category(cat_id):
+    """
+    Q1-C restore endpoint.
+    Accessible → delete direct preference row only.
+    Other user's custom or nonexistent → 404.
+    Idempotent.
+    """
+    uid = get_uid()
+    conn = get_db()
+
+    if not category_accessible(conn, uid, cat_id):
+        conn.close()
+        return jsonify({'error': 'not_found'}), 404
+
+    conn.execute(
+        "DELETE FROM user_category_preferences WHERE user_id=? AND category_id=?",
+        (uid, cat_id)
     )
     conn.commit()
     conn.close()
@@ -2232,12 +2661,10 @@ def add_expense():
         return jsonify({'error': 'category_id is required and must be a valid existing category'}), 400
 
     conn = get_db()
-    cat_exists = conn.execute(
-        "SELECT id FROM categories WHERE id=?", (cat_id,)
-    ).fetchone()
-    if not cat_exists:
+    # Q1-C: category must be accessible to session user (system or own custom)
+    if not category_accessible(conn, get_uid(), cat_id):
         conn.close()
-        return jsonify({'error': f'category_id {cat_id!r} does not exist'}), 400
+        return jsonify({'error': 'category_id is invalid or not accessible'}), 400
 
     conn.execute(
         "INSERT INTO expenses (date, category_id, subcategory, description, amount, source, frequency, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2255,6 +2682,14 @@ def add_expense():
 def update_expense(expense_id):
     data = request.json
     conn = get_db()
+
+    # Q1-C: validate category accessibility before any writes
+    if 'category_id' in data:
+        submitted_cat = data['category_id']
+        if not category_accessible(conn, get_uid(), submitted_cat):
+            conn.close()
+            return jsonify({'error': 'category_id is invalid or not accessible'}), 400
+
     fields = []
     values = []
     for col in ('date', 'category_id', 'subcategory', 'description', 'amount', 'frequency', 'card', 'is_unusual'):
@@ -2314,10 +2749,14 @@ def update_expense(expense_id):
                     (new_cat, desc, uid_, expense_id)
                 )
                 propagated += cur2.rowcount
-                conn.execute(
-                    "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
-                    (desc, new_cat)
-                )
+                # Q1-B: category_rules is global (no user_id). Only write when the
+                # target category is a system category. Custom-category corrections
+                # are valid for the expense but must not create global rules.
+                if is_system_category(conn, new_cat):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO category_rules (description, category_id) VALUES (?, ?)",
+                        (desc, new_cat)
+                    )
 
             audit(conn, uid_, 'user_correction', 'expense', expense_id,
                   None, {'category': new_cat, 'merchant_key': mkey, 'propagated': propagated},
@@ -2506,13 +2945,18 @@ def get_budget():
 def set_budget():
     data = request.json
     plan_id = data.get('plan_id', 1)
+    cat_id = data.get('category_id')
     conn = get_db()
+    # Q1-C: category ownership applies to all user-facing category references
+    if not category_accessible(conn, get_uid(), cat_id):
+        conn.close()
+        return jsonify({'error': 'category_id is invalid or not accessible'}), 400
     conn.execute(
         """INSERT INTO budget (category_id, month, planned_amount, plan_id, user_id)
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(category_id, month, plan_id, user_id)
            DO UPDATE SET planned_amount = excluded.planned_amount""",
-        (data['category_id'], data['month'], data['planned_amount'], plan_id, get_uid())
+        (cat_id, data['month'], data['planned_amount'], plan_id, get_uid())
     )
     conn.commit()
     conn.close()
@@ -11934,10 +12378,18 @@ def admin_delete_user(user_id):
 @app.route('/api/admin/categories', methods=['PUT'])
 @admin_required
 def admin_update_category():
+    """
+    Q1-C: Admin category update is restricted to system (global) categories.
+    Custom categories are edited only by their owner through PATCH /api/categories/<id>.
+    """
     data = request.json
     conn = get_db()
+    target_id = data.get('id', '')
+    if not is_system_category(conn, target_id):
+        conn.close()
+        return jsonify({'error': 'admin_update only applies to system categories'}), 403
     conn.execute("UPDATE categories SET name_he=?, color=? WHERE id=?",
-                 (data['name_he'], data['color'], data['id']))
+                 (data['name_he'], data['color'], target_id))
     conn.commit()
     conn.close()
     return jsonify({'status': 'ok'})
@@ -11946,17 +12398,11 @@ def admin_update_category():
 @app.route('/api/admin/categories/<cat_id>', methods=['DELETE'])
 @admin_required
 def admin_delete_category(cat_id):
-    conn = get_db()
-    # Check if category has expenses
-    count = conn.execute("SELECT COUNT(*) FROM expenses WHERE category_id=?", (cat_id,)).fetchone()[0]
-    if count > 0:
-        conn.close()
-        return jsonify({'error': f'Category has {count} expenses, cannot delete'}), 400
-    conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
-    conn.execute("DELETE FROM budget WHERE category_id=?", (cat_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({'status': 'ok'})
+    """
+    Q1-C: Category deletion is disabled. Permanent-delete semantics belong to Q2.
+    """
+    return jsonify({'error': 'category_deletion_disabled',
+                    'message': 'Category deletion is not available in this version'}), 403
 
 
 @app.route('/api/admin/stats', methods=['GET'])

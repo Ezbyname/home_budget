@@ -16,12 +16,27 @@ import pytest
 # Helpers: isolate app imports from real filesystem side-effects
 # ---------------------------------------------------------------------------
 
-def _make_app(env_vars: dict, frozen: bool = False):
+def _make_app(env_vars: dict, frozen: bool = False, tmp_home=None):
     """
     Import app in a controlled environment with specified env vars.
     Returns the Flask app object.
     Raises RuntimeError/EnvironmentError if startup validation fails (expected for some tests).
+
+    HOME and USERPROFILE are always redirected to tmp_home (or a fresh tempdir
+    when tmp_home is None) before app is imported.  This prevents any write to
+    the real user DB when the app resolves DB_PATH via expanduser('~') in
+    local-dev mode.
     """
+    # Always redirect HOME/USERPROFILE so expanduser('~') never hits the real home.
+    _tmp_home_created = False
+    if tmp_home is None:
+        tmp_home = tempfile.mkdtemp(prefix='phase0b_home_')
+        _tmp_home_created = True
+    orig_home = os.environ.get('HOME')
+    orig_up   = os.environ.get('USERPROFILE')
+    os.environ['HOME']        = str(tmp_home)
+    os.environ['USERPROFILE'] = str(tmp_home)
+
     # Stash originals
     orig_env = {k: os.environ.get(k) for k in env_vars}
     orig_frozen = None
@@ -60,6 +75,14 @@ def _make_app(env_vars: dict, frozen: bool = False):
                 os.environ[k] = orig
         if frozen and hasattr(sys, 'frozen'):
             del sys.frozen
+        if orig_home is None:
+            os.environ.pop('HOME', None)
+        else:
+            os.environ['HOME'] = orig_home
+        if orig_up is None:
+            os.environ.pop('USERPROFILE', None)
+        else:
+            os.environ['USERPROFILE'] = orig_up
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +99,7 @@ class TestEnvironmentModes:
             'RAILWAY_VOLUME_MOUNT_PATH': None,
         }
         # Should not raise
-        flask_app = _make_app(env)
+        flask_app = _make_app(env, tmp_home=str(tmp_path))
         assert flask_app is not None
 
     def test_cloud_missing_volume_raises(self, tmp_path):
@@ -87,7 +110,7 @@ class TestEnvironmentModes:
             'RAILWAY_VOLUME_MOUNT_PATH': None,
         }
         with pytest.raises(RuntimeError, match="RAILWAY_VOLUME_MOUNT_PATH is not set"):
-            _make_app(env)
+            _make_app(env, tmp_home=str(tmp_path))
 
     def test_cloud_nonexistent_volume_path_raises(self, tmp_path):
         """Cloud mode: RAILWAY_VOLUME_MOUNT_PATH pointing to nonexistent dir → RuntimeError."""
@@ -97,7 +120,7 @@ class TestEnvironmentModes:
             'RAILWAY_VOLUME_MOUNT_PATH': '/nonexistent/path/that/cannot/exist/xyz123',
         }
         with pytest.raises(RuntimeError, match="does not exist or is not a directory"):
-            _make_app(env)
+            _make_app(env, tmp_home=str(tmp_path))
 
     def test_cloud_missing_secret_key_raises(self, tmp_path):
         """Cloud mode: missing SECRET_KEY → RuntimeError at startup."""
@@ -107,7 +130,7 @@ class TestEnvironmentModes:
             'RAILWAY_VOLUME_MOUNT_PATH': str(tmp_path),
         }
         with pytest.raises(RuntimeError, match="SECRET_KEY environment variable must be set"):
-            _make_app(env)
+            _make_app(env, tmp_home=str(tmp_path))
 
     def test_cloud_valid_config_starts(self, tmp_path):
         """Cloud mode: valid RAILWAY_VOLUME_MOUNT_PATH + SECRET_KEY → starts successfully."""
@@ -116,17 +139,17 @@ class TestEnvironmentModes:
             'SECRET_KEY': 'b' * 64,
             'RAILWAY_VOLUME_MOUNT_PATH': str(tmp_path),
         }
-        flask_app = _make_app(env)
+        flask_app = _make_app(env, tmp_home=str(tmp_path))
         assert flask_app is not None
         assert flask_app.config['SESSION_COOKIE_SECURE'] is True
         assert flask_app.config['SESSION_COOKIE_HTTPONLY'] is True
         assert flask_app.config['SESSION_COOKIE_SAMESITE'] == 'Lax'
         assert flask_app.config['SESSION_COOKIE_NAME'] == 'budget_session'
 
-    def test_local_dev_no_secure_cookies(self):
+    def test_local_dev_no_secure_cookies(self, tmp_path):
         """Local dev: secure cookie flags must NOT be set (HTTP localhost would break)."""
         env = {'APP_ENV': None, 'SECRET_KEY': None, 'RAILWAY_VOLUME_MOUNT_PATH': None}
-        flask_app = _make_app(env)
+        flask_app = _make_app(env, tmp_home=str(tmp_path))
         assert flask_app.config.get('SESSION_COOKIE_SECURE') is not True
 
     def test_cloud_secret_key_is_stable(self, tmp_path):
@@ -137,9 +160,9 @@ class TestEnvironmentModes:
             'SECRET_KEY': key,
             'RAILWAY_VOLUME_MOUNT_PATH': str(tmp_path),
         }
-        app1 = _make_app(env)
+        app1 = _make_app(env, tmp_home=str(tmp_path))
         sk1 = app1.secret_key
-        app2 = _make_app(env)
+        app2 = _make_app(env, tmp_home=str(tmp_path))
         sk2 = app2.secret_key
         assert sk1 == sk2 == key
 
@@ -155,7 +178,7 @@ def cloud_app(tmp_path):
         'SECRET_KEY': 'd' * 64,
         'RAILWAY_VOLUME_MOUNT_PATH': str(tmp_path),
     }
-    flask_app = _make_app(env)
+    flask_app = _make_app(env, tmp_home=str(tmp_path))
     flask_app.config['TESTING'] = True
     return flask_app
 
@@ -163,7 +186,7 @@ def cloud_app(tmp_path):
 @pytest.fixture
 def local_app(tmp_path):
     env = {'APP_ENV': None, 'SECRET_KEY': None, 'RAILWAY_VOLUME_MOUNT_PATH': None}
-    flask_app = _make_app(env)
+    flask_app = _make_app(env, tmp_home=str(tmp_path))
     flask_app.config['TESTING'] = True
     return flask_app
 

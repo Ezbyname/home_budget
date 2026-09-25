@@ -21,6 +21,9 @@ from typing import Optional
 
 from intelligence.normalizer import normalize_merchant, resolve_merchant_key
 
+# Q1-B: import the shared auto-assignability gate from app helpers.
+# Imported lazily inside resolve_category() to avoid circular-import at module load time.
+
 # ── Result object ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -124,18 +127,24 @@ def resolve_category(
     -------
     CategoryResult
     """
+    # Q1-B: lazy import to avoid circular dependency at module load time
+    from app import is_auto_assignable as _is_auto_assignable
+
     merchant_key = resolve_merchant_key(description, user_id, conn)
 
     # ── Mortgage override (highest priority — before all learning) ────────────
     if _is_mortgage(description, merchant_key):
-        return CategoryResult(
-            category_id='mortgage',
-            source='deterministic',
-            confidence=0.95,
-            merchant_key=merchant_key,
-            subcategory='משכנתא',
-            frequency='monthly',
-        )
+        cat_id = 'mortgage'
+        if _is_auto_assignable(conn, user_id, cat_id):
+            return CategoryResult(
+                category_id=cat_id,
+                source='deterministic',
+                confidence=0.95,
+                merchant_key=merchant_key,
+                subcategory='משכנתא',
+                frequency='monthly',
+            )
+        # mortgage hidden/inaccessible → fall through to P1
 
     # ── P1: merchant_learning (high confidence) ───────────────────────────────
     ml_row = conn.execute(
@@ -144,23 +153,27 @@ def resolve_category(
         (user_id, merchant_key)
     ).fetchone()
     if ml_row and ml_row['confidence'] >= 0.65:
-        return CategoryResult(
-            category_id=ml_row['category_id'],
-            source='merchant_learning',
-            confidence=ml_row['confidence'],
-            merchant_key=merchant_key,
-        )
+        if _is_auto_assignable(conn, user_id, ml_row['category_id']):
+            return CategoryResult(
+                category_id=ml_row['category_id'],
+                source='merchant_learning',
+                confidence=ml_row['confidence'],
+                merchant_key=merchant_key,
+            )
+        # P1 candidate hidden/inaccessible → continue to P2
 
     # ── P2: merchant fingerprints ─────────────────────────────────────────────
     fp_result = _score_fingerprints(merchant_key, description, amount, user_id, conn)
     if fp_result:
         cat_id, fp_confidence = fp_result
-        return CategoryResult(
-            category_id=cat_id,
-            source='fingerprint',
-            confidence=fp_confidence,
-            merchant_key=merchant_key,
-        )
+        if _is_auto_assignable(conn, user_id, cat_id):
+            return CategoryResult(
+                category_id=cat_id,
+                source='fingerprint',
+                confidence=fp_confidence,
+                merchant_key=merchant_key,
+            )
+        # P2 candidate hidden/inaccessible → continue to P3
 
     # ── P3: deterministic rules ───────────────────────────────────────────────
 
@@ -168,60 +181,67 @@ def resolve_category(
     if bank_expense_patterns:
         for pattern, cat_id, subcat, freq in bank_expense_patterns:
             if pattern.upper() in description.upper():
-                return CategoryResult(
-                    category_id=cat_id,
-                    source='deterministic',
-                    confidence=0.78,
-                    merchant_key=merchant_key,
-                    subcategory=subcat,
-                    frequency=freq,
-                )
+                if _is_auto_assignable(conn, user_id, cat_id):
+                    return CategoryResult(
+                        category_id=cat_id,
+                        source='deterministic',
+                        confidence=0.78,
+                        merchant_key=merchant_key,
+                        subcategory=subcat,
+                        frequency=freq,
+                    )
+                # candidate hidden → continue to next pattern / next stage
 
     # P3c: Visa category map (Hebrew category string from card statement)
     if visa_category_map:
         for visa_key, cat_id in visa_category_map.items():
             if visa_key in description:
-                return CategoryResult(
-                    category_id=cat_id,
-                    source='deterministic',
-                    confidence=0.75,
-                    merchant_key=merchant_key,
-                )
+                if _is_auto_assignable(conn, user_id, cat_id):
+                    return CategoryResult(
+                        category_id=cat_id,
+                        source='deterministic',
+                        confidence=0.75,
+                        merchant_key=merchant_key,
+                    )
 
     # P3d: Visa description map
     if visa_description_map:
         for pattern, cat_id, subcat in visa_description_map:
             if pattern.upper() in description.upper():
-                return CategoryResult(
-                    category_id=cat_id,
-                    source='deterministic',
-                    confidence=0.75,
-                    merchant_key=merchant_key,
-                    subcategory=subcat,
-                )
+                if _is_auto_assignable(conn, user_id, cat_id):
+                    return CategoryResult(
+                        category_id=cat_id,
+                        source='deterministic',
+                        confidence=0.75,
+                        merchant_key=merchant_key,
+                        subcategory=subcat,
+                    )
 
     # P3e: legacy category_rules table
     if apply_legacy_rule_fn:
         new_cat, new_freq = apply_legacy_rule_fn(conn, description, 'misc', 'random', user_id)
         if new_cat and new_cat != 'misc':
-            return CategoryResult(
-                category_id=new_cat,
-                source='deterministic',
-                confidence=0.72,
-                merchant_key=merchant_key,
-                frequency=new_freq,
-            )
+            if _is_auto_assignable(conn, user_id, new_cat):
+                return CategoryResult(
+                    category_id=new_cat,
+                    source='deterministic',
+                    confidence=0.72,
+                    merchant_key=merchant_key,
+                    frequency=new_freq,
+                )
+            # P3e candidate hidden → continue to P4
 
     # ── P4: merchant_learning (low confidence) ────────────────────────────────
     if ml_row and ml_row['confidence'] >= 0.40:
-        return CategoryResult(
-            category_id=ml_row['category_id'],
-            source='low_confidence',
-            confidence=ml_row['confidence'],
-            merchant_key=merchant_key,
-        )
+        if _is_auto_assignable(conn, user_id, ml_row['category_id']):
+            return CategoryResult(
+                category_id=ml_row['category_id'],
+                source='low_confidence',
+                confidence=ml_row['confidence'],
+                merchant_key=merchant_key,
+            )
 
-    # ── P5: unresolved ────────────────────────────────────────────────────────
+    # ── P5: unresolved — misc is a protected system fallback, always assignable ─
     return CategoryResult(
         category_id='misc',
         source='unresolved',
