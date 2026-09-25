@@ -13015,6 +13015,9 @@ if __name__ == '__main__':
     if getattr(sys, 'frozen', False):
         import webview
 
+        # Enable F12 / Inspect without opening DevTools automatically on startup.
+        webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
+
         # Clear stale WebView2 cache so old service workers don't block new HTML
         import shutil
         for _cache_path in [
@@ -13040,7 +13043,7 @@ if __name__ == '__main__':
             height=860,
             min_size=(900, 600),
         )
-        webview.start()
+        webview.start(debug=True)
     else:
         if _CLOUD:
             from waitress import serve
