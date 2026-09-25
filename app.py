@@ -1450,6 +1450,17 @@ def init_db():
                 (cat_id, name_he, color, parent_id, sort_order)
             )
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS frequency_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            description_pattern TEXT NOT NULL,
+            frequency TEXT NOT NULL DEFAULT 'monthly',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, description_pattern)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -3924,6 +3935,480 @@ def stage_db_post():
         'integrity_check': integrity,
         'quick_check': quick,
     })
+
+
+# --- Cash Flow Dashboard ---
+
+_CASHFLOW_FREQUENCY_LABELS = {
+    'monthly':          'קבועה',
+    'monthly_variable': 'קבועה (משתנה)',
+    'random':           'אקראית',
+}
+
+_CASHFLOW_FREQUENCY_CYCLE = ['monthly', 'monthly_variable', 'random']
+
+_CASHFLOW_HTML = r"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>תזרים מזומנים</title>
+<style>
+  :root { --bg:#f4f6fa; --card:#fff; --primary:#4361ee; --danger:#e63946;
+          --success:#2dc653; --warn:#f4a261; --text:#1d2d44; --muted:#6b7c93;
+          --border:#dde3ed; --radius:12px; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  .topbar{background:var(--primary);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px}
+  .topbar a{color:#fff;text-decoration:none;font-size:1.3rem}
+  .topbar h1{font-size:1.15rem;font-weight:700;flex:1;text-align:center}
+  .month-nav{display:flex;align-items:center;justify-content:center;gap:16px;padding:18px 0 8px}
+  .month-nav button{background:var(--card);border:1px solid var(--border);border-radius:8px;
+    padding:6px 14px;cursor:pointer;font-size:1rem}
+  .month-label{font-size:1.1rem;font-weight:600;min-width:130px;text-align:center}
+  .cards{display:flex;gap:14px;padding:0 16px 16px;flex-wrap:wrap}
+  .card{flex:1;min-width:170px;background:var(--card);border-radius:var(--radius);
+    padding:18px 16px;box-shadow:0 2px 8px #0001;text-align:center}
+  .card .label{font-size:.82rem;color:var(--muted);margin-bottom:6px}
+  .card .amount{font-size:1.6rem;font-weight:700}
+  .card.income .amount{color:var(--success)}
+  .card.fixed .amount{color:var(--danger)}
+  .card.liquid .amount{color:var(--primary)}
+  .section{padding:0 16px 24px}
+  .section h2{font-size:1rem;font-weight:700;margin-bottom:10px;color:var(--text)}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--radius);
+    overflow:hidden;box-shadow:0 2px 8px #0001}
+  th{background:#eef0f8;font-size:.8rem;color:var(--muted);text-align:right;padding:10px 12px}
+  td{padding:10px 12px;border-top:1px solid var(--border);font-size:.9rem;vertical-align:middle}
+  .freq-btn{border:none;border-radius:20px;padding:4px 12px;font-size:.78rem;cursor:pointer;font-weight:600;transition:background .15s}
+  .freq-monthly{background:#d4edda;color:#155724}
+  .freq-monthly_variable{background:#fff3cd;color:#856404}
+  .freq-random{background:#f8d7da;color:#721c24}
+  .export-btn{display:block;margin:0 16px 24px auto;background:var(--primary);color:#fff;
+    border:none;border-radius:8px;padding:10px 22px;font-size:.95rem;cursor:pointer;font-weight:600}
+  .loading{text-align:center;padding:40px;color:var(--muted)}
+  .avg{font-size:.78rem;color:var(--muted);display:block}
+  @media(max-width:500px){.cards{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/">&#8594;</a>
+  <h1>תזרים מזומנים</h1>
+</div>
+<div class="month-nav">
+  <button id="prevBtn">&#8249;</button>
+  <div class="month-label" id="monthLabel"></div>
+  <button id="nextBtn">&#8250;</button>
+</div>
+<div class="cards">
+  <div class="card income"><div class="label">הכנסות</div><div class="amount" id="incomeAmt">—</div></div>
+  <div class="card fixed"><div class="label">הוצאות קבועות</div><div class="amount" id="fixedAmt">—</div></div>
+  <div class="card liquid"><div class="label">נזיל</div><div class="amount" id="liquidAmt">—</div></div>
+</div>
+<div class="section" id="fixedSection" style="display:none">
+  <h2>הוצאות קבועות החודש</h2>
+  <table id="fixedTable">
+    <thead><tr><th>תיאור</th><th>סכום חודש זה</th><th>ממוצע 3 חודשים</th><th>סוג</th></tr></thead>
+    <tbody id="fixedBody"></tbody>
+  </table>
+</div>
+<div class="section" id="candidatesSection" style="display:none">
+  <h2>הוצאות חוזרות — בדיקה</h2>
+  <table id="candidatesTable">
+    <thead><tr><th>תיאור</th><th>הופעות (6 חודשים)</th><th>סוג</th></tr></thead>
+    <tbody id="candidatesBody"></tbody>
+  </table>
+</div>
+<button class="export-btn" id="exportBtn">יצוא Excel</button>
+<script>
+const fmt = n => '₪' + Number(n).toLocaleString('he-IL', {minimumFractionDigits:0, maximumFractionDigits:0});
+const FREQ_LABELS = {monthly:'קבועה', monthly_variable:'קבועה (משתנה)', random:'אקראית'};
+const FREQ_CYCLE = ['monthly','monthly_variable','random'];
+const FREQ_CLASS = {monthly:'freq-monthly', monthly_variable:'freq-monthly_variable', random:'freq-random'};
+
+let currentDate = new Date();
+currentDate.setDate(1);
+
+function monthStr(d) {
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0');
+  return y+'-'+m;
+}
+function monthLabel(d) {
+  return d.toLocaleDateString('he-IL',{month:'long',year:'numeric'});
+}
+
+function freqBtn(desc, freq) {
+  const cls = FREQ_CLASS[freq] || 'freq-random';
+  return `<button class="freq-btn ${cls}" data-desc="${desc.replace(/"/g,'&quot;')}" data-freq="${freq}">${FREQ_LABELS[freq]||freq}</button>`;
+}
+
+async function load() {
+  document.getElementById('monthLabel').textContent = monthLabel(currentDate);
+  document.getElementById('incomeAmt').textContent = '...';
+  document.getElementById('fixedAmt').textContent = '...';
+  document.getElementById('liquidAmt').textContent = '...';
+  document.getElementById('fixedSection').style.display = 'none';
+  document.getElementById('candidatesSection').style.display = 'none';
+
+  const res = await fetch('/api/cashflow/data?month='+monthStr(currentDate));
+  if (!res.ok) { document.getElementById('incomeAmt').textContent = 'שגיאה'; return; }
+  const d = await res.json();
+
+  document.getElementById('incomeAmt').textContent = fmt(d.income_total);
+  document.getElementById('fixedAmt').textContent = fmt(d.fixed_total);
+  document.getElementById('liquidAmt').textContent = fmt(d.liquid);
+
+  const fb = document.getElementById('fixedBody');
+  fb.innerHTML = '';
+  if (d.fixed_items && d.fixed_items.length) {
+    document.getElementById('fixedSection').style.display = '';
+    d.fixed_items.forEach(row => {
+      fb.insertAdjacentHTML('beforeend',
+        `<tr><td>${row.description}</td><td>${fmt(row.month_total)}</td><td><span class="avg">${fmt(row.avg_3m)}</span></td><td>${freqBtn(row.description, row.frequency)}</td></tr>`);
+    });
+  }
+
+  const cb = document.getElementById('candidatesBody');
+  cb.innerHTML = '';
+  if (d.recurring_candidates && d.recurring_candidates.length) {
+    document.getElementById('candidatesSection').style.display = '';
+    d.recurring_candidates.forEach(row => {
+      cb.insertAdjacentHTML('beforeend',
+        `<tr><td>${row.description}</td><td>${row.count}</td><td>${freqBtn(row.description, row.frequency)}</td></tr>`);
+    });
+  }
+}
+
+document.getElementById('prevBtn').addEventListener('click', () => {
+  currentDate.setMonth(currentDate.getMonth()-1); load();
+});
+document.getElementById('nextBtn').addEventListener('click', () => {
+  currentDate.setMonth(currentDate.getMonth()+1); load();
+});
+
+document.body.addEventListener('click', async e => {
+  if (!e.target.classList.contains('freq-btn')) return;
+  const btn = e.target;
+  const desc = btn.dataset.desc;
+  const curFreq = btn.dataset.freq;
+  const nextFreq = FREQ_CYCLE[(FREQ_CYCLE.indexOf(curFreq)+1) % FREQ_CYCLE.length];
+  btn.disabled = true;
+  const res = await fetch('/api/cashflow/set-frequency', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({description: desc, frequency: nextFreq})
+  });
+  btn.disabled = false;
+  if (res.ok) { load(); }
+});
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+  window.location.href = '/api/cashflow/export?month='+monthStr(currentDate);
+});
+
+load();
+</script>
+</body>
+</html>"""
+
+
+@app.route('/cashflow')
+@login_required
+def cashflow_page():
+    from flask import make_response
+    resp = make_response(_CASHFLOW_HTML, 200)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return resp
+
+
+@app.route('/api/cashflow/data')
+@login_required
+def cashflow_data():
+    uid = get_uid()
+    month = request.args.get('month', '')
+    # validate YYYY-MM
+    import re as _re
+    if not _re.match(r'^\d{4}-\d{2}$', month):
+        from datetime import date as _date
+        month = _date.today().strftime('%Y-%m')
+
+    year, mon = int(month[:4]), int(month[5:7])
+    # boundaries
+    if mon == 12:
+        next_year, next_mon = year + 1, 1
+    else:
+        next_year, next_mon = year, mon + 1
+    month_start = f'{year:04d}-{mon:02d}-01'
+    month_end   = f'{next_year:04d}-{next_mon:02d}-01'
+
+    conn = get_db()
+    try:
+        # ── income ──────────────────────────────────────────────────────────
+        inc_rows = conn.execute(
+            "SELECT description, amount FROM income "
+            "WHERE user_id=? AND date>=? AND date<? ORDER BY date",
+            (uid, month_start, month_end)
+        ).fetchall()
+        income_total = sum(r['amount'] for r in inc_rows)
+        income_items = [{'description': r['description'], 'amount': r['amount']} for r in inc_rows]
+
+        # ── fixed expenses for the month ─────────────────────────────────
+        # expenses with frequency in ('monthly','monthly_variable')
+        # join frequency_rules to get the stored frequency, default 'random'
+        fixed_rows = conn.execute(
+            """
+            SELECT e.description,
+                   SUM(e.amount) AS month_total,
+                   COALESCE(fr.frequency, 'random') AS frequency
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+              AND COALESCE(fr.frequency, 'random') IN ('monthly','monthly_variable')
+            GROUP BY e.description
+            ORDER BY month_total DESC
+            """,
+            (uid, month_start, month_end)
+        ).fetchall()
+
+        # 3-month average for each fixed merchant
+        # window: 3 months ending at start of current month
+        if mon >= 4:
+            avg_start = f'{year:04d}-{mon-3:02d}-01'
+        else:
+            avg_year = year - 1
+            avg_mon  = 12 + mon - 3
+            avg_start = f'{avg_year:04d}-{avg_mon:02d}-01'
+
+        avg_rows = conn.execute(
+            """
+            SELECT e.description, SUM(e.amount)/3.0 AS avg_3m
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+              AND COALESCE(fr.frequency, 'random') IN ('monthly','monthly_variable')
+            GROUP BY e.description
+            """,
+            (uid, avg_start, month_start)
+        ).fetchall()
+        avg_map = {r['description']: r['avg_3m'] for r in avg_rows}
+
+        fixed_items = [
+            {
+                'description': r['description'],
+                'month_total': r['month_total'],
+                'avg_3m':      round(avg_map.get(r['description'], 0), 2),
+                'frequency':   r['frequency'],
+            }
+            for r in fixed_rows
+        ]
+        fixed_total = sum(r['month_total'] for r in fixed_rows)
+
+        # ── recurring candidates (appear in 2+ of last 6 months, not already marked) ──
+        if mon >= 7:
+            six_start = f'{year:04d}-{mon-6:02d}-01'
+        else:
+            six_year = year - 1
+            six_mon  = 12 + mon - 6
+            six_start = f'{six_year:04d}-{six_mon:02d}-01'
+
+        cand_rows = conn.execute(
+            """
+            SELECT e.description,
+                   COUNT(DISTINCT strftime('%Y-%m', e.date)) AS cnt,
+                   COALESCE(fr.frequency, 'random') AS frequency
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+              AND COALESCE(fr.frequency, 'random') = 'random'
+            GROUP BY e.description
+            HAVING cnt >= 2
+            ORDER BY cnt DESC, e.description
+            """,
+            (uid, six_start, month_end)
+        ).fetchall()
+        recurring_candidates = [
+            {'description': r['description'], 'count': r['cnt'], 'frequency': r['frequency']}
+            for r in cand_rows
+        ]
+
+    finally:
+        conn.close()
+
+    return jsonify({
+        'month':                month,
+        'income_total':         round(income_total, 2),
+        'income_items':         income_items,
+        'fixed_total':          round(fixed_total, 2),
+        'fixed_items':          fixed_items,
+        'liquid':               round(income_total - fixed_total, 2),
+        'recurring_candidates': recurring_candidates,
+    })
+
+
+@app.route('/api/cashflow/set-frequency', methods=['POST'])
+@login_required
+def cashflow_set_frequency():
+    uid = get_uid()
+    body = request.get_json(silent=True) or {}
+    description = body.get('description', '').strip()
+    frequency   = body.get('frequency', '')
+
+    if not description:
+        return jsonify({'error': 'description required'}), 400
+    if frequency not in _CASHFLOW_FREQUENCY_CYCLE:
+        return jsonify({'error': 'invalid frequency'}), 400
+
+    conn = get_db()
+    try:
+        # upsert frequency_rules
+        conn.execute(
+            """
+            INSERT INTO frequency_rules (user_id, description_pattern, frequency)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, description_pattern)
+            DO UPDATE SET frequency=excluded.frequency, created_at=datetime('now')
+            """,
+            (uid, description, frequency)
+        )
+        # retroactively update expenses.frequency for all matching rows
+        conn.execute(
+            "UPDATE expenses SET frequency=? WHERE user_id=? AND description=?",
+            (frequency, uid, description)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({'ok': True, 'description': description, 'frequency': frequency})
+
+
+@app.route('/api/cashflow/export')
+@login_required
+def cashflow_export():
+    import io
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return jsonify({'error': 'openpyxl not available'}), 500
+
+    uid = get_uid()
+    month = request.args.get('month', '')
+    import re as _re
+    if not _re.match(r'^\d{4}-\d{2}$', month):
+        from datetime import date as _date
+        month = _date.today().strftime('%Y-%m')
+
+    year, mon = int(month[:4]), int(month[5:7])
+    if mon == 12:
+        next_year, next_mon = year + 1, 1
+    else:
+        next_year, next_mon = year, mon + 1
+    month_start = f'{year:04d}-{mon:02d}-01'
+    month_end   = f'{next_year:04d}-{next_mon:02d}-01'
+
+    conn = get_db()
+    try:
+        inc_rows = conn.execute(
+            "SELECT date, description, amount FROM income "
+            "WHERE user_id=? AND date>=? AND date<? ORDER BY date",
+            (uid, month_start, month_end)
+        ).fetchall()
+
+        exp_rows = conn.execute(
+            """
+            SELECT e.date, e.description, e.amount,
+                   COALESCE(fr.frequency, 'random') AS frequency
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+            ORDER BY e.date
+            """,
+            (uid, month_start, month_end)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    income_total = sum(r['amount'] for r in inc_rows)
+    fixed_total  = sum(r['amount'] for r in exp_rows
+                       if r['frequency'] in ('monthly', 'monthly_variable'))
+    liquid       = income_total - fixed_total
+
+    wb = openpyxl.Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    ws = wb.active
+    ws.title = 'סיכום'
+    ws.sheet_view.rightToLeft = True
+
+    header_fill = PatternFill('solid', fgColor='4361EE')
+    header_font = Font(color='FFFFFF', bold=True)
+
+    ws.append(['תזרים מזומנים —', month])
+    ws['A1'].font = Font(bold=True, size=13)
+    ws.append([])
+    ws.append(['הכנסות', income_total])
+    ws.append(['הוצאות קבועות', fixed_total])
+    ws.append(['נזיל', liquid])
+    ws['B3'].number_format = '#,##0.00 ₪'
+    ws['B4'].number_format = '#,##0.00 ₪'
+    ws['B5'].number_format = '#,##0.00 ₪'
+    ws.column_dimensions['A'].width = 22
+    ws.column_dimensions['B'].width = 16
+
+    # ── Income sheet ───────────────────────────────────────────────────────
+    wi = wb.create_sheet('הכנסות')
+    wi.sheet_view.rightToLeft = True
+    wi.append(['תאריך', 'תיאור', 'סכום'])
+    for cell in wi[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for r in inc_rows:
+        wi.append([r['date'], r['description'], r['amount']])
+    for cell in wi['C'][1:]:
+        cell.number_format = '#,##0.00 ₪'
+    wi.column_dimensions['A'].width = 14
+    wi.column_dimensions['B'].width = 30
+    wi.column_dimensions['C'].width = 14
+
+    # ── Expenses sheet ─────────────────────────────────────────────────────
+    we = wb.create_sheet('הוצאות')
+    we.sheet_view.rightToLeft = True
+    we.append(['תאריך', 'תיאור', 'סכום', 'סוג'])
+    for cell in we[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for r in exp_rows:
+        we.append([r['date'], r['description'], r['amount'],
+                   _CASHFLOW_FREQUENCY_LABELS.get(r['frequency'], r['frequency'])])
+    for cell in we['C'][1:]:
+        cell.number_format = '#,##0.00 ₪'
+    we.column_dimensions['A'].width = 14
+    we.column_dimensions['B'].width = 30
+    we.column_dimensions['C'].width = 14
+    we.column_dimensions['D'].width = 18
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    from flask import send_file
+    filename = f'cashflow_{month}.xlsx'
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 # --- File Import ---
