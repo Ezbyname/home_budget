@@ -1461,6 +1461,344 @@ def init_db():
         )
     """)
 
+    # ============================================================
+    # UNIFIED COMMITMENTS — Phase 0 Schema Foundation
+    # ============================================================
+
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS commitments (
+            id                          TEXT NOT NULL,
+            user_id                     INTEGER NOT NULL,
+            canonical_label             TEXT NOT NULL DEFAULT '',
+            obligation_nature           TEXT NOT NULL DEFAULT 'EXPENSE'
+                CHECK(obligation_nature IN ('EXPENSE', 'INCOME', 'TRANSFER')),
+            commitment_kind             TEXT NOT NULL DEFAULT 'UNKNOWN'
+                CHECK(commitment_kind IN ('CONTRACTUAL', 'VOLUNTARY', 'BEHAVIORAL', 'UNKNOWN')),
+            payment_mechanism           TEXT NOT NULL DEFAULT 'UNKNOWN'
+                CHECK(payment_mechanism IN (
+                    'STANDING_ORDER', 'INSTALLMENT_SPLIT', 'DIRECT_DEBIT',
+                    'CHECK', 'CREDIT_CARD', 'MANUAL', 'UNKNOWN'
+                )),
+            cashflow_role               TEXT NOT NULL DEFAULT 'UNCLASSIFIED'
+                CHECK(cashflow_role IN (
+                    'RESERVE', 'FLEXIBLE', 'SAVINGS', 'FEE', 'INCOME', 'SETTLEMENT', 'UNCLASSIFIED'
+                )),
+            lifecycle_status            TEXT NOT NULL DEFAULT 'ACTIVE'
+                CHECK(lifecycle_status IN ('ACTIVE', 'PAUSED', 'ENDED', 'CANCELLED')),
+            is_finite                   INTEGER NOT NULL DEFAULT 0
+                CHECK(is_finite IN (0, 1)),
+            total_occurrences           INTEGER DEFAULT NULL,
+            end_date                    TEXT DEFAULT NULL,
+            source_type                 TEXT NOT NULL DEFAULT 'V4_SUGGESTED'
+                CHECK(source_type IN ('IMPORTED', 'MANUAL_ENTRY', 'V4_SUGGESTED', 'MIGRATED')),
+            linked_legacy_installment_id INTEGER DEFAULT NULL
+                REFERENCES installments(id),
+            created_at                  TEXT NOT NULL,
+            updated_at                  TEXT NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE (id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pattern_families (
+            id                          TEXT NOT NULL,
+            user_id                     INTEGER NOT NULL,
+            primary_description_key     TEXT NOT NULL,
+            is_split_discriminator      INTEGER NOT NULL DEFAULT 0
+                CHECK(is_split_discriminator IN (0, 1)),
+            amount_cluster_agorot       INTEGER DEFAULT NULL,
+            window_start                TEXT DEFAULT NULL,
+            window_end                  TEXT DEFAULT NULL,
+            commitment_id               TEXT DEFAULT NULL,
+            is_primary                  INTEGER NOT NULL DEFAULT 1
+                CHECK(is_primary IN (0, 1)),
+            linked_by                   TEXT NOT NULL DEFAULT 'AUTO'
+                CHECK(linked_by IN ('AUTO', 'MANUAL', 'MIGRATION')),
+            family_status               TEXT NOT NULL DEFAULT 'ACTIVE'
+                CHECK(family_status IN ('ACTIVE', 'SUPERSEDED')),
+            superseded_at               TEXT DEFAULT NULL,
+            superseded_by_event_id      INTEGER DEFAULT NULL,
+            created_at                  TEXT NOT NULL,
+            updated_at                  TEXT NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE (id, user_id),
+            CHECK(window_start IS NULL OR window_end IS NOT NULL),
+            CHECK(is_split_discriminator = 0
+                  OR (window_start IS NOT NULL OR amount_cluster_agorot IS NOT NULL)),
+            CHECK(is_split_discriminator = 1
+                  OR (amount_cluster_agorot IS NULL AND window_start IS NULL)),
+            CHECK(family_status = 'ACTIVE' OR superseded_at IS NOT NULL),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS description_key_aliases (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            family_id                   TEXT NOT NULL,
+            user_id                     INTEGER NOT NULL,
+            description_key             TEXT NOT NULL,
+            first_seen_at               TEXT NOT NULL,
+            linked_by                   TEXT NOT NULL DEFAULT 'AUTO'
+                CHECK(linked_by IN ('AUTO', 'MANUAL')),
+            UNIQUE(family_id, description_key),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS v4_run_results (
+            id                              TEXT NOT NULL,
+            run_id                          TEXT NOT NULL,
+            user_id                         INTEGER NOT NULL,
+            family_id                       TEXT DEFAULT NULL,
+            description_key                 TEXT NOT NULL,
+            stream_index                    INTEGER NOT NULL DEFAULT 0,
+            label                           TEXT NOT NULL DEFAULT '',
+            planning_amount_agorot          INTEGER DEFAULT NULL,
+            cadence                         TEXT NOT NULL DEFAULT 'UNKNOWN',
+            recurrence_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+            commitment_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+            classifier_lifecycle_status     TEXT NOT NULL DEFAULT 'ACTIVE'
+                CHECK(classifier_lifecycle_status IN ('ACTIVE', 'PAUSED', 'ENDED', 'CANCELLED')),
+            budget_class                    TEXT NOT NULL DEFAULT 'UNKNOWN',
+            reserve_eligible                INTEGER NOT NULL DEFAULT 0
+                CHECK(reserve_eligible IN (0, 1)),
+            monthly_reserve_contrib_agorot  INTEGER NOT NULL DEFAULT 0,
+            cadence_coverage                REAL DEFAULT NULL,
+            evidence_month_count            INTEGER DEFAULT NULL,
+            review_required                 INTEGER NOT NULL DEFAULT 0
+                CHECK(review_required IN (0, 1)),
+            review_reasons                  TEXT NOT NULL DEFAULT '[]',
+            created_at                      TEXT NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE (id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_classifier_snapshots (
+            id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id                   TEXT NOT NULL,
+            user_id                         INTEGER NOT NULL,
+            snapshot_type                   TEXT NOT NULL
+                CHECK(snapshot_type IN ('V4_SINGLE', 'V4_CANONICAL_MERGED')),
+            representative_run_result_id    TEXT DEFAULT NULL,
+            constituent_run_result_ids      TEXT NOT NULL DEFAULT '[]',
+            recurrence_status               TEXT DEFAULT NULL,
+            commitment_status               TEXT DEFAULT NULL,
+            classifier_lifecycle_status     TEXT DEFAULT NULL
+                CHECK(classifier_lifecycle_status IS NULL
+                      OR classifier_lifecycle_status IN ('ACTIVE', 'PAUSED', 'ENDED', 'CANCELLED')),
+            budget_class                    TEXT DEFAULT NULL,
+            reserve_eligible                INTEGER DEFAULT NULL
+                CHECK(reserve_eligible IS NULL OR reserve_eligible IN (0, 1)),
+            monthly_reserve_contrib_agorot  INTEGER DEFAULT NULL,
+            cadence                         TEXT DEFAULT NULL,
+            created_at                      TEXT NOT NULL,
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (representative_run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_authority (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id       TEXT NOT NULL,
+            user_id             INTEGER NOT NULL,
+            field_name          TEXT NOT NULL,
+            value               TEXT DEFAULT NULL,
+            authority_source    TEXT NOT NULL
+                CHECK(authority_source IN ('MANUAL_OVERRIDE', 'FAMILY_REVIEW')),
+            override_id         TEXT NOT NULL,
+            is_active           INTEGER NOT NULL DEFAULT 1
+                CHECK(is_active IN (0, 1)),
+            created_at          TEXT NOT NULL,
+            created_by          INTEGER NOT NULL,
+            revoked_at          TEXT DEFAULT NULL,
+            revoked_by          INTEGER DEFAULT NULL,
+            UNIQUE(override_id),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_installment_meta (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id           TEXT NOT NULL,
+            user_id                 INTEGER NOT NULL,
+            total_payments          INTEGER NOT NULL CHECK(total_payments > 0),
+            payments_made           INTEGER NOT NULL DEFAULT 0
+                CHECK(payments_made >= 0),
+            payment_agorot          INTEGER NOT NULL CHECK(payment_agorot > 0),
+            total_purchase_agorot   INTEGER DEFAULT NULL,
+            first_payment_date      TEXT NOT NULL,
+            anchor_day_of_month     INTEGER NOT NULL CHECK(anchor_day_of_month BETWEEN 1 AND 31),
+            updated_at              TEXT NOT NULL,
+            CHECK(payments_made <= total_payments),
+            UNIQUE(commitment_id),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_occurrences (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id       TEXT NOT NULL,
+            user_id             INTEGER NOT NULL,
+            occurrence_date     TEXT NOT NULL,
+            occurrence_index    INTEGER DEFAULT NULL
+                CHECK(occurrence_index IS NULL OR occurrence_index >= 1),
+            expected_agorot     INTEGER NOT NULL CHECK(expected_agorot > 0),
+            status              TEXT NOT NULL DEFAULT 'expected'
+                CHECK(status IN ('expected', 'confirmed', 'missed', 'skipped', 'cancelled')),
+            match_confidence    TEXT DEFAULT NULL
+                CHECK(match_confidence IS NULL
+                      OR match_confidence IN ('exact', 'unique', 'fuzzy')),
+            linked_expense_id   INTEGER DEFAULT NULL REFERENCES expenses(id),
+            generated_at        TEXT NOT NULL,
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_expense_links (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id       TEXT NOT NULL,
+            user_id             INTEGER NOT NULL,
+            expense_id          INTEGER NOT NULL REFERENCES expenses(id),
+            membership_type     TEXT NOT NULL DEFAULT 'MEMBER'
+                CHECK(membership_type IN ('MEMBER', 'EXCLUDED', 'OCCURRENCE_CONFIRMED')),
+            linked_by           TEXT NOT NULL DEFAULT 'AUTO'
+                CHECK(linked_by IN ('AUTO', 'MANUAL', 'V4_CLASSIFIER')),
+            family_id           TEXT DEFAULT NULL,
+            run_result_id       TEXT DEFAULT NULL,
+            created_at          TEXT NOT NULL,
+            UNIQUE(user_id, expense_id, commitment_id),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id),
+            FOREIGN KEY (run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_suggestions (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id                 INTEGER NOT NULL,
+            suggestion_type         TEXT NOT NULL
+                CHECK(suggestion_type IN (
+                    'POSSIBLE_DRIFT', 'OVERLAPPING_WINDOW', 'AMBIGUOUS_FAMILY',
+                    'NEW_RECURRING', 'POSSIBLE_MATCH'
+                )),
+            description_key         TEXT NOT NULL,
+            family_id               TEXT DEFAULT NULL,
+            run_result_id           TEXT DEFAULT NULL,
+            expense_id              INTEGER DEFAULT NULL REFERENCES expenses(id),
+            candidate_commitment_id TEXT DEFAULT NULL,
+            detail                  TEXT NOT NULL DEFAULT '{}',
+            resolved_at             TEXT DEFAULT NULL,
+            resolution              TEXT DEFAULT NULL
+                CHECK(resolution IS NULL
+                      OR resolution IN ('CONFIRMED', 'REJECTED', 'MERGED', 'SPLIT', 'IGNORED')),
+            created_at              TEXT NOT NULL,
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id),
+            FOREIGN KEY (run_result_id, user_id) REFERENCES v4_run_results(id, user_id),
+            FOREIGN KEY (candidate_commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_link_conflicts (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id        TEXT DEFAULT NULL,
+            user_id              INTEGER NOT NULL,
+            family_id            TEXT DEFAULT NULL,
+            run_id               TEXT NOT NULL,
+            conflict_type        TEXT NOT NULL
+                CHECK(conflict_type IN (
+                    'ZERO_MATCHES', 'AMBIGUOUS_FAMILY', 'OVERLAPPING_WINDOW',
+                    'USER_ID_DRIFT', 'UNKNOWN'
+                )),
+            expected_match_count INTEGER DEFAULT NULL,
+            actual_match_count   INTEGER DEFAULT NULL,
+            detail               TEXT NOT NULL DEFAULT '{}',
+            resolved_at          TEXT DEFAULT NULL,
+            created_at           TEXT NOT NULL,
+            CHECK(commitment_id IS NOT NULL OR family_id IS NOT NULL),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_link_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id   TEXT DEFAULT NULL,
+            user_id         INTEGER NOT NULL,
+            family_id       TEXT DEFAULT NULL,
+            event_type      TEXT NOT NULL
+                CHECK(event_type IN (
+                    'FAMILY_CREATED', 'FAMILY_LINKED', 'FAMILY_UNLINKED',
+                    'ALIAS_ADDED', 'CONFLICT_DETECTED', 'CONFLICT_RESOLVED',
+                    'SNAPSHOT_CREATED', 'FAMILY_SUPERSEDED', 'FAMILY_REACTIVATED'
+                )),
+            detail          TEXT NOT NULL DEFAULT '{}',
+            created_at      TEXT NOT NULL,
+            created_by      TEXT NOT NULL DEFAULT 'SYSTEM',
+            CHECK(commitment_id IS NOT NULL OR family_id IS NOT NULL),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+    ''')
+
+    # Unified Commitments indexes
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_one_primary
+        ON pattern_families(commitment_id)
+        WHERE is_primary = 1 AND commitment_id IS NOT NULL AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_ongoing
+        ON pattern_families(user_id, primary_description_key)
+        WHERE is_split_discriminator = 0 AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_split_amount
+        ON pattern_families(user_id, primary_description_key, amount_cluster_agorot)
+        WHERE is_split_discriminator = 1 AND window_start IS NULL AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_split_window
+        ON pattern_families(user_id, primary_description_key, window_start, window_end)
+        WHERE is_split_discriminator = 1 AND amount_cluster_agorot IS NULL AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_split_full
+        ON pattern_families(user_id, primary_description_key, amount_cluster_agorot, window_start, window_end)
+        WHERE is_split_discriminator = 1
+          AND amount_cluster_agorot IS NOT NULL
+          AND window_start IS NOT NULL
+          AND family_status = 'ACTIVE'""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pf_commitment ON pattern_families(commitment_id) WHERE commitment_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pf_active ON pattern_families(user_id, family_status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vrr_family ON v4_run_results(family_id, created_at DESC) WHERE family_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vrr_run ON v4_run_results(run_id, user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccs_commitment ON commitment_classifier_snapshots(commitment_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ca_resolve ON commitment_authority(commitment_id, field_name, created_at DESC) WHERE is_active = 1")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_co_lookup ON commitment_occurrences(commitment_id, occurrence_date, status)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_finite ON commitment_occurrences(commitment_id, occurrence_index) WHERE occurrence_index IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_indefinite ON commitment_occurrences(commitment_id, occurrence_date) WHERE occurrence_index IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_linked_expense ON commitment_occurrences(linked_expense_id) WHERE linked_expense_id IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cel_member_exclusive ON commitment_expense_links(expense_id) WHERE membership_type IN ('MEMBER', 'OCCURRENCE_CONFIRMED')")
+
+    # Cross-user expense ownership triggers
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS trg_co_expense_owner_ins
+        BEFORE INSERT ON commitment_occurrences FOR EACH ROW
+        WHEN NEW.linked_expense_id IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'cross-user: linked_expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.linked_expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_co_expense_owner_upd
+        BEFORE UPDATE OF linked_expense_id ON commitment_occurrences FOR EACH ROW
+        WHEN NEW.linked_expense_id IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'cross-user: linked_expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.linked_expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_cel_expense_owner_ins
+        BEFORE INSERT ON commitment_expense_links FOR EACH ROW BEGIN
+            SELECT RAISE(ABORT, 'cross-user: expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_cel_expense_owner_upd
+        BEFORE UPDATE OF expense_id, user_id ON commitment_expense_links FOR EACH ROW BEGIN
+            SELECT RAISE(ABORT, 'cross-user: expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_cs_expense_owner_ins
+        BEFORE INSERT ON commitment_suggestions FOR EACH ROW
+        WHEN NEW.expense_id IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'cross-user: suggestion expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+    """)
+
     conn.commit()
     conn.close()
 
