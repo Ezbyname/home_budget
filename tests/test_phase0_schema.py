@@ -112,6 +112,7 @@ UC_INDEXES = [
     'idx_co_indefinite',
     'idx_co_linked_expense',
     'idx_cel_member_exclusive',
+    'idx_commitments_legacy_installment_unique',
 ]
 
 UC_TRIGGERS = [
@@ -788,3 +789,345 @@ def test_installments_table_unchanged(fresh_db):
         assert col in cols, f"installments missing column: {col}"
     for col in cols:
         assert not col.startswith('commitment'), f"Unexpected commitment col in installments: {col}"
+
+
+# ========== Phase 0.1: Legacy Installment 1:1 Uniqueness Invariant ===========
+
+def _make_installment(conn, inst_id=42):
+    """Insert a minimal valid legacy installment row."""
+    conn.execute("""
+        INSERT OR IGNORE INTO installments
+            (id, description, total_amount, total_payments, monthly_payment, start_date)
+        VALUES (?, 'Test Plan', 1000.00, 12, 83.33, '2024-01-01')
+    """, (inst_id,))
+
+
+def _make_commitment(conn, cid, user_id, legacy_id=None):
+    """Insert a minimal valid commitment row."""
+    conn.execute("""
+        INSERT INTO commitments
+            (id, user_id, linked_legacy_installment_id, created_at, updated_at)
+        VALUES (?, ?, ?, '2024-01-01T00:00:00', '2024-01-01T00:00:00')
+    """, (cid, user_id, legacy_id))
+
+
+class TestPhase01LegacyInstallmentUniqueness:
+    """Phase 0.1 — DB-level 1:1 constraint: one commitment per non-null legacy installment."""
+
+    # ── 1. Index exists after init_db ────────────────────────────────────────
+
+    def test_index_exists_after_init_db(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        rows = conn.execute("PRAGMA index_list('commitments')").fetchall()
+        names = {r[1] for r in rows}
+        conn.close()
+        assert 'idx_commitments_legacy_installment_unique' in names
+
+    # ── 2. Index is UNIQUE ───────────────────────────────────────────────────
+
+    def test_index_is_unique(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        rows = conn.execute("PRAGMA index_list('commitments')").fetchall()
+        idx = {r[1]: r for r in rows}
+        row = idx['idx_commitments_legacy_installment_unique']
+        # column 2 is "unique" flag (1 = unique)
+        assert row[2] == 1, "Index must be UNIQUE"
+        conn.close()
+
+    # ── 3. Index is partial ──────────────────────────────────────────────────
+
+    def test_index_is_partial(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        sql = conn.execute("""
+            SELECT sql FROM sqlite_master
+            WHERE type='index' AND name='idx_commitments_legacy_installment_unique'
+        """).fetchone()[0]
+        conn.close()
+        assert 'WHERE' in sql.upper(), "Index must be partial (contain WHERE clause)"
+
+    # ── 4. Indexed column is linked_legacy_installment_id ───────────────────
+
+    def test_indexed_column(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        info = conn.execute(
+            "PRAGMA index_info('idx_commitments_legacy_installment_unique')"
+        ).fetchall()
+        conn.close()
+        col_names = [r[2] for r in info]
+        assert col_names == ['linked_legacy_installment_id'], (
+            f"Expected ['linked_legacy_installment_id'], got {col_names}"
+        )
+
+    # ── 5. Stored predicate contains IS NOT NULL ─────────────────────────────
+
+    def test_predicate_is_not_null(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        sql = conn.execute("""
+            SELECT sql FROM sqlite_master
+            WHERE type='index' AND name='idx_commitments_legacy_installment_unique'
+        """).fetchone()[0]
+        conn.close()
+        assert 'IS NOT NULL' in sql.upper(), (
+            f"Predicate must contain IS NOT NULL; got: {sql!r}"
+        )
+
+    # ── 6. Duplicate non-null legacy ID is DB-rejected ───────────────────────
+
+    def test_duplicate_nonnull_legacy_id_rejected(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        _make_installment(conn, inst_id=42)
+        _make_commitment(conn, 'C-001', 1, legacy_id=42)
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            _make_commitment(conn, 'C-002', 1, legacy_id=42)
+            conn.commit()
+        conn.close()
+
+    # ── 7. Original commitment remains after rejected duplicate ───────────────
+
+    def test_original_commitment_survives_rejection(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        _make_installment(conn, inst_id=42)
+        _make_commitment(conn, 'C-001', 1, legacy_id=42)
+        conn.commit()
+        try:
+            _make_commitment(conn, 'C-002', 1, legacy_id=42)
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM commitments WHERE linked_legacy_installment_id = 42"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1
+
+    # ── 8. Multiple NULL values are allowed ──────────────────────────────────
+
+    def test_multiple_null_legacy_ids_allowed(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        _make_commitment(conn, 'C-NULL-1', 1, legacy_id=None)
+        _make_commitment(conn, 'C-NULL-2', 1, legacy_id=None)
+        _make_commitment(conn, 'C-NULL-3', 2, legacy_id=None)
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM commitments WHERE linked_legacy_installment_id IS NULL"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 3
+
+    # ── 9. Different non-null legacy IDs are both allowed ────────────────────
+
+    def test_different_nonnull_legacy_ids_both_allowed(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        _make_installment(conn, inst_id=42)
+        _make_installment(conn, inst_id=43)
+        _make_commitment(conn, 'C-001', 1, legacy_id=42)
+        _make_commitment(conn, 'C-002', 1, legacy_id=43)
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM commitments WHERE linked_legacy_installment_id IN (42, 43)"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 2
+
+    # ── 10. init_db() idempotent on fresh DB (index survives 2nd call) ───────
+
+    def test_init_db_idempotent_index_survives(self, fresh_db, app_module):
+        db_path, mod = fresh_db
+        orig = mod.DB_PATH
+        mod.DB_PATH = db_path
+        mod.init_db()  # second call
+        mod.DB_PATH = orig
+        conn = open_conn(db_path, foreign_keys=False)
+        rows = conn.execute("PRAGMA index_list('commitments')").fetchall()
+        names = {r[1] for r in rows}
+        conn.close()
+        assert 'idx_commitments_legacy_installment_unique' in names
+
+    # ── 11. Valid existing Phase 0 DB upgrades successfully ──────────────────
+
+    def test_valid_existing_db_upgrades_successfully(self, app_module, tmp_path):
+        """Simulate a valid pre-0.1 DB: commitments exist, new index absent, no duplicates."""
+        db_path = str(tmp_path / 'pre01.db')
+        # Build a bare DB without the new index by running init_db on a fresh path
+        orig = app_module.DB_PATH
+        app_module.DB_PATH = db_path
+        app_module.init_db()
+        app_module.DB_PATH = orig
+        # Verify the index IS present (since init_db now includes it);
+        # to simulate pre-0.1 we drop it manually, insert valid data, then re-apply
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP INDEX IF EXISTS idx_commitments_legacy_installment_unique")
+        conn.execute("""
+            INSERT INTO installments
+                (id, description, total_amount, total_payments, monthly_payment, start_date)
+            VALUES (99, 'Plan', 999.0, 6, 166.5, '2024-06-01')
+        """)
+        conn.execute("""
+            INSERT INTO commitments
+                (id, user_id, linked_legacy_installment_id, created_at, updated_at)
+            VALUES ('C-X', 1, 99, '2024-01-01T00:00:00', '2024-01-01T00:00:00')
+        """)
+        conn.commit()
+        conn.close()
+        # Re-apply init_db (upgrade)
+        app_module.DB_PATH = db_path
+        app_module.init_db()
+        app_module.DB_PATH = orig
+        # Index must now exist
+        conn = sqlite3.connect(db_path)
+        names = {r[1] for r in conn.execute("PRAGMA index_list('commitments')").fetchall()}
+        row = conn.execute(
+            "SELECT id, linked_legacy_installment_id FROM commitments WHERE id='C-X'"
+        ).fetchone()
+        fk_violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        conn.close()
+        assert 'idx_commitments_legacy_installment_unique' in names
+        assert row is not None and row[1] == 99
+        assert fk_violations == []
+
+    # ── 12. Existing valid data unchanged during schema upgrade ───────────────
+
+    def test_valid_data_unchanged_during_upgrade(self, app_module, tmp_path):
+        db_path = str(tmp_path / 'upgrade_data.db')
+        orig = app_module.DB_PATH
+        app_module.DB_PATH = db_path
+        app_module.init_db()
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP INDEX IF EXISTS idx_commitments_legacy_installment_unique")
+        conn.execute("""
+            INSERT INTO installments
+                (id, description, total_amount, total_payments, monthly_payment, start_date)
+            VALUES (77, 'Stable', 500.0, 5, 100.0, '2024-03-01')
+        """)
+        conn.execute("""
+            INSERT INTO commitments
+                (id, user_id, linked_legacy_installment_id, created_at, updated_at)
+            VALUES ('C-STABLE', 2, 77, '2024-01-01T00:00:00', '2024-01-01T00:00:00')
+        """)
+        conn.commit()
+        before = conn.execute(
+            "SELECT id, user_id, linked_legacy_installment_id FROM commitments WHERE id='C-STABLE'"
+        ).fetchone()
+        conn.close()
+        app_module.init_db()
+        app_module.DB_PATH = orig
+        conn = sqlite3.connect(db_path)
+        after = conn.execute(
+            "SELECT id, user_id, linked_legacy_installment_id FROM commitments WHERE id='C-STABLE'"
+        ).fetchone()
+        conn.close()
+        assert before == after
+
+    # ── 13. Pre-existing duplicate causes schema-application failure ──────────
+
+    def test_existing_duplicate_causes_schema_failure(self, app_module, tmp_path):
+        """
+        If a pre-0.1 DB already contains two commitments with the same non-null
+        linked_legacy_installment_id, applying init_db() must fail rather than
+        silently clean or modify data.
+        """
+        db_path = str(tmp_path / 'dup_pre01.db')
+        orig = app_module.DB_PATH
+        app_module.DB_PATH = db_path
+        app_module.init_db()
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP INDEX IF EXISTS idx_commitments_legacy_installment_unique")
+        conn.execute("""
+            INSERT INTO installments
+                (id, description, total_amount, total_payments, monthly_payment, start_date)
+            VALUES (55, 'Dup Plan', 600.0, 6, 100.0, '2024-02-01')
+        """)
+        conn.execute("""
+            INSERT INTO commitments
+                (id, user_id, linked_legacy_installment_id, created_at, updated_at)
+            VALUES ('C-DUP-A', 1, 55, '2024-01-01T00:00:00', '2024-01-01T00:00:00')
+        """)
+        conn.execute("""
+            INSERT INTO commitments
+                (id, user_id, linked_legacy_installment_id, created_at, updated_at)
+            VALUES ('C-DUP-B', 1, 55, '2024-01-01T00:00:00', '2024-01-01T00:00:00')
+        """)
+        conn.commit()
+        before_count = conn.execute(
+            "SELECT COUNT(*) FROM commitments WHERE linked_legacy_installment_id = 55"
+        ).fetchone()[0]
+        conn.close()
+        assert before_count == 2
+        # Applying init_db() must raise (SQLite cannot build the unique index)
+        with pytest.raises(Exception):
+            app_module.init_db()
+        app_module.DB_PATH = orig
+        # Verify: both rows still exist — no silent deletion or merge occurred
+        conn = sqlite3.connect(db_path)
+        after_count = conn.execute(
+            "SELECT COUNT(*) FROM commitments WHERE linked_legacy_installment_id = 55"
+        ).fetchone()[0]
+        ids = {r[0] for r in conn.execute(
+            "SELECT id FROM commitments WHERE linked_legacy_installment_id = 55"
+        ).fetchall()}
+        linked = {r[0] for r in conn.execute(
+            "SELECT linked_legacy_installment_id FROM commitments WHERE linked_legacy_installment_id = 55"
+        ).fetchall()}
+        conn.close()
+        assert after_count == 2, "Both duplicate rows must survive — no deletion"
+        assert ids == {'C-DUP-A', 'C-DUP-B'}, "Row identities must be unchanged"
+        assert linked == {55}, "linked_legacy_installment_id values must be unchanged"
+
+    # ── 14-17. Duplicates not deleted / merged / rewritten / cleaned ─────────
+    # (covered by test_existing_duplicate_causes_schema_failure assertions above)
+
+    # ── 18-20. Legacy table schemas, indexes, triggers unchanged ─────────────
+
+    def test_legacy_installments_schema_unchanged(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(installments)").fetchall()]
+        idxs = [r[1] for r in conn.execute("PRAGMA index_list('installments')").fetchall()]
+        trgs = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='installments'"
+        ).fetchall()]
+        conn.close()
+        for col in ['id', 'description', 'total_amount', 'total_payments',
+                    'payments_made', 'monthly_payment', 'start_date', 'user_id']:
+            assert col in cols, f"installments missing column: {col}"
+        # No Phase 0.1 indexes or triggers on legacy tables
+        for idx in idxs:
+            assert 'commitment' not in idx.lower()
+        assert trgs == []
+
+    def test_legacy_expenses_schema_unchanged(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(expenses)").fetchall()]
+        conn.close()
+        for col in ['id', 'date', 'category_id', 'amount', 'user_id']:
+            assert col in cols
+
+    def test_legacy_itl_schema_unchanged(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=False)
+        cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(installment_transaction_links)"
+        ).fetchall()]
+        conn.close()
+        for col in ['id', 'user_id', 'installment_id', 'expense_id', 'status']:
+            assert col in cols
+
+    # ── 21. PRAGMA foreign_key_check returns zero violations ─────────────────
+
+    def test_foreign_key_check_zero_violations(self, fresh_db):
+        db_path, _ = fresh_db
+        conn = open_conn(db_path, foreign_keys=True)
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        conn.close()
+        assert violations == []

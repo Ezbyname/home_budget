@@ -1733,6 +1733,9 @@ def init_db():
 
     # Unified Commitments indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_commitments_legacy_installment_unique
+        ON commitments(linked_legacy_installment_id)
+        WHERE linked_legacy_installment_id IS NOT NULL""")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_one_primary
         ON pattern_families(commitment_id)
         WHERE is_primary = 1 AND commitment_id IS NOT NULL AND family_status = 'ACTIVE'""")
