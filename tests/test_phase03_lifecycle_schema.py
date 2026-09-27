@@ -172,13 +172,37 @@ class TestFreshCcsLifecycle:
             (cid, user_id),
         )
 
+    def _ensure_rep_id(self, c, user_id=1):
+        """
+        Phase 0.4: V4_SINGLE snapshots require a non-NULL representative_run_result_id.
+        Insert a minimal family + run_result row (OR IGNORE) and return its ID.
+        This is a fixture-only change; no lifecycle assertion is affected.
+        """
+        _insert_family(c, "ccs_rep_fam", user_id, "ccs::rep::key")
+        rep_id = "ccs_rep_rr"
+        c.execute(
+            "INSERT OR IGNORE INTO v4_run_results "
+            "(id, run_id, user_id, family_id, description_key, stream_index, label, "
+            " cadence, recurrence_status, commitment_status, "
+            " classifier_lifecycle_status, budget_class, "
+            " reserve_eligible, monthly_reserve_contrib_agorot, "
+            " review_required, review_reasons, created_at) "
+            "VALUES (?,?,?,?, 'ccs::rep::key',0,'', "
+            "        'MONTHLY','RECURRING','CONFIRMED','ACTIVE','COMMITTED',0,0,0,'[]',"
+            "        '2024-01-01')",
+            (rep_id, "ccs_rep_run", user_id, "ccs_rep_fam"),
+        )
+        return rep_id
+
     def _insert_ccs(self, c, commitment_id, user_id, lifecycle):
+        # Phase 0.4: V4_SINGLE requires non-NULL representative_run_result_id.
+        rep_id = self._ensure_rep_id(c, user_id)
         c.execute(
             "INSERT INTO commitment_classifier_snapshots "
-            "(commitment_id, user_id, snapshot_type, "
+            "(commitment_id, user_id, snapshot_type, representative_run_result_id, "
             " classifier_lifecycle_status, created_at) "
-            "VALUES (?,?, 'V4_SINGLE', ?, '2024-01-01')",
-            (commitment_id, user_id, lifecycle),
+            "VALUES (?,?, 'V4_SINGLE', ?, ?, '2024-01-01')",
+            (commitment_id, user_id, rep_id, lifecycle),
         )
         return c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -198,11 +222,14 @@ class TestFreshCcsLifecycle:
         c = _conn(db)
         _insert_user(c)
         self._insert_commitment(c, "c1")
+        # Phase 0.4: V4_SINGLE requires non-NULL representative_run_result_id.
+        rep_id = self._ensure_rep_id(c)
         c.execute(
             "INSERT INTO commitment_classifier_snapshots "
-            "(commitment_id, user_id, snapshot_type, "
+            "(commitment_id, user_id, snapshot_type, representative_run_result_id, "
             " classifier_lifecycle_status, created_at) "
-            "VALUES ('c1', 1, 'V4_SINGLE', NULL, '2024-01-01')"
+            "VALUES ('c1', 1, 'V4_SINGLE', ?, NULL, '2024-01-01')",
+            (rep_id,),
         )
         ccs_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
         c.commit()

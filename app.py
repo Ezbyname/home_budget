@@ -718,6 +718,154 @@ def _upgrade_lifecycle_check(conn):
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _upgrade_phase04_dedup_indexes(conn):
+    """
+    Phase 0.4 — Idempotently add DB-enforced idempotence constraints for Phase 2B.
+
+    Adds six partial UNIQUE indexes across:
+        commitment_classifier_snapshots  (1 index)
+        commitment_suggestions           (3 indexes)
+        commitment_link_conflicts        (2 indexes)
+
+    Also adds two INSERT/UPDATE triggers to enforce that every V4_SINGLE snapshot
+    row carries a non-NULL representative_run_result_id, closing the gap left by
+    the dedup index's WHERE clause (which excludes NULL rows from the index, meaning
+    NULL-representative V4_SINGLE rows would otherwise bypass deduplication).
+
+    All six indexes and both triggers are created inside a single SAVEPOINT.
+    If any creation fails (e.g. due to duplicate pre-existing data violating a
+    new UNIQUE index), the entire upgrade rolls back — no partial Phase 0.4 schema
+    is left behind.  Existing rows are never deleted or merged automatically.
+
+    No PRAGMA foreign_keys=OFF is required (no table rebuild occurs).
+    Idempotent: safe to call on a DB that already has Phase 0.4 applied.
+    """
+    # Detect-already-applied: all six indexes AND both triggers must be present.
+    already = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE (type='index' AND name IN ("
+        "  'idx_ccs_v4single_dedup','idx_cs_possible_match_dedup',"
+        "  'idx_cs_new_recurring_dedup','idx_cs_ambiguous_dedup',"
+        "  'idx_clc_family_only_dedup','idx_clc_overlap_dedup'"
+        ")) OR (type='trigger' AND name IN ("
+        "  'trg_ccs_v4single_rep_required_ins',"
+        "  'trg_ccs_v4single_rep_required_upd'"
+        "))"
+    ).fetchone()[0]
+    if already == 8:
+        return  # idempotent — Phase 0.4 fully applied
+
+    # Check the tables we are indexing exist (they may not on a very old DB).
+    tables_needed = {
+        'commitment_classifier_snapshots',
+        'commitment_suggestions',
+        'commitment_link_conflicts',
+    }
+    existing_tables = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if not tables_needed.issubset(existing_tables):
+        return  # tables not yet created; CREATE TABLE IF NOT EXISTS handles them
+
+    conn.execute("SAVEPOINT sp_phase04_dedup")
+    try:
+        # ── 1. V4_SINGLE snapshot: one snapshot per (commitment, run_result) ──
+        # Using IF NOT EXISTS makes each step idempotent against partial prior state
+        # (e.g. if fresh-DB path created some indexes before a table rebuild removed
+        # others). Duplicate-data violations are still detected because the UNIQUE
+        # constraint itself rejects conflicting rows — IF NOT EXISTS only skips on
+        # duplicate index NAME, not duplicate data.
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ccs_v4single_dedup
+            ON commitment_classifier_snapshots(commitment_id, representative_run_result_id)
+            WHERE snapshot_type = 'V4_SINGLE'
+              AND representative_run_result_id IS NOT NULL
+        """)
+
+        # ── 2–4. commitment_suggestions dedup indexes ────────────────────────
+
+        # POSSIBLE_MATCH: candidate always present
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_possible_match_dedup
+            ON commitment_suggestions(user_id, run_result_id, candidate_commitment_id)
+            WHERE suggestion_type = 'POSSIBLE_MATCH'
+              AND run_result_id IS NOT NULL
+              AND candidate_commitment_id IS NOT NULL
+        """)
+
+        # NEW_RECURRING: no candidate
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_new_recurring_dedup
+            ON commitment_suggestions(user_id, run_result_id)
+            WHERE suggestion_type = 'NEW_RECURRING'
+              AND run_result_id IS NOT NULL
+              AND candidate_commitment_id IS NULL
+        """)
+
+        # AMBIGUOUS_FAMILY: no single candidate resolved
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_ambiguous_dedup
+            ON commitment_suggestions(user_id, run_result_id)
+            WHERE suggestion_type = 'AMBIGUOUS_FAMILY'
+              AND run_result_id IS NOT NULL
+              AND candidate_commitment_id IS NULL
+        """)
+
+        # ── 5–6. commitment_link_conflicts dedup indexes ─────────────────────
+
+        # Family-only anchor (AMBIGUOUS_FAMILY, USER_ID_DRIFT, ZERO_MATCHES)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_family_only_dedup
+            ON commitment_link_conflicts(run_id, user_id, family_id, conflict_type)
+            WHERE family_id IS NOT NULL
+              AND commitment_id IS NULL
+        """)
+
+        # Both anchors present (OVERLAPPING_WINDOW and future both-anchor types)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_overlap_dedup
+            ON commitment_link_conflicts(run_id, user_id, family_id, commitment_id, conflict_type)
+            WHERE family_id IS NOT NULL
+              AND commitment_id IS NOT NULL
+        """)
+
+        # ── V4_SINGLE representative-required triggers ───────────────────────
+        # Each trigger is a separate conn.execute() call — executescript() would
+        # issue an implicit COMMIT and destroy the enclosing SAVEPOINT.
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_ins
+            BEFORE INSERT ON commitment_classifier_snapshots FOR EACH ROW
+            WHEN NEW.snapshot_type = 'V4_SINGLE'
+              AND NEW.representative_run_result_id IS NULL
+            BEGIN
+                SELECT RAISE(ABORT,
+                    'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_upd
+            BEFORE UPDATE OF snapshot_type, representative_run_result_id
+            ON commitment_classifier_snapshots FOR EACH ROW
+            WHEN NEW.snapshot_type = 'V4_SINGLE'
+              AND NEW.representative_run_result_id IS NULL
+            BEGIN
+                SELECT RAISE(ABORT,
+                    'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+            END
+        """)
+
+        conn.execute("RELEASE SAVEPOINT sp_phase04_dedup")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT sp_phase04_dedup")
+            conn.execute("RELEASE SAVEPOINT sp_phase04_dedup")
+        except Exception:
+            pass
+        raise
+
+
 def init_db():
     conn = get_db()
     conn.executescript('''
@@ -1972,6 +2120,9 @@ def init_db():
     # Phase 0.3 — expand classifier_lifecycle_status CHECK to include V4 raw values (idempotent)
     _upgrade_lifecycle_check(conn)
 
+    # Phase 0.4 — add Phase 2B idempotence constraints (idempotent)
+    _upgrade_phase04_dedup_indexes(conn)
+
     # Unified Commitments indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_commitments_legacy_installment_unique
@@ -2007,6 +2158,35 @@ def init_db():
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_linked_expense ON commitment_occurrences(linked_expense_id) WHERE linked_expense_id IS NOT NULL")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cel_member_exclusive ON commitment_expense_links(expense_id) WHERE membership_type IN ('MEMBER', 'OCCURRENCE_CONFIRMED')")
 
+    # Phase 0.4 — Phase 2B idempotence constraints (fresh-DB path)
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_ccs_v4single_dedup
+        ON commitment_classifier_snapshots(commitment_id, representative_run_result_id)
+        WHERE snapshot_type = 'V4_SINGLE'
+          AND representative_run_result_id IS NOT NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_possible_match_dedup
+        ON commitment_suggestions(user_id, run_result_id, candidate_commitment_id)
+        WHERE suggestion_type = 'POSSIBLE_MATCH'
+          AND run_result_id IS NOT NULL
+          AND candidate_commitment_id IS NOT NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_new_recurring_dedup
+        ON commitment_suggestions(user_id, run_result_id)
+        WHERE suggestion_type = 'NEW_RECURRING'
+          AND run_result_id IS NOT NULL
+          AND candidate_commitment_id IS NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_ambiguous_dedup
+        ON commitment_suggestions(user_id, run_result_id)
+        WHERE suggestion_type = 'AMBIGUOUS_FAMILY'
+          AND run_result_id IS NOT NULL
+          AND candidate_commitment_id IS NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_family_only_dedup
+        ON commitment_link_conflicts(run_id, user_id, family_id, conflict_type)
+        WHERE family_id IS NOT NULL
+          AND commitment_id IS NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_overlap_dedup
+        ON commitment_link_conflicts(run_id, user_id, family_id, commitment_id, conflict_type)
+        WHERE family_id IS NOT NULL
+          AND commitment_id IS NOT NULL""")
+
     # Cross-user expense ownership triggers
     conn.executescript("""
         CREATE TRIGGER IF NOT EXISTS trg_co_expense_owner_ins
@@ -2040,6 +2220,25 @@ def init_db():
         WHEN NEW.expense_id IS NOT NULL BEGIN
             SELECT RAISE(ABORT, 'cross-user: suggestion expense_id owner mismatch')
             WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_ins
+        BEFORE INSERT ON commitment_classifier_snapshots FOR EACH ROW
+        WHEN NEW.snapshot_type = 'V4_SINGLE'
+          AND NEW.representative_run_result_id IS NULL
+        BEGIN
+            SELECT RAISE(ABORT,
+                'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_upd
+        BEFORE UPDATE OF snapshot_type, representative_run_result_id
+        ON commitment_classifier_snapshots FOR EACH ROW
+        WHEN NEW.snapshot_type = 'V4_SINGLE'
+          AND NEW.representative_run_result_id IS NULL
+        BEGIN
+            SELECT RAISE(ABORT,
+                'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
         END;
     """)
 
