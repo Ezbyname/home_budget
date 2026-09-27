@@ -552,6 +552,172 @@ def _upgrade_cel_linked_by(conn):
         raise
 
 
+def _upgrade_lifecycle_check(conn):
+    """
+    Phase 0.3 — Idempotently expand classifier_lifecycle_status CHECK on:
+        v4_run_results
+        commitment_classifier_snapshots
+
+    The old CHECK allowed: ACTIVE, PAUSED, ENDED, CANCELLED
+    The new CHECK allows:  ACTIVE, POSSIBLY_STOPPED, CANCELLED, ENDED, UNKNOWN, PAUSED
+
+    SQLite cannot ALTER a CHECK constraint in place.  We use the rebuild pattern:
+        CREATE _new → INSERT all rows → row-count check → DROP old → RENAME new
+
+    v4_run_results is a FK parent for:
+        commitment_classifier_snapshots.representative_run_result_id
+        commitment_expense_links.run_result_id
+        commitment_suggestions.run_result_id
+    Rebuilding a FK parent requires PRAGMA foreign_keys = OFF for the duration.
+    We restore it to ON unconditionally before returning.
+
+    All writes are wrapped in a SAVEPOINT so any failure rolls back completely.
+    Raises on row-count mismatch or any other failure — never silently skips.
+    No-op when the table is absent or when POSSIBLY_STOPPED is already present.
+    """
+    _NEW_CHECK_VALUES = (
+        "'ACTIVE', 'POSSIBLY_STOPPED', 'CANCELLED', 'ENDED', 'UNKNOWN', 'PAUSED'"
+    )
+
+    row_vrr = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='v4_run_results'"
+    ).fetchone()
+    if row_vrr is None:
+        return  # table does not exist yet — CREATE TABLE IF NOT EXISTS handles it
+
+    already_upgraded = (
+        "'POSSIBLY_STOPPED'" in row_vrr[0] or '"POSSIBLY_STOPPED"' in row_vrr[0]
+    )
+    if already_upgraded:
+        return  # idempotent — already at Phase 0.3 schema
+
+    # Must disable FK enforcement to rebuild a parent table.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("SAVEPOINT sp_lifecycle_upgrade_03")
+    try:
+        # ── v4_run_results ────────────────────────────────────────────────────
+        conn.execute(f"""
+            CREATE TABLE v4_run_results_new (
+                id                              TEXT NOT NULL,
+                run_id                          TEXT NOT NULL,
+                user_id                         INTEGER NOT NULL,
+                family_id                       TEXT DEFAULT NULL,
+                description_key                 TEXT NOT NULL,
+                stream_index                    INTEGER NOT NULL DEFAULT 0,
+                label                           TEXT NOT NULL DEFAULT '',
+                planning_amount_agorot          INTEGER DEFAULT NULL,
+                cadence                         TEXT NOT NULL DEFAULT 'UNKNOWN',
+                recurrence_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+                commitment_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+                classifier_lifecycle_status     TEXT NOT NULL DEFAULT 'ACTIVE'
+                    CHECK(classifier_lifecycle_status IN ({_NEW_CHECK_VALUES})),
+                budget_class                    TEXT NOT NULL DEFAULT 'UNKNOWN',
+                reserve_eligible                INTEGER NOT NULL DEFAULT 0
+                    CHECK(reserve_eligible IN (0, 1)),
+                monthly_reserve_contrib_agorot  INTEGER NOT NULL DEFAULT 0,
+                cadence_coverage                REAL DEFAULT NULL,
+                evidence_month_count            INTEGER DEFAULT NULL,
+                review_required                 INTEGER NOT NULL DEFAULT 0
+                    CHECK(review_required IN (0, 1)),
+                review_reasons                  TEXT NOT NULL DEFAULT '[]',
+                created_at                      TEXT NOT NULL,
+                PRIMARY KEY (id),
+                UNIQUE (id, user_id),
+                FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO v4_run_results_new
+                SELECT id, run_id, user_id, family_id,
+                       description_key, stream_index, label,
+                       planning_amount_agorot, cadence,
+                       recurrence_status, commitment_status,
+                       classifier_lifecycle_status, budget_class,
+                       reserve_eligible, monthly_reserve_contrib_agorot,
+                       cadence_coverage, evidence_month_count,
+                       review_required, review_reasons, created_at
+                FROM v4_run_results
+        """)
+        cnt_old = conn.execute("SELECT COUNT(*) FROM v4_run_results").fetchone()[0]
+        cnt_new = conn.execute("SELECT COUNT(*) FROM v4_run_results_new").fetchone()[0]
+        if cnt_old != cnt_new:
+            raise RuntimeError(
+                f"Phase 0.3 v4_run_results upgrade row-count mismatch: "
+                f"old={cnt_old} new={cnt_new}"
+            )
+        conn.execute("DROP TABLE v4_run_results")
+        conn.execute("ALTER TABLE v4_run_results_new RENAME TO v4_run_results")
+
+        # ── commitment_classifier_snapshots ───────────────────────────────────
+        row_ccs = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='commitment_classifier_snapshots'"
+        ).fetchone()
+        if row_ccs is not None:
+            conn.execute(f"""
+                CREATE TABLE commitment_classifier_snapshots_new (
+                    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    commitment_id                   TEXT NOT NULL,
+                    user_id                         INTEGER NOT NULL,
+                    snapshot_type                   TEXT NOT NULL
+                        CHECK(snapshot_type IN ('V4_SINGLE', 'V4_CANONICAL_MERGED')),
+                    representative_run_result_id    TEXT DEFAULT NULL,
+                    constituent_run_result_ids      TEXT NOT NULL DEFAULT '[]',
+                    recurrence_status               TEXT DEFAULT NULL,
+                    commitment_status               TEXT DEFAULT NULL,
+                    classifier_lifecycle_status     TEXT DEFAULT NULL
+                        CHECK(classifier_lifecycle_status IS NULL
+                              OR classifier_lifecycle_status IN ({_NEW_CHECK_VALUES})),
+                    budget_class                    TEXT DEFAULT NULL,
+                    reserve_eligible                INTEGER DEFAULT NULL
+                        CHECK(reserve_eligible IS NULL OR reserve_eligible IN (0, 1)),
+                    monthly_reserve_contrib_agorot  INTEGER DEFAULT NULL,
+                    cadence                         TEXT DEFAULT NULL,
+                    created_at                      TEXT NOT NULL,
+                    FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+                    FOREIGN KEY (representative_run_result_id, user_id)
+                        REFERENCES v4_run_results(id, user_id)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO commitment_classifier_snapshots_new
+                    SELECT id, commitment_id, user_id, snapshot_type,
+                           representative_run_result_id, constituent_run_result_ids,
+                           recurrence_status, commitment_status,
+                           classifier_lifecycle_status, budget_class,
+                           reserve_eligible, monthly_reserve_contrib_agorot,
+                           cadence, created_at
+                    FROM commitment_classifier_snapshots
+            """)
+            cnt_old_ccs = conn.execute(
+                "SELECT COUNT(*) FROM commitment_classifier_snapshots"
+            ).fetchone()[0]
+            cnt_new_ccs = conn.execute(
+                "SELECT COUNT(*) FROM commitment_classifier_snapshots_new"
+            ).fetchone()[0]
+            if cnt_old_ccs != cnt_new_ccs:
+                raise RuntimeError(
+                    f"Phase 0.3 commitment_classifier_snapshots upgrade row-count mismatch: "
+                    f"old={cnt_old_ccs} new={cnt_new_ccs}"
+                )
+            conn.execute("DROP TABLE commitment_classifier_snapshots")
+            conn.execute(
+                "ALTER TABLE commitment_classifier_snapshots_new "
+                "RENAME TO commitment_classifier_snapshots"
+            )
+
+        conn.execute("RELEASE SAVEPOINT sp_lifecycle_upgrade_03")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT sp_lifecycle_upgrade_03")
+            conn.execute("RELEASE SAVEPOINT sp_lifecycle_upgrade_03")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def init_db():
     conn = get_db()
     conn.executescript('''
@@ -1802,6 +1968,9 @@ def init_db():
 
     # Phase 0.2 — upgrade existing commitment_expense_links.linked_by CHECK (idempotent)
     _upgrade_cel_linked_by(conn)
+
+    # Phase 0.3 — expand classifier_lifecycle_status CHECK to include V4 raw values (idempotent)
+    _upgrade_lifecycle_check(conn)
 
     # Unified Commitments indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
