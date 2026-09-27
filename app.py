@@ -483,6 +483,75 @@ def _enqueue_merchant_for_ai(conn, user_id: int, merchant_key: str,
     )
 
 
+def _upgrade_cel_linked_by(conn):
+    """
+    Phase 0.2 — Idempotently upgrade commitment_expense_links.linked_by CHECK
+    to add 'MIGRATION' to the allowed set.
+
+    SQLite cannot ALTER a CHECK constraint in place.  This function detects the
+    old schema (no 'MIGRATION') and atomically recreates the table via:
+        CREATE new → INSERT all rows → DROP old → RENAME new → old name
+
+    Wrapped in a SAVEPOINT so any failure rolls back completely.
+    Raises on row-count mismatch or any other failure — never silently skips.
+    No-op when the table is absent (handled by CREATE TABLE IF NOT EXISTS above)
+    or when 'MIGRATION' is already present.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='commitment_expense_links'"
+    ).fetchone()
+    if row is None:
+        return  # table does not exist yet — fresh DB path, CREATE TABLE IF NOT EXISTS above handles it
+    if "'MIGRATION'" in row[0] or '"MIGRATION"' in row[0]:
+        return  # already upgraded, idempotent
+
+    conn.execute("SAVEPOINT sp_cel_upgrade_02")
+    try:
+        conn.execute("""
+            CREATE TABLE commitment_expense_links_new (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                commitment_id       TEXT NOT NULL,
+                user_id             INTEGER NOT NULL,
+                expense_id          INTEGER NOT NULL REFERENCES expenses(id),
+                membership_type     TEXT NOT NULL DEFAULT 'MEMBER'
+                    CHECK(membership_type IN ('MEMBER', 'EXCLUDED', 'OCCURRENCE_CONFIRMED')),
+                linked_by           TEXT NOT NULL DEFAULT 'AUTO'
+                    CHECK(linked_by IN ('AUTO', 'MANUAL', 'V4_CLASSIFIER', 'MIGRATION')),
+                family_id           TEXT DEFAULT NULL,
+                run_result_id       TEXT DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                UNIQUE(user_id, expense_id, commitment_id),
+                FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+                FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id),
+                FOREIGN KEY (run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO commitment_expense_links_new
+                (id, commitment_id, user_id, expense_id, membership_type,
+                 linked_by, family_id, run_result_id, created_at)
+            SELECT id, commitment_id, user_id, expense_id, membership_type,
+                   linked_by, family_id, run_result_id, created_at
+            FROM commitment_expense_links
+        """)
+        count_old = conn.execute("SELECT COUNT(*) FROM commitment_expense_links").fetchone()[0]
+        count_new = conn.execute("SELECT COUNT(*) FROM commitment_expense_links_new").fetchone()[0]
+        if count_old != count_new:
+            raise RuntimeError(
+                f"Phase 0.2 CEL upgrade row-count mismatch: old={count_old} new={count_new}"
+            )
+        conn.execute("DROP TABLE commitment_expense_links")
+        conn.execute("ALTER TABLE commitment_expense_links_new RENAME TO commitment_expense_links")
+        conn.execute("RELEASE SAVEPOINT sp_cel_upgrade_02")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT sp_cel_upgrade_02")
+            conn.execute("RELEASE SAVEPOINT sp_cel_upgrade_02")
+        except Exception:
+            pass
+        raise
+
+
 def init_db():
     conn = get_db()
     conn.executescript('''
@@ -1656,7 +1725,7 @@ def init_db():
             membership_type     TEXT NOT NULL DEFAULT 'MEMBER'
                 CHECK(membership_type IN ('MEMBER', 'EXCLUDED', 'OCCURRENCE_CONFIRMED')),
             linked_by           TEXT NOT NULL DEFAULT 'AUTO'
-                CHECK(linked_by IN ('AUTO', 'MANUAL', 'V4_CLASSIFIER')),
+                CHECK(linked_by IN ('AUTO', 'MANUAL', 'V4_CLASSIFIER', 'MIGRATION')),
             family_id           TEXT DEFAULT NULL,
             run_result_id       TEXT DEFAULT NULL,
             created_at          TEXT NOT NULL,
@@ -1730,6 +1799,9 @@ def init_db():
             FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
         );
     ''')
+
+    # Phase 0.2 — upgrade existing commitment_expense_links.linked_by CHECK (idempotent)
+    _upgrade_cel_linked_by(conn)
 
     # Unified Commitments indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
