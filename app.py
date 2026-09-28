@@ -866,6 +866,366 @@ def _upgrade_phase04_dedup_indexes(conn):
         raise
 
 
+# ── Phase 0.5 — Authority Identity Schema ────────────────────────────────────
+
+import enum as _enum
+import re as _re
+
+
+class AuthoritySchemaState(_enum.Enum):
+    NO_TABLE   = "NO_TABLE"
+    PRE_0_5    = "PRE_0_5"
+    PHASE_0_5  = "PHASE_0_5"
+    HYBRID     = "HYBRID"
+
+
+def _detect_authority_schema(conn) -> AuthoritySchemaState:
+    """
+    Classify the current commitment_authority schema into one of four states.
+    Returns NO_TABLE if the table does not exist.
+    Returns PRE_0_5 only when ALL eight fingerprint conditions hold exactly.
+    Returns PHASE_0_5 only when ALL nine fingerprint conditions hold exactly.
+    Returns HYBRID for anything else — fails closed.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='commitment_authority'"
+    ).fetchone()
+    if not exists:
+        return AuthoritySchemaState.NO_TABLE
+
+    # ── Column fingerprint (both states share the same 12 columns) ───────────
+    cols = conn.execute("PRAGMA table_info(commitment_authority)").fetchall()
+    expected_cols = [
+        # (name, type, notnull, dflt_value)
+        # Note: PRAGMA table_info returns 'NULL' (string) for DEFAULT NULL columns,
+        # not Python None. None means no default was declared at all.
+        ("id",               "INTEGER", 0, None),
+        ("commitment_id",    "TEXT",    1, None),
+        ("user_id",          "INTEGER", 1, None),
+        ("field_name",       "TEXT",    1, None),
+        ("value",            "TEXT",    0, "NULL"),
+        ("authority_source", "TEXT",    1, None),
+        ("override_id",      "TEXT",    1, None),
+        ("is_active",        "INTEGER", 1, "1"),
+        ("created_at",       "TEXT",    1, None),
+        ("created_by",       "INTEGER", 1, None),
+        ("revoked_at",       "TEXT",    0, "NULL"),
+        ("revoked_by",       "INTEGER", 0, "NULL"),
+    ]
+    actual_cols = [(r[1], r[2], r[3], r[4]) for r in cols]
+    if actual_cols != expected_cols:
+        return AuthoritySchemaState.HYBRID
+
+    # ── FK fingerprint ────────────────────────────────────────────────────────
+    fk_rows = conn.execute("PRAGMA foreign_key_list(commitment_authority)").fetchall()
+    fk_map = {}
+    for r in fk_rows:
+        fk_id, seq, table, from_col, to_col = r[0], r[1], r[2], r[3], r[4]
+        if fk_id == 0:
+            fk_map[from_col] = (table, to_col)
+    if fk_map.get("commitment_id") != ("commitments", "id"):
+        return AuthoritySchemaState.HYBRID
+    if fk_map.get("user_id") != ("commitments", "user_id"):
+        return AuthoritySchemaState.HYBRID
+
+    # ── DDL CHECK fingerprint ─────────────────────────────────────────────────
+    ddl_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='commitment_authority'"
+    ).fetchone()
+    if not ddl_row:
+        return AuthoritySchemaState.HYBRID
+    norm = _re.sub(r'\s+', ' ', ddl_row[0].lower())
+    has_auth_source_check = (
+        "in ('manual_override', 'family_review')" in norm or
+        "in ('manual_override','family_review')" in norm
+    )
+    if not has_auth_source_check:
+        return AuthoritySchemaState.HYBRID
+
+    # ── Index inventory ───────────────────────────────────────────────────────
+    index_rows = conn.execute("PRAGMA index_list(commitment_authority)").fetchall()
+    # index_list columns: seq, name, unique, origin, partial
+    index_data = {}
+    for r in index_rows:
+        name, unique, origin, partial = r[1], bool(r[2]), r[3], bool(r[4])
+        xinfo = conn.execute(f"PRAGMA index_xinfo('{name}')").fetchall()
+        key_cols = [(xi[2], xi[3]) for xi in xinfo if xi[5] == 1]  # (col_name, desc) where key=1
+        index_data[name] = {
+            "unique":   unique,
+            "partial":  partial,
+            "origin":   origin,
+            "key_cols": key_cols,
+        }
+
+    has_old_unique = any(
+        v["unique"] and not v["partial"] and v["key_cols"] == [("override_id", 0)]
+        for v in index_data.values()
+    )
+    has_instance   = "idx_ca_active_instance"    in index_data
+    has_field_src  = "idx_ca_active_field_source" in index_data
+
+    # ── Validate idx_ca_resolve ────────────────────────────────────────────────
+    def _resolve_ok():
+        if "idx_ca_resolve" not in index_data:
+            return False
+        d = index_data["idx_ca_resolve"]
+        if d["unique"] or not d["partial"]:
+            return False
+        if d["key_cols"] != [("commitment_id", 0), ("field_name", 0), ("created_at", 1)]:
+            return False
+        # Validate predicate text
+        pred_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ca_resolve'"
+        ).fetchone()
+        if not pred_row:
+            return False
+        pred_norm = _re.sub(r'\s+', ' ', pred_row[0].lower())
+        return "where is_active = 1" in pred_norm
+
+    # ── Revocation CHECKs ─────────────────────────────────────────────────────
+    has_check_no_revoke_when_active = (
+        "is_active = 0 or" in norm and
+        "revoked_at is null and revoked_by is null" in norm
+    )
+    has_check_revoke_when_inactive = "is_active = 1 or revoked_at is not null" in norm
+
+    # ── PRE_0_5 classification ────────────────────────────────────────────────
+    if (
+        has_old_unique and
+        not has_instance and
+        not has_field_src and
+        not has_check_no_revoke_when_active and
+        not has_check_revoke_when_inactive and
+        _resolve_ok()
+    ):
+        return AuthoritySchemaState.PRE_0_5
+
+    # ── PHASE_0_5 classification ──────────────────────────────────────────────
+    def _instance_ok():
+        if "idx_ca_active_instance" not in index_data:
+            return False
+        d = index_data["idx_ca_active_instance"]
+        if not d["unique"] or not d["partial"]:
+            return False
+        if d["key_cols"] != [("user_id", 0), ("commitment_id", 0), ("override_id", 0)]:
+            return False
+        pred_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ca_active_instance'"
+        ).fetchone()
+        if not pred_row:
+            return False
+        p = _re.sub(r'\s+', ' ', pred_row[0].lower())
+        return "where is_active = 1" in p
+
+    def _field_src_ok():
+        if "idx_ca_active_field_source" not in index_data:
+            return False
+        d = index_data["idx_ca_active_field_source"]
+        if not d["unique"] or not d["partial"]:
+            return False
+        if d["key_cols"] != [("user_id", 0), ("commitment_id", 0), ("field_name", 0), ("authority_source", 0)]:
+            return False
+        pred_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ca_active_field_source'"
+        ).fetchone()
+        if not pred_row:
+            return False
+        p = _re.sub(r'\s+', ' ', pred_row[0].lower())
+        return "where is_active = 1" in p
+
+    if (
+        not has_old_unique and
+        has_check_no_revoke_when_active and
+        has_check_revoke_when_inactive and
+        _resolve_ok() and
+        _instance_ok() and
+        _field_src_ok()
+    ):
+        return AuthoritySchemaState.PHASE_0_5
+
+    return AuthoritySchemaState.HYBRID
+
+
+_PHASE05_AUTHORITY_DDL = """
+    CREATE TABLE commitment_authority (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        commitment_id       TEXT NOT NULL,
+        user_id             INTEGER NOT NULL,
+        field_name          TEXT NOT NULL,
+        value               TEXT DEFAULT NULL,
+        authority_source    TEXT NOT NULL
+            CHECK(authority_source IN ('MANUAL_OVERRIDE', 'FAMILY_REVIEW')),
+        override_id         TEXT NOT NULL,
+        is_active           INTEGER NOT NULL DEFAULT 1
+            CHECK(is_active IN (0, 1)),
+        created_at          TEXT NOT NULL,
+        created_by          INTEGER NOT NULL,
+        revoked_at          TEXT DEFAULT NULL,
+        revoked_by          INTEGER DEFAULT NULL,
+        CHECK(is_active = 0 OR (revoked_at IS NULL AND revoked_by IS NULL)),
+        CHECK(is_active = 1 OR revoked_at IS NOT NULL),
+        FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+    )
+"""
+
+
+def _create_phase05_fresh(conn):
+    """
+    Atomically create the full Phase 0.5 commitment_authority schema on a DB
+    that has no commitment_authority table. Uses a SAVEPOINT; rolls back fully
+    on any failure, leaving no partial schema.
+    """
+    conn.execute("SAVEPOINT sp_phase05_authority_fresh")
+    try:
+        conn.execute(_PHASE05_AUTHORITY_DDL)
+        conn.execute(
+            "CREATE INDEX idx_ca_resolve "
+            "ON commitment_authority(commitment_id, field_name, created_at DESC) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_instance "
+            "ON commitment_authority(user_id, commitment_id, override_id) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_field_source "
+            "ON commitment_authority(user_id, commitment_id, field_name, authority_source) "
+            "WHERE is_active = 1"
+        )
+        state = _detect_authority_schema(conn)
+        if state != AuthoritySchemaState.PHASE_0_5:
+            raise RuntimeError(
+                f"Phase 0.5 fresh creation produced unexpected state: {state}"
+            )
+        fk_violations = conn.execute(
+            "PRAGMA foreign_key_check(commitment_authority)"
+        ).fetchall()
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 0.5 fresh creation produced FK violations: {fk_violations}"
+            )
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_fresh")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT sp_phase05_authority_fresh")
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_fresh")
+        raise
+
+
+def _migrate_to_phase05(conn):
+    """
+    Atomically migrate a PRE_0_5 commitment_authority table to Phase 0.5.
+    Rebuilds the table to remove UNIQUE(override_id) and add revocation CHECKs,
+    then creates the three Phase 0.5 indexes.  Rolls back fully on any failure.
+    """
+    conn.execute("SAVEPOINT sp_phase05_authority_migrate")
+    try:
+        # Gather existing rows before DDL
+        rows = conn.execute(
+            "SELECT id, commitment_id, user_id, field_name, value, authority_source, "
+            "       override_id, is_active, created_at, created_by, revoked_at, revoked_by "
+            "FROM commitment_authority"
+        ).fetchall()
+
+        # Persist max id for AUTOINCREMENT continuity
+        max_id_row = conn.execute("SELECT MAX(id) FROM commitment_authority").fetchone()
+        max_id = max_id_row[0] if max_id_row[0] is not None else 0
+
+        # Rename old table aside
+        conn.execute("ALTER TABLE commitment_authority RENAME TO commitment_authority_pre05")
+
+        # Create Phase 0.5 table
+        conn.execute(_PHASE05_AUTHORITY_DDL)
+
+        # Restore rows — validate CHECKs on copy
+        for row in rows:
+            (rid, commitment_id, user_id, field_name, value, authority_source,
+             override_id, is_active, created_at, created_by, revoked_at, revoked_by) = row
+            conn.execute(
+                "INSERT INTO commitment_authority "
+                "(id, commitment_id, user_id, field_name, value, authority_source, "
+                " override_id, is_active, created_at, created_by, revoked_at, revoked_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, commitment_id, user_id, field_name, value, authority_source,
+                 override_id, is_active, created_at, created_by, revoked_at, revoked_by)
+            )
+
+        # Ensure AUTOINCREMENT sequence is set correctly
+        conn.execute(
+            "INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('commitment_authority', ?)",
+            (max_id,)
+        )
+
+        # Drop old table BEFORE creating new indexes: the old table's idx_ca_resolve
+        # is still named 'idx_ca_resolve' after the RENAME, and CREATE INDEX would
+        # fail with "index already exists" if the old table (and its indexes) still
+        # exist when we try to create new indexes on the new table.
+        conn.execute("DROP TABLE commitment_authority_pre05")
+
+        # Create Phase 0.5 indexes
+        conn.execute(
+            "CREATE INDEX idx_ca_resolve "
+            "ON commitment_authority(commitment_id, field_name, created_at DESC) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_instance "
+            "ON commitment_authority(user_id, commitment_id, override_id) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_field_source "
+            "ON commitment_authority(user_id, commitment_id, field_name, authority_source) "
+            "WHERE is_active = 1"
+        )
+
+        # Final validation
+        state = _detect_authority_schema(conn)
+        if state != AuthoritySchemaState.PHASE_0_5:
+            raise RuntimeError(
+                f"Phase 0.5 migration produced unexpected state: {state}"
+            )
+        fk_violations = conn.execute(
+            "PRAGMA foreign_key_check(commitment_authority)"
+        ).fetchall()
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 0.5 migration produced FK violations: {fk_violations}"
+            )
+
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_migrate")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT sp_phase05_authority_migrate")
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_migrate")
+        raise
+
+
+def _apply_phase05_authority(conn):
+    """
+    Dispatcher for Phase 0.5 commitment_authority schema management.
+    Exactly four externally observable states, each handled atomically:
+        NO_TABLE   → fresh atomic creation
+        PRE_0_5    → atomic migration
+        PHASE_0_5  → no-op
+        HYBRID     → fail closed (RuntimeError)
+    """
+    state = _detect_authority_schema(conn)
+    if state == AuthoritySchemaState.NO_TABLE:
+        _create_phase05_fresh(conn)
+    elif state == AuthoritySchemaState.PRE_0_5:
+        _migrate_to_phase05(conn)
+    elif state == AuthoritySchemaState.PHASE_0_5:
+        return
+    else:
+        raise RuntimeError(
+            "commitment_authority: HYBRID or unknown schema state detected — "
+            "manual inspection required before Phase 0.5 can be applied. "
+            f"Detected state: {state}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def init_db():
     conn = get_db()
     conn.executescript('''
@@ -1977,25 +2337,6 @@ def init_db():
             FOREIGN KEY (representative_run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
         );
 
-        CREATE TABLE IF NOT EXISTS commitment_authority (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            commitment_id       TEXT NOT NULL,
-            user_id             INTEGER NOT NULL,
-            field_name          TEXT NOT NULL,
-            value               TEXT DEFAULT NULL,
-            authority_source    TEXT NOT NULL
-                CHECK(authority_source IN ('MANUAL_OVERRIDE', 'FAMILY_REVIEW')),
-            override_id         TEXT NOT NULL,
-            is_active           INTEGER NOT NULL DEFAULT 1
-                CHECK(is_active IN (0, 1)),
-            created_at          TEXT NOT NULL,
-            created_by          INTEGER NOT NULL,
-            revoked_at          TEXT DEFAULT NULL,
-            revoked_by          INTEGER DEFAULT NULL,
-            UNIQUE(override_id),
-            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
-        );
-
         CREATE TABLE IF NOT EXISTS commitment_installment_meta (
             id                      INTEGER PRIMARY KEY AUTOINCREMENT,
             commitment_id           TEXT NOT NULL,
@@ -2123,6 +2464,9 @@ def init_db():
     # Phase 0.4 — add Phase 2B idempotence constraints (idempotent)
     _upgrade_phase04_dedup_indexes(conn)
 
+    # Phase 0.5 — authority identity schema (idempotent)
+    _apply_phase05_authority(conn)
+
     # Unified Commitments indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_commitments_legacy_installment_unique
@@ -2151,7 +2495,6 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vrr_family ON v4_run_results(family_id, created_at DESC) WHERE family_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vrr_run ON v4_run_results(run_id, user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ccs_commitment ON commitment_classifier_snapshots(commitment_id, created_at DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ca_resolve ON commitment_authority(commitment_id, field_name, created_at DESC) WHERE is_active = 1")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_co_lookup ON commitment_occurrences(commitment_id, occurrence_date, status)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_finite ON commitment_occurrences(commitment_id, occurrence_index) WHERE occurrence_index IS NOT NULL")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_indefinite ON commitment_occurrences(commitment_id, occurrence_date) WHERE occurrence_index IS NULL")
