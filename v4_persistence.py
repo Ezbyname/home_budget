@@ -204,6 +204,103 @@ def _persist_run_result(
     return rrid
 
 
+# ── Caller-owned connection primitive (Phase 2E) ──────────────────────────────
+
+def persist_run_on_connection(
+    conn: sqlite3.Connection,
+    report: ClassificationReport,
+    *,
+    user_id: int,
+    run_id: Optional[str] = None,
+) -> PersistenceReport:
+    """
+    Persist raw V4 classifier evidence using a caller-supplied connection.
+
+    The caller owns the connection and its outer transaction
+    (BEGIN IMMEDIATE / COMMIT / ROLLBACK).  This function:
+      - does NOT open a connection
+      - does NOT close the connection
+      - does NOT call conn.commit()
+      - does NOT call conn.rollback() on the caller's outer transaction
+
+    A local SAVEPOINT (sp_v4_persist) is used for internal atomicity;
+    on failure it is rolled back and released before re-raising, so the
+    caller's outer transaction remains in a clean, rollback-able state.
+
+    All other behavior is identical to persist_run():
+      run_id, family matching, INSERT OR IGNORE idempotence, tables written,
+      PersistenceReport / RunResultOutcome structure.
+
+    Does NOT enforce a db_path production guard (path is not known here).
+    Production authorization is the caller's responsibility.
+    """
+    if run_id is None:
+        run_id = str(uuid.uuid4())
+
+    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+    out = PersistenceReport(run_id=run_id, user_id=user_id)
+
+    # Group raw patterns by description_key to detect parallel streams.
+    by_key: dict[str, list[PatternResult]] = {}
+    for p in report.raw.patterns:
+        by_key.setdefault(p.description_key, []).append(p)
+
+    sp = "sp_v4_persist"
+    conn.execute(f"SAVEPOINT {sp}")
+    try:
+        for description_key, streams in by_key.items():
+            if len(streams) > 1:
+                # Parallel streams: no deterministic split discriminator
+                # available from PatternResult alone → fail closed.
+                for stream_index, pattern in enumerate(streams):
+                    rrid = _persist_run_result(
+                        conn, pattern, run_id, user_id,
+                        stream_index, None, now_iso,
+                    )
+                    out.outcomes.append(RunResultOutcome(
+                        run_result_id=rrid,
+                        description_key=description_key,
+                        stream_index=stream_index,
+                        family_id=None,
+                        family_resolution=FamilyResolution.UNRESOLVED_PARALLEL,
+                    ))
+            else:
+                # Single stream: match or create ACTIVE non-split family.
+                pattern = streams[0]
+                family_id = _find_active_single_family(
+                    conn, user_id, description_key
+                )
+                if family_id is not None:
+                    resolution = FamilyResolution.MATCHED_EXISTING
+                else:
+                    family_id = _create_single_family(
+                        conn, user_id, description_key, now_iso
+                    )
+                    resolution = FamilyResolution.CREATED_NEW
+
+                rrid = _persist_run_result(
+                    conn, pattern, run_id, user_id, 0, family_id, now_iso,
+                )
+                out.outcomes.append(RunResultOutcome(
+                    run_result_id=rrid,
+                    description_key=description_key,
+                    stream_index=0,
+                    family_id=family_id,
+                    family_resolution=resolution,
+                ))
+
+        conn.execute(f"RELEASE {sp}")
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO {sp}")
+            conn.execute(f"RELEASE {sp}")
+        except Exception:
+            pass
+        raise
+
+    return out
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def persist_run(
@@ -238,75 +335,17 @@ def persist_run(
             f"PRODUCTION SAFETY ABORT: refusing to write to production DB: {db_path!r}"
         )
 
-    if run_id is None:
-        run_id = str(uuid.uuid4())
-
-    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-    out = PersistenceReport(run_id=run_id, user_id=user_id)
-
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
-
     try:
-        # Group raw patterns by description_key to detect parallel streams.
-        by_key: dict[str, list[PatternResult]] = {}
-        for p in report.raw.patterns:
-            by_key.setdefault(p.description_key, []).append(p)
-
-        sp = "sp_v4_persist"
-        conn.execute(f"SAVEPOINT {sp}")
-        try:
-            for description_key, streams in by_key.items():
-                if len(streams) > 1:
-                    # Parallel streams: no deterministic split discriminator
-                    # available from PatternResult alone → fail closed.
-                    for stream_index, pattern in enumerate(streams):
-                        rrid = _persist_run_result(
-                            conn, pattern, run_id, user_id,
-                            stream_index, None, now_iso,
-                        )
-                        out.outcomes.append(RunResultOutcome(
-                            run_result_id=rrid,
-                            description_key=description_key,
-                            stream_index=stream_index,
-                            family_id=None,
-                            family_resolution=FamilyResolution.UNRESOLVED_PARALLEL,
-                        ))
-                else:
-                    # Single stream: match or create ACTIVE non-split family.
-                    pattern = streams[0]
-                    family_id = _find_active_single_family(
-                        conn, user_id, description_key
-                    )
-                    if family_id is not None:
-                        resolution = FamilyResolution.MATCHED_EXISTING
-                    else:
-                        family_id = _create_single_family(
-                            conn, user_id, description_key, now_iso
-                        )
-                        resolution = FamilyResolution.CREATED_NEW
-
-                    rrid = _persist_run_result(
-                        conn, pattern, run_id, user_id, 0, family_id, now_iso,
-                    )
-                    out.outcomes.append(RunResultOutcome(
-                        run_result_id=rrid,
-                        description_key=description_key,
-                        stream_index=0,
-                        family_id=family_id,
-                        family_resolution=resolution,
-                    ))
-
-            conn.execute(f"RELEASE {sp}")
-        except Exception:
-            try:
-                conn.execute(f"ROLLBACK TO {sp}")
-                conn.execute(f"RELEASE {sp}")
-            except Exception:
-                pass
-            raise
-
+        out = persist_run_on_connection(conn, report, user_id=user_id, run_id=run_id)
         conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

@@ -15,7 +15,7 @@ import threading
 import time as _time
 from datetime import datetime, date, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, make_response
+from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, make_response, current_app
 import xlrd
 import openpyxl
 
@@ -14617,6 +14617,70 @@ def admin_chat_satisfaction():
         'negative': stats['negative'] or 0,
         'recent': [dict(r) for r in recent],
         'distribution': [dict(r) for r in distribution]
+    })
+
+
+# ── V4 Production Pipeline ────────────────────────────────────────────────────
+
+@app.route('/api/v4/refresh', methods=['POST'])
+@login_required
+def v4_refresh():
+    """
+    Atomic V4 production pipeline: persist evidence, link commitments,
+    apply authority adjustments — all in a single BEGIN IMMEDIATE transaction.
+
+    Authorization:
+      - User identity: session['user_id'] only (never request-supplied)
+      - DB path: module-level DB_PATH only (never request-supplied)
+      - Production writes: app.config['V4_PRODUCTION_ENABLED'] only
+        (server-side; default False; never request-supplied)
+
+    No request body is required or read for pipeline parameters.
+    """
+    from v4_production_orchestration import run_v4_production_pipeline
+    from intelligence.v4_cashflow_engine import run_analysis
+
+    uid = get_uid()
+
+    production_write_enabled = current_app.config.get('V4_PRODUCTION_ENABLED', False)
+
+    try:
+        analysis_report = run_analysis(DB_PATH, user_id=uid)
+    except Exception as exc:
+        app.logger.error('v4_refresh: run_analysis failed user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Analysis failed'}), 500
+
+    try:
+        result = run_v4_production_pipeline(
+            DB_PATH,
+            analysis_report,
+            user_id=uid,
+            production_write_enabled=production_write_enabled,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if 'Production writes require explicit authorization' in msg:
+            app.logger.warning('v4_refresh: production authorization denied user=%s', uid)
+            return jsonify({'error': 'Production writes not enabled'}), 403
+        app.logger.error('v4_refresh: pipeline error user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Pipeline error'}), 500
+    except Exception as exc:
+        app.logger.error('v4_refresh: unexpected error user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Internal error'}), 500
+
+    final = result.adjusted.final_report
+    linked_count = sum(
+        1 for r in result.link.results
+        if r.outcome.value == 'LINKED'
+    )
+
+    return jsonify({
+        'ok': True,
+        'run_id': result.run_id,
+        'patterns_count': len(final.effective.patterns),
+        'linked_count': linked_count,
+        'planning_income': str(final.effective.planning_income_effective),
+        'monthly_reserve': str(final.effective.monthly_reserve_effective),
     })
 
 
