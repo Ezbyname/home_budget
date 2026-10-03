@@ -6152,7 +6152,7 @@ def parse_visa_xlsx(filepath, user_id=None):
 
             # Skip duplicates
             if _is_expense_duplicate(conn, expense_date, description, amount, user_id, cat_result.merchant_key):
-                skipped_dup += 1
+                skipped += 1
                 continue
 
             conn.execute(
