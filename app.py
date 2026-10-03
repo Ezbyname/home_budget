@@ -30,19 +30,12 @@ try:
 except ImportError:
     _INTELLIGENCE_AVAILABLE = False
 
-# Phase 2E: Production V4 Family Review baselines
-try:
-    from analyze_home_budget_v4 import (
-        REVIEWED_TARGETS,
-        PATTERN_OVERRIDES,
-        INCOME_BASELINES,
-    )
-    _V4_BASELINES_AVAILABLE = True
-except ImportError:
-    _V4_BASELINES_AVAILABLE = False
-    REVIEWED_TARGETS = None
-    PATTERN_OVERRIDES = None
-    INCOME_BASELINES = None
+# Phase 2E: Production V4 Family Review baselines (fail-closed)
+from analyze_home_budget_v4 import (
+    REVIEWED_TARGETS,
+    PATTERN_OVERRIDES,
+    INCOME_BASELINES,
+)
 
 # When running as a PyInstaller exe, use the exe's directory for data files
 _FROZEN = getattr(sys, 'frozen', False)
@@ -14652,41 +14645,23 @@ def v4_refresh():
     No request body is required or read for pipeline parameters.
     """
     from v4_production_orchestration import run_v4_production_pipeline
-    from intelligence.v4_cashflow_engine import run_analysis
 
     uid = get_uid()
 
     production_write_enabled = current_app.config.get('V4_PRODUCTION_ENABLED', False)
 
     try:
-        analysis_report = run_analysis(
-            DB_PATH,
-            user_id=uid,
-            reviewed_targets=REVIEWED_TARGETS,
-            pattern_overrides=PATTERN_OVERRIDES,
-            income_baselines=INCOME_BASELINES,
-        )
-    except Exception as exc:
-        app.logger.error('v4_refresh: run_analysis failed user=%s err=%s', uid, exc)
-        return jsonify({'error': 'Analysis failed'}), 500
-
-    try:
         result = run_v4_production_pipeline(
             DB_PATH,
-            analysis_report,
             user_id=uid,
             production_write_enabled=production_write_enabled,
         )
     except RuntimeError as exc:
-        msg = str(exc)
-        if 'Production writes require explicit authorization' in msg:
-            app.logger.warning('v4_refresh: production authorization denied user=%s', uid)
-            return jsonify({'error': 'Production writes not enabled'}), 403
-        app.logger.error('v4_refresh: pipeline error user=%s err=%s', uid, exc)
-        return jsonify({'error': 'Pipeline error'}), 500
+        app.logger.warning('v4_refresh: production authorization denied user=%s err=%s', uid, exc)
+        return jsonify({'error': str(exc)}), 400
     except Exception as exc:
-        app.logger.error('v4_refresh: unexpected error user=%s err=%s', uid, exc)
-        return jsonify({'error': 'Internal error'}), 500
+        app.logger.exception('v4_refresh: analysis failed user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Analysis failed'}), 500
 
     final = result.adjusted.final_report
     linked_count = sum(

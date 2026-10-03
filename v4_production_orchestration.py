@@ -33,7 +33,13 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from analyze_home_budget_v4 import (
+    REVIEWED_TARGETS,
+    PATTERN_OVERRIDES,
+    INCOME_BASELINES,
+)
 from intelligence.v4_contracts import ClassificationReport
+from intelligence.v4_cashflow_engine import run_analysis
 from v4_persistence import PersistenceReport, persist_run_on_connection, _is_production_path
 from v4_linking import LinkReport, link_phase2b
 from v4_authority_orchestration import orchestrate_authority_adjustment
@@ -81,7 +87,6 @@ def _check_production_authorization(db_path: str, production_write_enabled: obje
 
 def run_v4_production_pipeline(
     db_path: str,
-    analysis_report: ClassificationReport,
     *,
     user_id: int,
     run_id: str | None = None,
@@ -90,18 +95,19 @@ def run_v4_production_pipeline(
     """
     Execute the atomic Phase 2E V4 production pipeline.
 
-    Wraps Phase 2A (persist) → Phase 2B (link) → Phase 2D2 (authority adjust)
-    in a single BEGIN IMMEDIATE / COMMIT transaction.  Any failure rolls back
-    all phases completely (zero partial rows).
+    Atomic transaction wraps Phase 1 (analysis) → Phase 2A (persist) → Phase 2B (link) →
+    Phase 2D2 (authority adjust) in a single BEGIN IMMEDIATE / COMMIT transaction.
+    Any failure rolls back all phases completely (zero partial rows).
+
+    Family Review baselines (REVIEWED_TARGETS, PATTERN_OVERRIDES, INCOME_BASELINES)
+    are applied inside the transaction to ensure consistency.
 
     Parameters
     ----------
     db_path:
         Path to the SQLite database.
-    analysis_report:
-        ClassificationReport from run_analysis().
     user_id:
-        User whose patterns are being persisted.
+        User whose patterns are being analyzed and persisted.
     run_id:
         Optional caller-supplied run identity.  None → UUID4 generated once
         and shared across all phases.
@@ -119,7 +125,7 @@ def run_v4_production_pipeline(
     RuntimeError
         If db_path is a known production path and production_write_enabled
         is not literal True.
-    Any exception from Phase 2A, 2B, or 2D2 propagates after full rollback.
+    Any exception from analysis, Phase 2A, 2B, or 2D2 propagates after full rollback.
     """
     _check_production_authorization(db_path, production_write_enabled)
 
@@ -128,6 +134,15 @@ def run_v4_production_pipeline(
 
     try:
         conn.execute("BEGIN IMMEDIATE")
+
+        # Phase 1 — run analysis with Family Review baselines inside transaction
+        analysis_report = run_analysis(
+            db_path,
+            user_id=user_id,
+            reviewed_targets=REVIEWED_TARGETS,
+            pattern_overrides=PATTERN_OVERRIDES,
+            income_baselines=INCOME_BASELINES,
+        )
 
         # Phase 2A — persist raw evidence
         persistence = persist_run_on_connection(
