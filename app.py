@@ -15,7 +15,7 @@ import threading
 import time as _time
 from datetime import datetime, date, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, make_response
+from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, make_response, current_app
 import xlrd
 import openpyxl
 
@@ -482,6 +482,749 @@ def _enqueue_merchant_for_ai(conn, user_id: int, merchant_key: str,
         }, ensure_ascii=False))
     )
 
+
+def _upgrade_cel_linked_by(conn):
+    """
+    Phase 0.2 — Idempotently upgrade commitment_expense_links.linked_by CHECK
+    to add 'MIGRATION' to the allowed set.
+
+    SQLite cannot ALTER a CHECK constraint in place.  This function detects the
+    old schema (no 'MIGRATION') and atomically recreates the table via:
+        CREATE new → INSERT all rows → DROP old → RENAME new → old name
+
+    Wrapped in a SAVEPOINT so any failure rolls back completely.
+    Raises on row-count mismatch or any other failure — never silently skips.
+    No-op when the table is absent (handled by CREATE TABLE IF NOT EXISTS above)
+    or when 'MIGRATION' is already present.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='commitment_expense_links'"
+    ).fetchone()
+    if row is None:
+        return  # table does not exist yet — fresh DB path, CREATE TABLE IF NOT EXISTS above handles it
+    if "'MIGRATION'" in row[0] or '"MIGRATION"' in row[0]:
+        return  # already upgraded, idempotent
+
+    conn.execute("SAVEPOINT sp_cel_upgrade_02")
+    try:
+        conn.execute("""
+            CREATE TABLE commitment_expense_links_new (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                commitment_id       TEXT NOT NULL,
+                user_id             INTEGER NOT NULL,
+                expense_id          INTEGER NOT NULL REFERENCES expenses(id),
+                membership_type     TEXT NOT NULL DEFAULT 'MEMBER'
+                    CHECK(membership_type IN ('MEMBER', 'EXCLUDED', 'OCCURRENCE_CONFIRMED')),
+                linked_by           TEXT NOT NULL DEFAULT 'AUTO'
+                    CHECK(linked_by IN ('AUTO', 'MANUAL', 'V4_CLASSIFIER', 'MIGRATION')),
+                family_id           TEXT DEFAULT NULL,
+                run_result_id       TEXT DEFAULT NULL,
+                created_at          TEXT NOT NULL,
+                UNIQUE(user_id, expense_id, commitment_id),
+                FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+                FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id),
+                FOREIGN KEY (run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO commitment_expense_links_new
+                (id, commitment_id, user_id, expense_id, membership_type,
+                 linked_by, family_id, run_result_id, created_at)
+            SELECT id, commitment_id, user_id, expense_id, membership_type,
+                   linked_by, family_id, run_result_id, created_at
+            FROM commitment_expense_links
+        """)
+        count_old = conn.execute("SELECT COUNT(*) FROM commitment_expense_links").fetchone()[0]
+        count_new = conn.execute("SELECT COUNT(*) FROM commitment_expense_links_new").fetchone()[0]
+        if count_old != count_new:
+            raise RuntimeError(
+                f"Phase 0.2 CEL upgrade row-count mismatch: old={count_old} new={count_new}"
+            )
+        conn.execute("DROP TABLE commitment_expense_links")
+        conn.execute("ALTER TABLE commitment_expense_links_new RENAME TO commitment_expense_links")
+        conn.execute("RELEASE SAVEPOINT sp_cel_upgrade_02")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT sp_cel_upgrade_02")
+            conn.execute("RELEASE SAVEPOINT sp_cel_upgrade_02")
+        except Exception:
+            pass
+        raise
+
+
+def _upgrade_lifecycle_check(conn):
+    """
+    Phase 0.3 — Idempotently expand classifier_lifecycle_status CHECK on:
+        v4_run_results
+        commitment_classifier_snapshots
+
+    The old CHECK allowed: ACTIVE, PAUSED, ENDED, CANCELLED
+    The new CHECK allows:  ACTIVE, POSSIBLY_STOPPED, CANCELLED, ENDED, UNKNOWN, PAUSED
+
+    SQLite cannot ALTER a CHECK constraint in place.  We use the rebuild pattern:
+        CREATE _new → INSERT all rows → row-count check → DROP old → RENAME new
+
+    v4_run_results is a FK parent for:
+        commitment_classifier_snapshots.representative_run_result_id
+        commitment_expense_links.run_result_id
+        commitment_suggestions.run_result_id
+    Rebuilding a FK parent requires PRAGMA foreign_keys = OFF for the duration.
+    We restore it to ON unconditionally before returning.
+
+    All writes are wrapped in a SAVEPOINT so any failure rolls back completely.
+    Raises on row-count mismatch or any other failure — never silently skips.
+    No-op when the table is absent or when POSSIBLY_STOPPED is already present.
+    """
+    _NEW_CHECK_VALUES = (
+        "'ACTIVE', 'POSSIBLY_STOPPED', 'CANCELLED', 'ENDED', 'UNKNOWN', 'PAUSED'"
+    )
+
+    row_vrr = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='v4_run_results'"
+    ).fetchone()
+    if row_vrr is None:
+        return  # table does not exist yet — CREATE TABLE IF NOT EXISTS handles it
+
+    already_upgraded = (
+        "'POSSIBLY_STOPPED'" in row_vrr[0] or '"POSSIBLY_STOPPED"' in row_vrr[0]
+    )
+    if already_upgraded:
+        return  # idempotent — already at Phase 0.3 schema
+
+    # Must disable FK enforcement to rebuild a parent table.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("SAVEPOINT sp_lifecycle_upgrade_03")
+    try:
+        # ── v4_run_results ────────────────────────────────────────────────────
+        conn.execute(f"""
+            CREATE TABLE v4_run_results_new (
+                id                              TEXT NOT NULL,
+                run_id                          TEXT NOT NULL,
+                user_id                         INTEGER NOT NULL,
+                family_id                       TEXT DEFAULT NULL,
+                description_key                 TEXT NOT NULL,
+                stream_index                    INTEGER NOT NULL DEFAULT 0,
+                label                           TEXT NOT NULL DEFAULT '',
+                planning_amount_agorot          INTEGER DEFAULT NULL,
+                cadence                         TEXT NOT NULL DEFAULT 'UNKNOWN',
+                recurrence_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+                commitment_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+                classifier_lifecycle_status     TEXT NOT NULL DEFAULT 'ACTIVE'
+                    CHECK(classifier_lifecycle_status IN ({_NEW_CHECK_VALUES})),
+                budget_class                    TEXT NOT NULL DEFAULT 'UNKNOWN',
+                reserve_eligible                INTEGER NOT NULL DEFAULT 0
+                    CHECK(reserve_eligible IN (0, 1)),
+                monthly_reserve_contrib_agorot  INTEGER NOT NULL DEFAULT 0,
+                cadence_coverage                REAL DEFAULT NULL,
+                evidence_month_count            INTEGER DEFAULT NULL,
+                review_required                 INTEGER NOT NULL DEFAULT 0
+                    CHECK(review_required IN (0, 1)),
+                review_reasons                  TEXT NOT NULL DEFAULT '[]',
+                created_at                      TEXT NOT NULL,
+                PRIMARY KEY (id),
+                UNIQUE (id, user_id),
+                FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO v4_run_results_new
+                SELECT id, run_id, user_id, family_id,
+                       description_key, stream_index, label,
+                       planning_amount_agorot, cadence,
+                       recurrence_status, commitment_status,
+                       classifier_lifecycle_status, budget_class,
+                       reserve_eligible, monthly_reserve_contrib_agorot,
+                       cadence_coverage, evidence_month_count,
+                       review_required, review_reasons, created_at
+                FROM v4_run_results
+        """)
+        cnt_old = conn.execute("SELECT COUNT(*) FROM v4_run_results").fetchone()[0]
+        cnt_new = conn.execute("SELECT COUNT(*) FROM v4_run_results_new").fetchone()[0]
+        if cnt_old != cnt_new:
+            raise RuntimeError(
+                f"Phase 0.3 v4_run_results upgrade row-count mismatch: "
+                f"old={cnt_old} new={cnt_new}"
+            )
+        conn.execute("DROP TABLE v4_run_results")
+        conn.execute("ALTER TABLE v4_run_results_new RENAME TO v4_run_results")
+
+        # ── commitment_classifier_snapshots ───────────────────────────────────
+        row_ccs = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='commitment_classifier_snapshots'"
+        ).fetchone()
+        if row_ccs is not None:
+            conn.execute(f"""
+                CREATE TABLE commitment_classifier_snapshots_new (
+                    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    commitment_id                   TEXT NOT NULL,
+                    user_id                         INTEGER NOT NULL,
+                    snapshot_type                   TEXT NOT NULL
+                        CHECK(snapshot_type IN ('V4_SINGLE', 'V4_CANONICAL_MERGED')),
+                    representative_run_result_id    TEXT DEFAULT NULL,
+                    constituent_run_result_ids      TEXT NOT NULL DEFAULT '[]',
+                    recurrence_status               TEXT DEFAULT NULL,
+                    commitment_status               TEXT DEFAULT NULL,
+                    classifier_lifecycle_status     TEXT DEFAULT NULL
+                        CHECK(classifier_lifecycle_status IS NULL
+                              OR classifier_lifecycle_status IN ({_NEW_CHECK_VALUES})),
+                    budget_class                    TEXT DEFAULT NULL,
+                    reserve_eligible                INTEGER DEFAULT NULL
+                        CHECK(reserve_eligible IS NULL OR reserve_eligible IN (0, 1)),
+                    monthly_reserve_contrib_agorot  INTEGER DEFAULT NULL,
+                    cadence                         TEXT DEFAULT NULL,
+                    created_at                      TEXT NOT NULL,
+                    FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+                    FOREIGN KEY (representative_run_result_id, user_id)
+                        REFERENCES v4_run_results(id, user_id)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO commitment_classifier_snapshots_new
+                    SELECT id, commitment_id, user_id, snapshot_type,
+                           representative_run_result_id, constituent_run_result_ids,
+                           recurrence_status, commitment_status,
+                           classifier_lifecycle_status, budget_class,
+                           reserve_eligible, monthly_reserve_contrib_agorot,
+                           cadence, created_at
+                    FROM commitment_classifier_snapshots
+            """)
+            cnt_old_ccs = conn.execute(
+                "SELECT COUNT(*) FROM commitment_classifier_snapshots"
+            ).fetchone()[0]
+            cnt_new_ccs = conn.execute(
+                "SELECT COUNT(*) FROM commitment_classifier_snapshots_new"
+            ).fetchone()[0]
+            if cnt_old_ccs != cnt_new_ccs:
+                raise RuntimeError(
+                    f"Phase 0.3 commitment_classifier_snapshots upgrade row-count mismatch: "
+                    f"old={cnt_old_ccs} new={cnt_new_ccs}"
+                )
+            conn.execute("DROP TABLE commitment_classifier_snapshots")
+            conn.execute(
+                "ALTER TABLE commitment_classifier_snapshots_new "
+                "RENAME TO commitment_classifier_snapshots"
+            )
+
+        conn.execute("RELEASE SAVEPOINT sp_lifecycle_upgrade_03")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT sp_lifecycle_upgrade_03")
+            conn.execute("RELEASE SAVEPOINT sp_lifecycle_upgrade_03")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _upgrade_phase04_dedup_indexes(conn):
+    """
+    Phase 0.4 — Idempotently add DB-enforced idempotence constraints for Phase 2B.
+
+    Adds six partial UNIQUE indexes across:
+        commitment_classifier_snapshots  (1 index)
+        commitment_suggestions           (3 indexes)
+        commitment_link_conflicts        (2 indexes)
+
+    Also adds two INSERT/UPDATE triggers to enforce that every V4_SINGLE snapshot
+    row carries a non-NULL representative_run_result_id, closing the gap left by
+    the dedup index's WHERE clause (which excludes NULL rows from the index, meaning
+    NULL-representative V4_SINGLE rows would otherwise bypass deduplication).
+
+    All six indexes and both triggers are created inside a single SAVEPOINT.
+    If any creation fails (e.g. due to duplicate pre-existing data violating a
+    new UNIQUE index), the entire upgrade rolls back — no partial Phase 0.4 schema
+    is left behind.  Existing rows are never deleted or merged automatically.
+
+    No PRAGMA foreign_keys=OFF is required (no table rebuild occurs).
+    Idempotent: safe to call on a DB that already has Phase 0.4 applied.
+    """
+    # Detect-already-applied: all six indexes AND both triggers must be present.
+    already = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE (type='index' AND name IN ("
+        "  'idx_ccs_v4single_dedup','idx_cs_possible_match_dedup',"
+        "  'idx_cs_new_recurring_dedup','idx_cs_ambiguous_dedup',"
+        "  'idx_clc_family_only_dedup','idx_clc_overlap_dedup'"
+        ")) OR (type='trigger' AND name IN ("
+        "  'trg_ccs_v4single_rep_required_ins',"
+        "  'trg_ccs_v4single_rep_required_upd'"
+        "))"
+    ).fetchone()[0]
+    if already == 8:
+        return  # idempotent — Phase 0.4 fully applied
+
+    # Check the tables we are indexing exist (they may not on a very old DB).
+    tables_needed = {
+        'commitment_classifier_snapshots',
+        'commitment_suggestions',
+        'commitment_link_conflicts',
+    }
+    existing_tables = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if not tables_needed.issubset(existing_tables):
+        return  # tables not yet created; CREATE TABLE IF NOT EXISTS handles them
+
+    conn.execute("SAVEPOINT sp_phase04_dedup")
+    try:
+        # ── 1. V4_SINGLE snapshot: one snapshot per (commitment, run_result) ──
+        # Using IF NOT EXISTS makes each step idempotent against partial prior state
+        # (e.g. if fresh-DB path created some indexes before a table rebuild removed
+        # others). Duplicate-data violations are still detected because the UNIQUE
+        # constraint itself rejects conflicting rows — IF NOT EXISTS only skips on
+        # duplicate index NAME, not duplicate data.
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ccs_v4single_dedup
+            ON commitment_classifier_snapshots(commitment_id, representative_run_result_id)
+            WHERE snapshot_type = 'V4_SINGLE'
+              AND representative_run_result_id IS NOT NULL
+        """)
+
+        # ── 2–4. commitment_suggestions dedup indexes ────────────────────────
+
+        # POSSIBLE_MATCH: candidate always present
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_possible_match_dedup
+            ON commitment_suggestions(user_id, run_result_id, candidate_commitment_id)
+            WHERE suggestion_type = 'POSSIBLE_MATCH'
+              AND run_result_id IS NOT NULL
+              AND candidate_commitment_id IS NOT NULL
+        """)
+
+        # NEW_RECURRING: no candidate
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_new_recurring_dedup
+            ON commitment_suggestions(user_id, run_result_id)
+            WHERE suggestion_type = 'NEW_RECURRING'
+              AND run_result_id IS NOT NULL
+              AND candidate_commitment_id IS NULL
+        """)
+
+        # AMBIGUOUS_FAMILY: no single candidate resolved
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_ambiguous_dedup
+            ON commitment_suggestions(user_id, run_result_id)
+            WHERE suggestion_type = 'AMBIGUOUS_FAMILY'
+              AND run_result_id IS NOT NULL
+              AND candidate_commitment_id IS NULL
+        """)
+
+        # ── 5–6. commitment_link_conflicts dedup indexes ─────────────────────
+
+        # Family-only anchor (AMBIGUOUS_FAMILY, USER_ID_DRIFT, ZERO_MATCHES)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_family_only_dedup
+            ON commitment_link_conflicts(run_id, user_id, family_id, conflict_type)
+            WHERE family_id IS NOT NULL
+              AND commitment_id IS NULL
+        """)
+
+        # Both anchors present (OVERLAPPING_WINDOW and future both-anchor types)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_overlap_dedup
+            ON commitment_link_conflicts(run_id, user_id, family_id, commitment_id, conflict_type)
+            WHERE family_id IS NOT NULL
+              AND commitment_id IS NOT NULL
+        """)
+
+        # ── V4_SINGLE representative-required triggers ───────────────────────
+        # Each trigger is a separate conn.execute() call — executescript() would
+        # issue an implicit COMMIT and destroy the enclosing SAVEPOINT.
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_ins
+            BEFORE INSERT ON commitment_classifier_snapshots FOR EACH ROW
+            WHEN NEW.snapshot_type = 'V4_SINGLE'
+              AND NEW.representative_run_result_id IS NULL
+            BEGIN
+                SELECT RAISE(ABORT,
+                    'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_upd
+            BEFORE UPDATE OF snapshot_type, representative_run_result_id
+            ON commitment_classifier_snapshots FOR EACH ROW
+            WHEN NEW.snapshot_type = 'V4_SINGLE'
+              AND NEW.representative_run_result_id IS NULL
+            BEGIN
+                SELECT RAISE(ABORT,
+                    'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+            END
+        """)
+
+        conn.execute("RELEASE SAVEPOINT sp_phase04_dedup")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK TO SAVEPOINT sp_phase04_dedup")
+            conn.execute("RELEASE SAVEPOINT sp_phase04_dedup")
+        except Exception:
+            pass
+        raise
+
+
+# ── Phase 0.5 — Authority Identity Schema ────────────────────────────────────
+
+import enum as _enum
+import re as _re
+
+
+class AuthoritySchemaState(_enum.Enum):
+    NO_TABLE   = "NO_TABLE"
+    PRE_0_5    = "PRE_0_5"
+    PHASE_0_5  = "PHASE_0_5"
+    HYBRID     = "HYBRID"
+
+
+def _detect_authority_schema(conn) -> AuthoritySchemaState:
+    """
+    Classify the current commitment_authority schema into one of four states.
+    Returns NO_TABLE if the table does not exist.
+    Returns PRE_0_5 only when ALL eight fingerprint conditions hold exactly.
+    Returns PHASE_0_5 only when ALL nine fingerprint conditions hold exactly.
+    Returns HYBRID for anything else — fails closed.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='commitment_authority'"
+    ).fetchone()
+    if not exists:
+        return AuthoritySchemaState.NO_TABLE
+
+    # ── Column fingerprint (both states share the same 12 columns) ───────────
+    cols = conn.execute("PRAGMA table_info(commitment_authority)").fetchall()
+    expected_cols = [
+        # (name, type, notnull, dflt_value)
+        # Note: PRAGMA table_info returns 'NULL' (string) for DEFAULT NULL columns,
+        # not Python None. None means no default was declared at all.
+        ("id",               "INTEGER", 0, None),
+        ("commitment_id",    "TEXT",    1, None),
+        ("user_id",          "INTEGER", 1, None),
+        ("field_name",       "TEXT",    1, None),
+        ("value",            "TEXT",    0, "NULL"),
+        ("authority_source", "TEXT",    1, None),
+        ("override_id",      "TEXT",    1, None),
+        ("is_active",        "INTEGER", 1, "1"),
+        ("created_at",       "TEXT",    1, None),
+        ("created_by",       "INTEGER", 1, None),
+        ("revoked_at",       "TEXT",    0, "NULL"),
+        ("revoked_by",       "INTEGER", 0, "NULL"),
+    ]
+    actual_cols = [(r[1], r[2], r[3], r[4]) for r in cols]
+    if actual_cols != expected_cols:
+        return AuthoritySchemaState.HYBRID
+
+    # ── FK fingerprint ────────────────────────────────────────────────────────
+    fk_rows = conn.execute("PRAGMA foreign_key_list(commitment_authority)").fetchall()
+    fk_map = {}
+    for r in fk_rows:
+        fk_id, seq, table, from_col, to_col = r[0], r[1], r[2], r[3], r[4]
+        if fk_id == 0:
+            fk_map[from_col] = (table, to_col)
+    if fk_map.get("commitment_id") != ("commitments", "id"):
+        return AuthoritySchemaState.HYBRID
+    if fk_map.get("user_id") != ("commitments", "user_id"):
+        return AuthoritySchemaState.HYBRID
+
+    # ── DDL CHECK fingerprint ─────────────────────────────────────────────────
+    ddl_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='commitment_authority'"
+    ).fetchone()
+    if not ddl_row:
+        return AuthoritySchemaState.HYBRID
+    norm = _re.sub(r'\s+', ' ', ddl_row[0].lower())
+    has_auth_source_check = (
+        "in ('manual_override', 'family_review')" in norm or
+        "in ('manual_override','family_review')" in norm
+    )
+    if not has_auth_source_check:
+        return AuthoritySchemaState.HYBRID
+
+    # ── Index inventory ───────────────────────────────────────────────────────
+    index_rows = conn.execute("PRAGMA index_list(commitment_authority)").fetchall()
+    # index_list columns: seq, name, unique, origin, partial
+    index_data = {}
+    for r in index_rows:
+        name, unique, origin, partial = r[1], bool(r[2]), r[3], bool(r[4])
+        xinfo = conn.execute(f"PRAGMA index_xinfo('{name}')").fetchall()
+        key_cols = [(xi[2], xi[3]) for xi in xinfo if xi[5] == 1]  # (col_name, desc) where key=1
+        index_data[name] = {
+            "unique":   unique,
+            "partial":  partial,
+            "origin":   origin,
+            "key_cols": key_cols,
+        }
+
+    has_old_unique = any(
+        v["unique"] and not v["partial"] and v["key_cols"] == [("override_id", 0)]
+        for v in index_data.values()
+    )
+    has_instance   = "idx_ca_active_instance"    in index_data
+    has_field_src  = "idx_ca_active_field_source" in index_data
+
+    # ── Validate idx_ca_resolve ────────────────────────────────────────────────
+    def _resolve_ok():
+        if "idx_ca_resolve" not in index_data:
+            return False
+        d = index_data["idx_ca_resolve"]
+        if d["unique"] or not d["partial"]:
+            return False
+        if d["key_cols"] != [("commitment_id", 0), ("field_name", 0), ("created_at", 1)]:
+            return False
+        # Validate predicate text
+        pred_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ca_resolve'"
+        ).fetchone()
+        if not pred_row:
+            return False
+        pred_norm = _re.sub(r'\s+', ' ', pred_row[0].lower())
+        return "where is_active = 1" in pred_norm
+
+    # ── Revocation CHECKs ─────────────────────────────────────────────────────
+    has_check_no_revoke_when_active = (
+        "is_active = 0 or" in norm and
+        "revoked_at is null and revoked_by is null" in norm
+    )
+    has_check_revoke_when_inactive = "is_active = 1 or revoked_at is not null" in norm
+
+    # ── PRE_0_5 classification ────────────────────────────────────────────────
+    if (
+        has_old_unique and
+        not has_instance and
+        not has_field_src and
+        not has_check_no_revoke_when_active and
+        not has_check_revoke_when_inactive and
+        _resolve_ok()
+    ):
+        return AuthoritySchemaState.PRE_0_5
+
+    # ── PHASE_0_5 classification ──────────────────────────────────────────────
+    def _instance_ok():
+        if "idx_ca_active_instance" not in index_data:
+            return False
+        d = index_data["idx_ca_active_instance"]
+        if not d["unique"] or not d["partial"]:
+            return False
+        if d["key_cols"] != [("user_id", 0), ("commitment_id", 0), ("override_id", 0)]:
+            return False
+        pred_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ca_active_instance'"
+        ).fetchone()
+        if not pred_row:
+            return False
+        p = _re.sub(r'\s+', ' ', pred_row[0].lower())
+        return "where is_active = 1" in p
+
+    def _field_src_ok():
+        if "idx_ca_active_field_source" not in index_data:
+            return False
+        d = index_data["idx_ca_active_field_source"]
+        if not d["unique"] or not d["partial"]:
+            return False
+        if d["key_cols"] != [("user_id", 0), ("commitment_id", 0), ("field_name", 0), ("authority_source", 0)]:
+            return False
+        pred_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ca_active_field_source'"
+        ).fetchone()
+        if not pred_row:
+            return False
+        p = _re.sub(r'\s+', ' ', pred_row[0].lower())
+        return "where is_active = 1" in p
+
+    if (
+        not has_old_unique and
+        has_check_no_revoke_when_active and
+        has_check_revoke_when_inactive and
+        _resolve_ok() and
+        _instance_ok() and
+        _field_src_ok()
+    ):
+        return AuthoritySchemaState.PHASE_0_5
+
+    return AuthoritySchemaState.HYBRID
+
+
+_PHASE05_AUTHORITY_DDL = """
+    CREATE TABLE commitment_authority (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        commitment_id       TEXT NOT NULL,
+        user_id             INTEGER NOT NULL,
+        field_name          TEXT NOT NULL,
+        value               TEXT DEFAULT NULL,
+        authority_source    TEXT NOT NULL
+            CHECK(authority_source IN ('MANUAL_OVERRIDE', 'FAMILY_REVIEW')),
+        override_id         TEXT NOT NULL,
+        is_active           INTEGER NOT NULL DEFAULT 1
+            CHECK(is_active IN (0, 1)),
+        created_at          TEXT NOT NULL,
+        created_by          INTEGER NOT NULL,
+        revoked_at          TEXT DEFAULT NULL,
+        revoked_by          INTEGER DEFAULT NULL,
+        CHECK(is_active = 0 OR (revoked_at IS NULL AND revoked_by IS NULL)),
+        CHECK(is_active = 1 OR revoked_at IS NOT NULL),
+        FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+    )
+"""
+
+
+def _create_phase05_fresh(conn):
+    """
+    Atomically create the full Phase 0.5 commitment_authority schema on a DB
+    that has no commitment_authority table. Uses a SAVEPOINT; rolls back fully
+    on any failure, leaving no partial schema.
+    """
+    conn.execute("SAVEPOINT sp_phase05_authority_fresh")
+    try:
+        conn.execute(_PHASE05_AUTHORITY_DDL)
+        conn.execute(
+            "CREATE INDEX idx_ca_resolve "
+            "ON commitment_authority(commitment_id, field_name, created_at DESC) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_instance "
+            "ON commitment_authority(user_id, commitment_id, override_id) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_field_source "
+            "ON commitment_authority(user_id, commitment_id, field_name, authority_source) "
+            "WHERE is_active = 1"
+        )
+        state = _detect_authority_schema(conn)
+        if state != AuthoritySchemaState.PHASE_0_5:
+            raise RuntimeError(
+                f"Phase 0.5 fresh creation produced unexpected state: {state}"
+            )
+        fk_violations = conn.execute(
+            "PRAGMA foreign_key_check(commitment_authority)"
+        ).fetchall()
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 0.5 fresh creation produced FK violations: {fk_violations}"
+            )
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_fresh")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT sp_phase05_authority_fresh")
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_fresh")
+        raise
+
+
+def _migrate_to_phase05(conn):
+    """
+    Atomically migrate a PRE_0_5 commitment_authority table to Phase 0.5.
+    Rebuilds the table to remove UNIQUE(override_id) and add revocation CHECKs,
+    then creates the three Phase 0.5 indexes.  Rolls back fully on any failure.
+    """
+    conn.execute("SAVEPOINT sp_phase05_authority_migrate")
+    try:
+        # Gather existing rows before DDL
+        rows = conn.execute(
+            "SELECT id, commitment_id, user_id, field_name, value, authority_source, "
+            "       override_id, is_active, created_at, created_by, revoked_at, revoked_by "
+            "FROM commitment_authority"
+        ).fetchall()
+
+        # Persist max id for AUTOINCREMENT continuity
+        max_id_row = conn.execute("SELECT MAX(id) FROM commitment_authority").fetchone()
+        max_id = max_id_row[0] if max_id_row[0] is not None else 0
+
+        # Rename old table aside
+        conn.execute("ALTER TABLE commitment_authority RENAME TO commitment_authority_pre05")
+
+        # Create Phase 0.5 table
+        conn.execute(_PHASE05_AUTHORITY_DDL)
+
+        # Restore rows — validate CHECKs on copy
+        for row in rows:
+            (rid, commitment_id, user_id, field_name, value, authority_source,
+             override_id, is_active, created_at, created_by, revoked_at, revoked_by) = row
+            conn.execute(
+                "INSERT INTO commitment_authority "
+                "(id, commitment_id, user_id, field_name, value, authority_source, "
+                " override_id, is_active, created_at, created_by, revoked_at, revoked_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, commitment_id, user_id, field_name, value, authority_source,
+                 override_id, is_active, created_at, created_by, revoked_at, revoked_by)
+            )
+
+        # Ensure AUTOINCREMENT sequence is set correctly
+        conn.execute(
+            "INSERT OR REPLACE INTO sqlite_sequence(name, seq) VALUES ('commitment_authority', ?)",
+            (max_id,)
+        )
+
+        # Drop old table BEFORE creating new indexes: the old table's idx_ca_resolve
+        # is still named 'idx_ca_resolve' after the RENAME, and CREATE INDEX would
+        # fail with "index already exists" if the old table (and its indexes) still
+        # exist when we try to create new indexes on the new table.
+        conn.execute("DROP TABLE commitment_authority_pre05")
+
+        # Create Phase 0.5 indexes
+        conn.execute(
+            "CREATE INDEX idx_ca_resolve "
+            "ON commitment_authority(commitment_id, field_name, created_at DESC) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_instance "
+            "ON commitment_authority(user_id, commitment_id, override_id) "
+            "WHERE is_active = 1"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_ca_active_field_source "
+            "ON commitment_authority(user_id, commitment_id, field_name, authority_source) "
+            "WHERE is_active = 1"
+        )
+
+        # Final validation
+        state = _detect_authority_schema(conn)
+        if state != AuthoritySchemaState.PHASE_0_5:
+            raise RuntimeError(
+                f"Phase 0.5 migration produced unexpected state: {state}"
+            )
+        fk_violations = conn.execute(
+            "PRAGMA foreign_key_check(commitment_authority)"
+        ).fetchall()
+        if fk_violations:
+            raise RuntimeError(
+                f"Phase 0.5 migration produced FK violations: {fk_violations}"
+            )
+
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_migrate")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT sp_phase05_authority_migrate")
+        conn.execute("RELEASE SAVEPOINT sp_phase05_authority_migrate")
+        raise
+
+
+def _apply_phase05_authority(conn):
+    """
+    Dispatcher for Phase 0.5 commitment_authority schema management.
+    Exactly four externally observable states, each handled atomically:
+        NO_TABLE   → fresh atomic creation
+        PRE_0_5    → atomic migration
+        PHASE_0_5  → no-op
+        HYBRID     → fail closed (RuntimeError)
+    """
+    state = _detect_authority_schema(conn)
+    if state == AuthoritySchemaState.NO_TABLE:
+        _create_phase05_fresh(conn)
+    elif state == AuthoritySchemaState.PRE_0_5:
+        _migrate_to_phase05(conn)
+    elif state == AuthoritySchemaState.PHASE_0_5:
+        return
+    else:
+        raise RuntimeError(
+            "commitment_authority: HYBRID or unknown schema state detected — "
+            "manual inspection required before Phase 0.5 can be applied. "
+            f"Detected state: {state}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 def init_db():
     conn = get_db()
@@ -1449,6 +2192,398 @@ def init_db():
                 "INSERT INTO categories (id, name_he, color, parent_id, sort_order) VALUES (?,?,?,?,?)",
                 (cat_id, name_he, color, parent_id, sort_order)
             )
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS frequency_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            description_pattern TEXT NOT NULL,
+            frequency TEXT NOT NULL DEFAULT 'monthly',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, description_pattern)
+        )
+    """)
+
+    # ============================================================
+    # UNIFIED COMMITMENTS — Phase 0 Schema Foundation
+    # ============================================================
+
+    conn.executescript('''
+        CREATE TABLE IF NOT EXISTS commitments (
+            id                          TEXT NOT NULL,
+            user_id                     INTEGER NOT NULL,
+            canonical_label             TEXT NOT NULL DEFAULT '',
+            obligation_nature           TEXT NOT NULL DEFAULT 'EXPENSE'
+                CHECK(obligation_nature IN ('EXPENSE', 'INCOME', 'TRANSFER')),
+            commitment_kind             TEXT NOT NULL DEFAULT 'UNKNOWN'
+                CHECK(commitment_kind IN ('CONTRACTUAL', 'VOLUNTARY', 'BEHAVIORAL', 'UNKNOWN')),
+            payment_mechanism           TEXT NOT NULL DEFAULT 'UNKNOWN'
+                CHECK(payment_mechanism IN (
+                    'STANDING_ORDER', 'INSTALLMENT_SPLIT', 'DIRECT_DEBIT',
+                    'CHECK', 'CREDIT_CARD', 'MANUAL', 'UNKNOWN'
+                )),
+            cashflow_role               TEXT NOT NULL DEFAULT 'UNCLASSIFIED'
+                CHECK(cashflow_role IN (
+                    'RESERVE', 'FLEXIBLE', 'SAVINGS', 'FEE', 'INCOME', 'SETTLEMENT', 'UNCLASSIFIED'
+                )),
+            lifecycle_status            TEXT NOT NULL DEFAULT 'ACTIVE'
+                CHECK(lifecycle_status IN ('ACTIVE', 'PAUSED', 'ENDED', 'CANCELLED')),
+            is_finite                   INTEGER NOT NULL DEFAULT 0
+                CHECK(is_finite IN (0, 1)),
+            total_occurrences           INTEGER DEFAULT NULL,
+            end_date                    TEXT DEFAULT NULL,
+            source_type                 TEXT NOT NULL DEFAULT 'V4_SUGGESTED'
+                CHECK(source_type IN ('IMPORTED', 'MANUAL_ENTRY', 'V4_SUGGESTED', 'MIGRATED')),
+            linked_legacy_installment_id INTEGER DEFAULT NULL
+                REFERENCES installments(id),
+            created_at                  TEXT NOT NULL,
+            updated_at                  TEXT NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE (id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pattern_families (
+            id                          TEXT NOT NULL,
+            user_id                     INTEGER NOT NULL,
+            primary_description_key     TEXT NOT NULL,
+            is_split_discriminator      INTEGER NOT NULL DEFAULT 0
+                CHECK(is_split_discriminator IN (0, 1)),
+            amount_cluster_agorot       INTEGER DEFAULT NULL,
+            window_start                TEXT DEFAULT NULL,
+            window_end                  TEXT DEFAULT NULL,
+            commitment_id               TEXT DEFAULT NULL,
+            is_primary                  INTEGER NOT NULL DEFAULT 1
+                CHECK(is_primary IN (0, 1)),
+            linked_by                   TEXT NOT NULL DEFAULT 'AUTO'
+                CHECK(linked_by IN ('AUTO', 'MANUAL', 'MIGRATION')),
+            family_status               TEXT NOT NULL DEFAULT 'ACTIVE'
+                CHECK(family_status IN ('ACTIVE', 'SUPERSEDED')),
+            superseded_at               TEXT DEFAULT NULL,
+            superseded_by_event_id      INTEGER DEFAULT NULL,
+            created_at                  TEXT NOT NULL,
+            updated_at                  TEXT NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE (id, user_id),
+            CHECK(window_start IS NULL OR window_end IS NOT NULL),
+            CHECK(is_split_discriminator = 0
+                  OR (window_start IS NOT NULL OR amount_cluster_agorot IS NOT NULL)),
+            CHECK(is_split_discriminator = 1
+                  OR (amount_cluster_agorot IS NULL AND window_start IS NULL)),
+            CHECK(family_status = 'ACTIVE' OR superseded_at IS NOT NULL),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS description_key_aliases (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            family_id                   TEXT NOT NULL,
+            user_id                     INTEGER NOT NULL,
+            description_key             TEXT NOT NULL,
+            first_seen_at               TEXT NOT NULL,
+            linked_by                   TEXT NOT NULL DEFAULT 'AUTO'
+                CHECK(linked_by IN ('AUTO', 'MANUAL')),
+            UNIQUE(family_id, description_key),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS v4_run_results (
+            id                              TEXT NOT NULL,
+            run_id                          TEXT NOT NULL,
+            user_id                         INTEGER NOT NULL,
+            family_id                       TEXT DEFAULT NULL,
+            description_key                 TEXT NOT NULL,
+            stream_index                    INTEGER NOT NULL DEFAULT 0,
+            label                           TEXT NOT NULL DEFAULT '',
+            planning_amount_agorot          INTEGER DEFAULT NULL,
+            cadence                         TEXT NOT NULL DEFAULT 'UNKNOWN',
+            recurrence_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+            commitment_status               TEXT NOT NULL DEFAULT 'UNKNOWN',
+            classifier_lifecycle_status     TEXT NOT NULL DEFAULT 'ACTIVE'
+                CHECK(classifier_lifecycle_status IN ('ACTIVE', 'PAUSED', 'ENDED', 'CANCELLED')),
+            budget_class                    TEXT NOT NULL DEFAULT 'UNKNOWN',
+            reserve_eligible                INTEGER NOT NULL DEFAULT 0
+                CHECK(reserve_eligible IN (0, 1)),
+            monthly_reserve_contrib_agorot  INTEGER NOT NULL DEFAULT 0,
+            cadence_coverage                REAL DEFAULT NULL,
+            evidence_month_count            INTEGER DEFAULT NULL,
+            review_required                 INTEGER NOT NULL DEFAULT 0
+                CHECK(review_required IN (0, 1)),
+            review_reasons                  TEXT NOT NULL DEFAULT '[]',
+            created_at                      TEXT NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE (id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_classifier_snapshots (
+            id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id                   TEXT NOT NULL,
+            user_id                         INTEGER NOT NULL,
+            snapshot_type                   TEXT NOT NULL
+                CHECK(snapshot_type IN ('V4_SINGLE', 'V4_CANONICAL_MERGED')),
+            representative_run_result_id    TEXT DEFAULT NULL,
+            constituent_run_result_ids      TEXT NOT NULL DEFAULT '[]',
+            recurrence_status               TEXT DEFAULT NULL,
+            commitment_status               TEXT DEFAULT NULL,
+            classifier_lifecycle_status     TEXT DEFAULT NULL
+                CHECK(classifier_lifecycle_status IS NULL
+                      OR classifier_lifecycle_status IN ('ACTIVE', 'PAUSED', 'ENDED', 'CANCELLED')),
+            budget_class                    TEXT DEFAULT NULL,
+            reserve_eligible                INTEGER DEFAULT NULL
+                CHECK(reserve_eligible IS NULL OR reserve_eligible IN (0, 1)),
+            monthly_reserve_contrib_agorot  INTEGER DEFAULT NULL,
+            cadence                         TEXT DEFAULT NULL,
+            created_at                      TEXT NOT NULL,
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (representative_run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_installment_meta (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id           TEXT NOT NULL,
+            user_id                 INTEGER NOT NULL,
+            total_payments          INTEGER NOT NULL CHECK(total_payments > 0),
+            payments_made           INTEGER NOT NULL DEFAULT 0
+                CHECK(payments_made >= 0),
+            payment_agorot          INTEGER NOT NULL CHECK(payment_agorot > 0),
+            total_purchase_agorot   INTEGER DEFAULT NULL,
+            first_payment_date      TEXT NOT NULL,
+            anchor_day_of_month     INTEGER NOT NULL CHECK(anchor_day_of_month BETWEEN 1 AND 31),
+            updated_at              TEXT NOT NULL,
+            CHECK(payments_made <= total_payments),
+            UNIQUE(commitment_id),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_occurrences (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id       TEXT NOT NULL,
+            user_id             INTEGER NOT NULL,
+            occurrence_date     TEXT NOT NULL,
+            occurrence_index    INTEGER DEFAULT NULL
+                CHECK(occurrence_index IS NULL OR occurrence_index >= 1),
+            expected_agorot     INTEGER NOT NULL CHECK(expected_agorot > 0),
+            status              TEXT NOT NULL DEFAULT 'expected'
+                CHECK(status IN ('expected', 'confirmed', 'missed', 'skipped', 'cancelled')),
+            match_confidence    TEXT DEFAULT NULL
+                CHECK(match_confidence IS NULL
+                      OR match_confidence IN ('exact', 'unique', 'fuzzy')),
+            linked_expense_id   INTEGER DEFAULT NULL REFERENCES expenses(id),
+            generated_at        TEXT NOT NULL,
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_expense_links (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id       TEXT NOT NULL,
+            user_id             INTEGER NOT NULL,
+            expense_id          INTEGER NOT NULL REFERENCES expenses(id),
+            membership_type     TEXT NOT NULL DEFAULT 'MEMBER'
+                CHECK(membership_type IN ('MEMBER', 'EXCLUDED', 'OCCURRENCE_CONFIRMED')),
+            linked_by           TEXT NOT NULL DEFAULT 'AUTO'
+                CHECK(linked_by IN ('AUTO', 'MANUAL', 'V4_CLASSIFIER', 'MIGRATION')),
+            family_id           TEXT DEFAULT NULL,
+            run_result_id       TEXT DEFAULT NULL,
+            created_at          TEXT NOT NULL,
+            UNIQUE(user_id, expense_id, commitment_id),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id),
+            FOREIGN KEY (run_result_id, user_id) REFERENCES v4_run_results(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_suggestions (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id                 INTEGER NOT NULL,
+            suggestion_type         TEXT NOT NULL
+                CHECK(suggestion_type IN (
+                    'POSSIBLE_DRIFT', 'OVERLAPPING_WINDOW', 'AMBIGUOUS_FAMILY',
+                    'NEW_RECURRING', 'POSSIBLE_MATCH'
+                )),
+            description_key         TEXT NOT NULL,
+            family_id               TEXT DEFAULT NULL,
+            run_result_id           TEXT DEFAULT NULL,
+            expense_id              INTEGER DEFAULT NULL REFERENCES expenses(id),
+            candidate_commitment_id TEXT DEFAULT NULL,
+            detail                  TEXT NOT NULL DEFAULT '{}',
+            resolved_at             TEXT DEFAULT NULL,
+            resolution              TEXT DEFAULT NULL
+                CHECK(resolution IS NULL
+                      OR resolution IN ('CONFIRMED', 'REJECTED', 'MERGED', 'SPLIT', 'IGNORED')),
+            created_at              TEXT NOT NULL,
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id),
+            FOREIGN KEY (run_result_id, user_id) REFERENCES v4_run_results(id, user_id),
+            FOREIGN KEY (candidate_commitment_id, user_id) REFERENCES commitments(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_link_conflicts (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id        TEXT DEFAULT NULL,
+            user_id              INTEGER NOT NULL,
+            family_id            TEXT DEFAULT NULL,
+            run_id               TEXT NOT NULL,
+            conflict_type        TEXT NOT NULL
+                CHECK(conflict_type IN (
+                    'ZERO_MATCHES', 'AMBIGUOUS_FAMILY', 'OVERLAPPING_WINDOW',
+                    'USER_ID_DRIFT', 'UNKNOWN'
+                )),
+            expected_match_count INTEGER DEFAULT NULL,
+            actual_match_count   INTEGER DEFAULT NULL,
+            detail               TEXT NOT NULL DEFAULT '{}',
+            resolved_at          TEXT DEFAULT NULL,
+            created_at           TEXT NOT NULL,
+            CHECK(commitment_id IS NOT NULL OR family_id IS NOT NULL),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS commitment_link_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            commitment_id   TEXT DEFAULT NULL,
+            user_id         INTEGER NOT NULL,
+            family_id       TEXT DEFAULT NULL,
+            event_type      TEXT NOT NULL
+                CHECK(event_type IN (
+                    'FAMILY_CREATED', 'FAMILY_LINKED', 'FAMILY_UNLINKED',
+                    'ALIAS_ADDED', 'CONFLICT_DETECTED', 'CONFLICT_RESOLVED',
+                    'SNAPSHOT_CREATED', 'FAMILY_SUPERSEDED', 'FAMILY_REACTIVATED'
+                )),
+            detail          TEXT NOT NULL DEFAULT '{}',
+            created_at      TEXT NOT NULL,
+            created_by      TEXT NOT NULL DEFAULT 'SYSTEM',
+            CHECK(commitment_id IS NOT NULL OR family_id IS NOT NULL),
+            FOREIGN KEY (commitment_id, user_id) REFERENCES commitments(id, user_id),
+            FOREIGN KEY (family_id, user_id) REFERENCES pattern_families(id, user_id)
+        );
+    ''')
+
+    # Phase 0.2 — upgrade existing commitment_expense_links.linked_by CHECK (idempotent)
+    _upgrade_cel_linked_by(conn)
+
+    # Phase 0.3 — expand classifier_lifecycle_status CHECK to include V4 raw values (idempotent)
+    _upgrade_lifecycle_check(conn)
+
+    # Phase 0.4 — add Phase 2B idempotence constraints (idempotent)
+    _upgrade_phase04_dedup_indexes(conn)
+
+    # Phase 0.5 — authority identity schema (idempotent)
+    _apply_phase05_authority(conn)
+
+    # Unified Commitments indexes
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_commitments_user ON commitments(user_id, lifecycle_status)")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_commitments_legacy_installment_unique
+        ON commitments(linked_legacy_installment_id)
+        WHERE linked_legacy_installment_id IS NOT NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_one_primary
+        ON pattern_families(commitment_id)
+        WHERE is_primary = 1 AND commitment_id IS NOT NULL AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_ongoing
+        ON pattern_families(user_id, primary_description_key)
+        WHERE is_split_discriminator = 0 AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_split_amount
+        ON pattern_families(user_id, primary_description_key, amount_cluster_agorot)
+        WHERE is_split_discriminator = 1 AND window_start IS NULL AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_split_window
+        ON pattern_families(user_id, primary_description_key, window_start, window_end)
+        WHERE is_split_discriminator = 1 AND amount_cluster_agorot IS NULL AND family_status = 'ACTIVE'""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pf_split_full
+        ON pattern_families(user_id, primary_description_key, amount_cluster_agorot, window_start, window_end)
+        WHERE is_split_discriminator = 1
+          AND amount_cluster_agorot IS NOT NULL
+          AND window_start IS NOT NULL
+          AND family_status = 'ACTIVE'""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pf_commitment ON pattern_families(commitment_id) WHERE commitment_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pf_active ON pattern_families(user_id, family_status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vrr_family ON v4_run_results(family_id, created_at DESC) WHERE family_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vrr_run ON v4_run_results(run_id, user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ccs_commitment ON commitment_classifier_snapshots(commitment_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_co_lookup ON commitment_occurrences(commitment_id, occurrence_date, status)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_finite ON commitment_occurrences(commitment_id, occurrence_index) WHERE occurrence_index IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_indefinite ON commitment_occurrences(commitment_id, occurrence_date) WHERE occurrence_index IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_co_linked_expense ON commitment_occurrences(linked_expense_id) WHERE linked_expense_id IS NOT NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_cel_member_exclusive ON commitment_expense_links(expense_id) WHERE membership_type IN ('MEMBER', 'OCCURRENCE_CONFIRMED')")
+
+    # Phase 0.4 — Phase 2B idempotence constraints (fresh-DB path)
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_ccs_v4single_dedup
+        ON commitment_classifier_snapshots(commitment_id, representative_run_result_id)
+        WHERE snapshot_type = 'V4_SINGLE'
+          AND representative_run_result_id IS NOT NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_possible_match_dedup
+        ON commitment_suggestions(user_id, run_result_id, candidate_commitment_id)
+        WHERE suggestion_type = 'POSSIBLE_MATCH'
+          AND run_result_id IS NOT NULL
+          AND candidate_commitment_id IS NOT NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_new_recurring_dedup
+        ON commitment_suggestions(user_id, run_result_id)
+        WHERE suggestion_type = 'NEW_RECURRING'
+          AND run_result_id IS NOT NULL
+          AND candidate_commitment_id IS NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_ambiguous_dedup
+        ON commitment_suggestions(user_id, run_result_id)
+        WHERE suggestion_type = 'AMBIGUOUS_FAMILY'
+          AND run_result_id IS NOT NULL
+          AND candidate_commitment_id IS NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_family_only_dedup
+        ON commitment_link_conflicts(run_id, user_id, family_id, conflict_type)
+        WHERE family_id IS NOT NULL
+          AND commitment_id IS NULL""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_clc_overlap_dedup
+        ON commitment_link_conflicts(run_id, user_id, family_id, commitment_id, conflict_type)
+        WHERE family_id IS NOT NULL
+          AND commitment_id IS NOT NULL""")
+
+    # Cross-user expense ownership triggers
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS trg_co_expense_owner_ins
+        BEFORE INSERT ON commitment_occurrences FOR EACH ROW
+        WHEN NEW.linked_expense_id IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'cross-user: linked_expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.linked_expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_co_expense_owner_upd
+        BEFORE UPDATE OF linked_expense_id ON commitment_occurrences FOR EACH ROW
+        WHEN NEW.linked_expense_id IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'cross-user: linked_expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.linked_expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_cel_expense_owner_ins
+        BEFORE INSERT ON commitment_expense_links FOR EACH ROW BEGIN
+            SELECT RAISE(ABORT, 'cross-user: expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_cel_expense_owner_upd
+        BEFORE UPDATE OF expense_id, user_id ON commitment_expense_links FOR EACH ROW BEGIN
+            SELECT RAISE(ABORT, 'cross-user: expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_cs_expense_owner_ins
+        BEFORE INSERT ON commitment_suggestions FOR EACH ROW
+        WHEN NEW.expense_id IS NOT NULL BEGIN
+            SELECT RAISE(ABORT, 'cross-user: suggestion expense_id owner mismatch')
+            WHERE (SELECT user_id FROM expenses WHERE id = NEW.expense_id) != NEW.user_id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_ins
+        BEFORE INSERT ON commitment_classifier_snapshots FOR EACH ROW
+        WHEN NEW.snapshot_type = 'V4_SINGLE'
+          AND NEW.representative_run_result_id IS NULL
+        BEGIN
+            SELECT RAISE(ABORT,
+                'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ccs_v4single_rep_required_upd
+        BEFORE UPDATE OF snapshot_type, representative_run_result_id
+        ON commitment_classifier_snapshots FOR EACH ROW
+        WHEN NEW.snapshot_type = 'V4_SINGLE'
+          AND NEW.representative_run_result_id IS NULL
+        BEGIN
+            SELECT RAISE(ABORT,
+                'V4_SINGLE snapshot requires non-NULL representative_run_result_id');
+        END;
+    """)
 
     conn.commit()
     conn.close()
@@ -3924,6 +5059,480 @@ def stage_db_post():
         'integrity_check': integrity,
         'quick_check': quick,
     })
+
+
+# --- Cash Flow Dashboard ---
+
+_CASHFLOW_FREQUENCY_LABELS = {
+    'monthly':          'קבועה',
+    'monthly_variable': 'קבועה (משתנה)',
+    'random':           'אקראית',
+}
+
+_CASHFLOW_FREQUENCY_CYCLE = ['monthly', 'monthly_variable', 'random']
+
+_CASHFLOW_HTML = r"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>תזרים מזומנים</title>
+<style>
+  :root { --bg:#f4f6fa; --card:#fff; --primary:#4361ee; --danger:#e63946;
+          --success:#2dc653; --warn:#f4a261; --text:#1d2d44; --muted:#6b7c93;
+          --border:#dde3ed; --radius:12px; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  .topbar{background:var(--primary);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px}
+  .topbar a{color:#fff;text-decoration:none;font-size:1.3rem}
+  .topbar h1{font-size:1.15rem;font-weight:700;flex:1;text-align:center}
+  .month-nav{display:flex;align-items:center;justify-content:center;gap:16px;padding:18px 0 8px}
+  .month-nav button{background:var(--card);border:1px solid var(--border);border-radius:8px;
+    padding:6px 14px;cursor:pointer;font-size:1rem}
+  .month-label{font-size:1.1rem;font-weight:600;min-width:130px;text-align:center}
+  .cards{display:flex;gap:14px;padding:0 16px 16px;flex-wrap:wrap}
+  .card{flex:1;min-width:170px;background:var(--card);border-radius:var(--radius);
+    padding:18px 16px;box-shadow:0 2px 8px #0001;text-align:center}
+  .card .label{font-size:.82rem;color:var(--muted);margin-bottom:6px}
+  .card .amount{font-size:1.6rem;font-weight:700}
+  .card.income .amount{color:var(--success)}
+  .card.fixed .amount{color:var(--danger)}
+  .card.liquid .amount{color:var(--primary)}
+  .section{padding:0 16px 24px}
+  .section h2{font-size:1rem;font-weight:700;margin-bottom:10px;color:var(--text)}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--radius);
+    overflow:hidden;box-shadow:0 2px 8px #0001}
+  th{background:#eef0f8;font-size:.8rem;color:var(--muted);text-align:right;padding:10px 12px}
+  td{padding:10px 12px;border-top:1px solid var(--border);font-size:.9rem;vertical-align:middle}
+  .freq-btn{border:none;border-radius:20px;padding:4px 12px;font-size:.78rem;cursor:pointer;font-weight:600;transition:background .15s}
+  .freq-monthly{background:#d4edda;color:#155724}
+  .freq-monthly_variable{background:#fff3cd;color:#856404}
+  .freq-random{background:#f8d7da;color:#721c24}
+  .export-btn{display:block;margin:0 16px 24px auto;background:var(--primary);color:#fff;
+    border:none;border-radius:8px;padding:10px 22px;font-size:.95rem;cursor:pointer;font-weight:600}
+  .loading{text-align:center;padding:40px;color:var(--muted)}
+  .avg{font-size:.78rem;color:var(--muted);display:block}
+  @media(max-width:500px){.cards{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/">&#8594;</a>
+  <h1>תזרים מזומנים</h1>
+</div>
+<div class="month-nav">
+  <button id="prevBtn">&#8249;</button>
+  <div class="month-label" id="monthLabel"></div>
+  <button id="nextBtn">&#8250;</button>
+</div>
+<div class="cards">
+  <div class="card income"><div class="label">הכנסות</div><div class="amount" id="incomeAmt">—</div></div>
+  <div class="card fixed"><div class="label">הוצאות קבועות</div><div class="amount" id="fixedAmt">—</div></div>
+  <div class="card liquid"><div class="label">נזיל</div><div class="amount" id="liquidAmt">—</div></div>
+</div>
+<div class="section" id="fixedSection" style="display:none">
+  <h2>הוצאות קבועות החודש</h2>
+  <table id="fixedTable">
+    <thead><tr><th>תיאור</th><th>סכום חודש זה</th><th>ממוצע 3 חודשים</th><th>סוג</th></tr></thead>
+    <tbody id="fixedBody"></tbody>
+  </table>
+</div>
+<div class="section" id="candidatesSection" style="display:none">
+  <h2>הוצאות חוזרות — בדיקה</h2>
+  <table id="candidatesTable">
+    <thead><tr><th>תיאור</th><th>הופעות (6 חודשים)</th><th>סוג</th></tr></thead>
+    <tbody id="candidatesBody"></tbody>
+  </table>
+</div>
+<button class="export-btn" id="exportBtn">יצוא Excel</button>
+<script>
+const fmt = n => '₪' + Number(n).toLocaleString('he-IL', {minimumFractionDigits:0, maximumFractionDigits:0});
+const FREQ_LABELS = {monthly:'קבועה', monthly_variable:'קבועה (משתנה)', random:'אקראית'};
+const FREQ_CYCLE = ['monthly','monthly_variable','random'];
+const FREQ_CLASS = {monthly:'freq-monthly', monthly_variable:'freq-monthly_variable', random:'freq-random'};
+
+let currentDate = new Date();
+currentDate.setDate(1);
+
+function monthStr(d) {
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0');
+  return y+'-'+m;
+}
+function monthLabel(d) {
+  return d.toLocaleDateString('he-IL',{month:'long',year:'numeric'});
+}
+
+function freqBtn(desc, freq) {
+  const cls = FREQ_CLASS[freq] || 'freq-random';
+  return `<button class="freq-btn ${cls}" data-desc="${desc.replace(/"/g,'&quot;')}" data-freq="${freq}">${FREQ_LABELS[freq]||freq}</button>`;
+}
+
+async function load() {
+  document.getElementById('monthLabel').textContent = monthLabel(currentDate);
+  document.getElementById('incomeAmt').textContent = '...';
+  document.getElementById('fixedAmt').textContent = '...';
+  document.getElementById('liquidAmt').textContent = '...';
+  document.getElementById('fixedSection').style.display = 'none';
+  document.getElementById('candidatesSection').style.display = 'none';
+
+  const res = await fetch('/api/cashflow/data?month='+monthStr(currentDate));
+  if (!res.ok) { document.getElementById('incomeAmt').textContent = 'שגיאה'; return; }
+  const d = await res.json();
+
+  document.getElementById('incomeAmt').textContent = fmt(d.income_total);
+  document.getElementById('fixedAmt').textContent = fmt(d.fixed_total);
+  document.getElementById('liquidAmt').textContent = fmt(d.liquid);
+
+  const fb = document.getElementById('fixedBody');
+  fb.innerHTML = '';
+  if (d.fixed_items && d.fixed_items.length) {
+    document.getElementById('fixedSection').style.display = '';
+    d.fixed_items.forEach(row => {
+      fb.insertAdjacentHTML('beforeend',
+        `<tr><td>${row.description}</td><td>${fmt(row.month_total)}</td><td><span class="avg">${fmt(row.avg_3m)}</span></td><td>${freqBtn(row.description, row.frequency)}</td></tr>`);
+    });
+  }
+
+  const cb = document.getElementById('candidatesBody');
+  cb.innerHTML = '';
+  if (d.recurring_candidates && d.recurring_candidates.length) {
+    document.getElementById('candidatesSection').style.display = '';
+    d.recurring_candidates.forEach(row => {
+      cb.insertAdjacentHTML('beforeend',
+        `<tr><td>${row.description}</td><td>${row.count}</td><td>${freqBtn(row.description, row.frequency)}</td></tr>`);
+    });
+  }
+}
+
+document.getElementById('prevBtn').addEventListener('click', () => {
+  currentDate.setMonth(currentDate.getMonth()-1); load();
+});
+document.getElementById('nextBtn').addEventListener('click', () => {
+  currentDate.setMonth(currentDate.getMonth()+1); load();
+});
+
+document.body.addEventListener('click', async e => {
+  if (!e.target.classList.contains('freq-btn')) return;
+  const btn = e.target;
+  const desc = btn.dataset.desc;
+  const curFreq = btn.dataset.freq;
+  const nextFreq = FREQ_CYCLE[(FREQ_CYCLE.indexOf(curFreq)+1) % FREQ_CYCLE.length];
+  btn.disabled = true;
+  const res = await fetch('/api/cashflow/set-frequency', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({description: desc, frequency: nextFreq})
+  });
+  btn.disabled = false;
+  if (res.ok) { load(); }
+});
+
+document.getElementById('exportBtn').addEventListener('click', () => {
+  window.location.href = '/api/cashflow/export?month='+monthStr(currentDate);
+});
+
+load();
+</script>
+</body>
+</html>"""
+
+
+@app.route('/cashflow')
+@login_required
+def cashflow_page():
+    from flask import make_response
+    resp = make_response(_CASHFLOW_HTML, 200)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return resp
+
+
+@app.route('/api/cashflow/data')
+@login_required
+def cashflow_data():
+    uid = get_uid()
+    month = request.args.get('month', '')
+    # validate YYYY-MM
+    import re as _re
+    if not _re.match(r'^\d{4}-\d{2}$', month):
+        from datetime import date as _date
+        month = _date.today().strftime('%Y-%m')
+
+    year, mon = int(month[:4]), int(month[5:7])
+    # boundaries
+    if mon == 12:
+        next_year, next_mon = year + 1, 1
+    else:
+        next_year, next_mon = year, mon + 1
+    month_start = f'{year:04d}-{mon:02d}-01'
+    month_end   = f'{next_year:04d}-{next_mon:02d}-01'
+
+    conn = get_db()
+    try:
+        # ── income ──────────────────────────────────────────────────────────
+        inc_rows = conn.execute(
+            "SELECT description, amount FROM income "
+            "WHERE user_id=? AND date>=? AND date<? ORDER BY date",
+            (uid, month_start, month_end)
+        ).fetchall()
+        income_total = sum(r['amount'] for r in inc_rows)
+        income_items = [{'description': r['description'], 'amount': r['amount']} for r in inc_rows]
+
+        # ── fixed expenses for the month ─────────────────────────────────
+        # expenses with frequency in ('monthly','monthly_variable')
+        # join frequency_rules to get the stored frequency, default 'random'
+        fixed_rows = conn.execute(
+            """
+            SELECT e.description,
+                   SUM(e.amount) AS month_total,
+                   COALESCE(fr.frequency, 'random') AS frequency
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+              AND COALESCE(fr.frequency, 'random') IN ('monthly','monthly_variable')
+            GROUP BY e.description
+            ORDER BY month_total DESC
+            """,
+            (uid, month_start, month_end)
+        ).fetchall()
+
+        # 3-month average for each fixed merchant
+        # window: 3 months ending at start of current month
+        if mon >= 4:
+            avg_start = f'{year:04d}-{mon-3:02d}-01'
+        else:
+            avg_year = year - 1
+            avg_mon  = 12 + mon - 3
+            avg_start = f'{avg_year:04d}-{avg_mon:02d}-01'
+
+        avg_rows = conn.execute(
+            """
+            SELECT e.description, SUM(e.amount)/3.0 AS avg_3m
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+              AND COALESCE(fr.frequency, 'random') IN ('monthly','monthly_variable')
+            GROUP BY e.description
+            """,
+            (uid, avg_start, month_start)
+        ).fetchall()
+        avg_map = {r['description']: r['avg_3m'] for r in avg_rows}
+
+        fixed_items = [
+            {
+                'description': r['description'],
+                'month_total': r['month_total'],
+                'avg_3m':      round(avg_map.get(r['description'], 0), 2),
+                'frequency':   r['frequency'],
+            }
+            for r in fixed_rows
+        ]
+        fixed_total = sum(r['month_total'] for r in fixed_rows)
+
+        # ── recurring candidates (appear in 2+ of last 6 months, not already marked) ──
+        if mon >= 7:
+            six_start = f'{year:04d}-{mon-6:02d}-01'
+        else:
+            six_year = year - 1
+            six_mon  = 12 + mon - 6
+            six_start = f'{six_year:04d}-{six_mon:02d}-01'
+
+        cand_rows = conn.execute(
+            """
+            SELECT e.description,
+                   COUNT(DISTINCT strftime('%Y-%m', e.date)) AS cnt,
+                   COALESCE(fr.frequency, 'random') AS frequency
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+              AND COALESCE(fr.frequency, 'random') = 'random'
+            GROUP BY e.description
+            HAVING cnt >= 2
+            ORDER BY cnt DESC, e.description
+            """,
+            (uid, six_start, month_end)
+        ).fetchall()
+        recurring_candidates = [
+            {'description': r['description'], 'count': r['cnt'], 'frequency': r['frequency']}
+            for r in cand_rows
+        ]
+
+    finally:
+        conn.close()
+
+    return jsonify({
+        'month':                month,
+        'income_total':         round(income_total, 2),
+        'income_items':         income_items,
+        'fixed_total':          round(fixed_total, 2),
+        'fixed_items':          fixed_items,
+        'liquid':               round(income_total - fixed_total, 2),
+        'recurring_candidates': recurring_candidates,
+    })
+
+
+@app.route('/api/cashflow/set-frequency', methods=['POST'])
+@login_required
+def cashflow_set_frequency():
+    uid = get_uid()
+    body = request.get_json(silent=True) or {}
+    description = body.get('description', '').strip()
+    frequency   = body.get('frequency', '')
+
+    if not description:
+        return jsonify({'error': 'description required'}), 400
+    if frequency not in _CASHFLOW_FREQUENCY_CYCLE:
+        return jsonify({'error': 'invalid frequency'}), 400
+
+    conn = get_db()
+    try:
+        # upsert frequency_rules
+        conn.execute(
+            """
+            INSERT INTO frequency_rules (user_id, description_pattern, frequency)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, description_pattern)
+            DO UPDATE SET frequency=excluded.frequency, created_at=datetime('now')
+            """,
+            (uid, description, frequency)
+        )
+        # retroactively update expenses.frequency for all matching rows
+        conn.execute(
+            "UPDATE expenses SET frequency=? WHERE user_id=? AND description=?",
+            (frequency, uid, description)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({'ok': True, 'description': description, 'frequency': frequency})
+
+
+@app.route('/api/cashflow/export')
+@login_required
+def cashflow_export():
+    import io
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return jsonify({'error': 'openpyxl not available'}), 500
+
+    uid = get_uid()
+    month = request.args.get('month', '')
+    import re as _re
+    if not _re.match(r'^\d{4}-\d{2}$', month):
+        from datetime import date as _date
+        month = _date.today().strftime('%Y-%m')
+
+    year, mon = int(month[:4]), int(month[5:7])
+    if mon == 12:
+        next_year, next_mon = year + 1, 1
+    else:
+        next_year, next_mon = year, mon + 1
+    month_start = f'{year:04d}-{mon:02d}-01'
+    month_end   = f'{next_year:04d}-{next_mon:02d}-01'
+
+    conn = get_db()
+    try:
+        inc_rows = conn.execute(
+            "SELECT date, description, amount FROM income "
+            "WHERE user_id=? AND date>=? AND date<? ORDER BY date",
+            (uid, month_start, month_end)
+        ).fetchall()
+
+        exp_rows = conn.execute(
+            """
+            SELECT e.date, e.description, e.amount,
+                   COALESCE(fr.frequency, 'random') AS frequency
+            FROM expenses e
+            LEFT JOIN frequency_rules fr
+                   ON fr.user_id = e.user_id
+                  AND fr.description_pattern = e.description
+            WHERE e.user_id=? AND e.date>=? AND e.date<?
+            ORDER BY e.date
+            """,
+            (uid, month_start, month_end)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    income_total = sum(r['amount'] for r in inc_rows)
+    fixed_total  = sum(r['amount'] for r in exp_rows
+                       if r['frequency'] in ('monthly', 'monthly_variable'))
+    liquid       = income_total - fixed_total
+
+    wb = openpyxl.Workbook()
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    ws = wb.active
+    ws.title = 'סיכום'
+    ws.sheet_view.rightToLeft = True
+
+    header_fill = PatternFill('solid', fgColor='4361EE')
+    header_font = Font(color='FFFFFF', bold=True)
+
+    ws.append(['תזרים מזומנים —', month])
+    ws['A1'].font = Font(bold=True, size=13)
+    ws.append([])
+    ws.append(['הכנסות', income_total])
+    ws.append(['הוצאות קבועות', fixed_total])
+    ws.append(['נזיל', liquid])
+    ws['B3'].number_format = '#,##0.00 ₪'
+    ws['B4'].number_format = '#,##0.00 ₪'
+    ws['B5'].number_format = '#,##0.00 ₪'
+    ws.column_dimensions['A'].width = 22
+    ws.column_dimensions['B'].width = 16
+
+    # ── Income sheet ───────────────────────────────────────────────────────
+    wi = wb.create_sheet('הכנסות')
+    wi.sheet_view.rightToLeft = True
+    wi.append(['תאריך', 'תיאור', 'סכום'])
+    for cell in wi[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for r in inc_rows:
+        wi.append([r['date'], r['description'], r['amount']])
+    for cell in wi['C'][1:]:
+        cell.number_format = '#,##0.00 ₪'
+    wi.column_dimensions['A'].width = 14
+    wi.column_dimensions['B'].width = 30
+    wi.column_dimensions['C'].width = 14
+
+    # ── Expenses sheet ─────────────────────────────────────────────────────
+    we = wb.create_sheet('הוצאות')
+    we.sheet_view.rightToLeft = True
+    we.append(['תאריך', 'תיאור', 'סכום', 'סוג'])
+    for cell in we[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for r in exp_rows:
+        we.append([r['date'], r['description'], r['amount'],
+                   _CASHFLOW_FREQUENCY_LABELS.get(r['frequency'], r['frequency'])])
+    for cell in we['C'][1:]:
+        cell.number_format = '#,##0.00 ₪'
+    we.column_dimensions['A'].width = 14
+    we.column_dimensions['B'].width = 30
+    we.column_dimensions['C'].width = 14
+    we.column_dimensions['D'].width = 18
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    from flask import send_file
+    filename = f'cashflow_{month}.xlsx'
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
 # --- File Import ---
@@ -13011,9 +14620,76 @@ def admin_chat_satisfaction():
     })
 
 
+# ── V4 Production Pipeline ────────────────────────────────────────────────────
+
+@app.route('/api/v4/refresh', methods=['POST'])
+@login_required
+def v4_refresh():
+    """
+    Atomic V4 production pipeline: persist evidence, link commitments,
+    apply authority adjustments — all in a single BEGIN IMMEDIATE transaction.
+
+    Authorization:
+      - User identity: session['user_id'] only (never request-supplied)
+      - DB path: module-level DB_PATH only (never request-supplied)
+      - Production writes: app.config['V4_PRODUCTION_ENABLED'] only
+        (server-side; default False; never request-supplied)
+
+    No request body is required or read for pipeline parameters.
+    """
+    from v4_production_orchestration import run_v4_production_pipeline
+    from intelligence.v4_cashflow_engine import run_analysis
+
+    uid = get_uid()
+
+    production_write_enabled = current_app.config.get('V4_PRODUCTION_ENABLED', False)
+
+    try:
+        analysis_report = run_analysis(DB_PATH, user_id=uid)
+    except Exception as exc:
+        app.logger.error('v4_refresh: run_analysis failed user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Analysis failed'}), 500
+
+    try:
+        result = run_v4_production_pipeline(
+            DB_PATH,
+            analysis_report,
+            user_id=uid,
+            production_write_enabled=production_write_enabled,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if 'Production writes require explicit authorization' in msg:
+            app.logger.warning('v4_refresh: production authorization denied user=%s', uid)
+            return jsonify({'error': 'Production writes not enabled'}), 403
+        app.logger.error('v4_refresh: pipeline error user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Pipeline error'}), 500
+    except Exception as exc:
+        app.logger.error('v4_refresh: unexpected error user=%s err=%s', uid, exc)
+        return jsonify({'error': 'Internal error'}), 500
+
+    final = result.adjusted.final_report
+    linked_count = sum(
+        1 for r in result.link.results
+        if r.outcome.value == 'LINKED'
+    )
+
+    return jsonify({
+        'ok': True,
+        'run_id': result.run_id,
+        'patterns_count': len(final.effective.patterns),
+        'linked_count': linked_count,
+        'planning_income': str(final.effective.planning_income_effective),
+        'monthly_reserve': str(final.effective.monthly_reserve_effective),
+    })
+
+
 if __name__ == '__main__':
     if getattr(sys, 'frozen', False):
         import webview
+
+        # Enable F12 / Inspect without opening DevTools automatically on startup.
+        webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
 
         # Clear stale WebView2 cache so old service workers don't block new HTML
         import shutil
@@ -13040,7 +14716,7 @@ if __name__ == '__main__':
             height=860,
             min_size=(900, 600),
         )
-        webview.start()
+        webview.start(debug=True)
     else:
         if _CLOUD:
             from waitress import serve
