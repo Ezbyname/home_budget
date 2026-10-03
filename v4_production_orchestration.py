@@ -136,7 +136,7 @@ def run_v4_production_pipeline(
         conn.execute("BEGIN IMMEDIATE")
 
         # Phase 1 — run analysis with Family Review baselines inside transaction
-        analysis_report = run_analysis(
+        analysis_report, _ = run_analysis(
             db_path,
             user_id=user_id,
             reviewed_targets=REVIEWED_TARGETS,
