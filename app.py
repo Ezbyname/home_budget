@@ -30,6 +30,20 @@ try:
 except ImportError:
     _INTELLIGENCE_AVAILABLE = False
 
+# Phase 2E: Production V4 Family Review baselines
+try:
+    from analyze_home_budget_v4 import (
+        REVIEWED_TARGETS,
+        PATTERN_OVERRIDES,
+        INCOME_BASELINES,
+    )
+    _V4_BASELINES_AVAILABLE = True
+except ImportError:
+    _V4_BASELINES_AVAILABLE = False
+    REVIEWED_TARGETS = None
+    PATTERN_OVERRIDES = None
+    INCOME_BASELINES = None
+
 # When running as a PyInstaller exe, use the exe's directory for data files
 _FROZEN = getattr(sys, 'frozen', False)
 # Cloud production: non-frozen process with APP_ENV=production
@@ -14645,7 +14659,13 @@ def v4_refresh():
     production_write_enabled = current_app.config.get('V4_PRODUCTION_ENABLED', False)
 
     try:
-        analysis_report = run_analysis(DB_PATH, user_id=uid)
+        analysis_report = run_analysis(
+            DB_PATH,
+            user_id=uid,
+            reviewed_targets=REVIEWED_TARGETS,
+            pattern_overrides=PATTERN_OVERRIDES,
+            income_baselines=INCOME_BASELINES,
+        )
     except Exception as exc:
         app.logger.error('v4_refresh: run_analysis failed user=%s err=%s', uid, exc)
         return jsonify({'error': 'Analysis failed'}), 500
