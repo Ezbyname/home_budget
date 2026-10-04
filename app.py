@@ -14663,19 +14663,13 @@ def v4_refresh():
         app.logger.exception('v4_refresh: analysis failed user=%s err=%s', uid, exc)
         return jsonify({'error': 'Analysis failed'}), 500
 
-    final = result.adjusted.final_report
-    linked_count = sum(
-        1 for r in result.link.results
-        if r.outcome.value == 'LINKED'
-    )
-
     return jsonify({
         'ok': True,
         'run_id': result.run_id,
-        'patterns_count': len(final.effective.patterns),
-        'linked_count': linked_count,
-        'planning_income': str(final.effective.planning_income_effective),
-        'monthly_reserve': str(final.effective.monthly_reserve_effective),
+        'patterns_count': result.patterns_count,
+        'linked_count': result.linked_count,
+        'planning_income': str(result.planning_income),
+        'monthly_reserve': str(result.monthly_reserve),
     })
 
 

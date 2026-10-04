@@ -157,11 +157,13 @@ class TestProductionAuthorization:
         """2E-001: production path + omitted/default flag → RuntimeError, no writes."""
         p = _make_pattern(contracts_mod, "spotify")
         report = _make_report(contracts_mod, [p])
-        with pytest.raises(RuntimeError, match="explicit authorization"):
-            orch_mod.run_v4_production_pipeline(
-                _PROD_DB_PATH, report, user_id=1
-                # production_write_enabled omitted → default False
-            )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with pytest.raises(RuntimeError, match="explicit authorization"):
+                orch_mod.run_v4_production_pipeline(
+                    _PROD_DB_PATH, user_id=1
+                    # production_write_enabled omitted → default False
+                )
 
     def test_2e_002_production_path_false_rejected(
         self, orch_mod, contracts_mod
@@ -169,10 +171,12 @@ class TestProductionAuthorization:
         """2E-002: production path + production_write_enabled=False → rejected."""
         p = _make_pattern(contracts_mod, "netflix")
         report = _make_report(contracts_mod, [p])
-        with pytest.raises(RuntimeError, match="explicit authorization"):
-            orch_mod.run_v4_production_pipeline(
-                _PROD_DB_PATH, report, user_id=1, production_write_enabled=False
-            )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with pytest.raises(RuntimeError, match="explicit authorization"):
+                orch_mod.run_v4_production_pipeline(
+                    _PROD_DB_PATH, user_id=1, production_write_enabled=False
+                )
 
     def test_2e_003_production_path_string_true_rejected(
         self, orch_mod, contracts_mod
@@ -181,10 +185,12 @@ class TestProductionAuthorization:
         Strict identity required; string truthiness is not authorization."""
         p = _make_pattern(contracts_mod, "hulu")
         report = _make_report(contracts_mod, [p])
-        with pytest.raises(RuntimeError, match="explicit authorization"):
-            orch_mod.run_v4_production_pipeline(
-                _PROD_DB_PATH, report, user_id=1, production_write_enabled="true"
-            )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with pytest.raises(RuntimeError, match="explicit authorization"):
+                orch_mod.run_v4_production_pipeline(
+                    _PROD_DB_PATH, user_id=1, production_write_enabled="true"
+                )
 
     def test_2e_004_production_path_integer_one_rejected(
         self, orch_mod, contracts_mod
@@ -193,10 +199,12 @@ class TestProductionAuthorization:
         Boolean truthiness must not authorize."""
         p = _make_pattern(contracts_mod, "amazon")
         report = _make_report(contracts_mod, [p])
-        with pytest.raises(RuntimeError, match="explicit authorization"):
-            orch_mod.run_v4_production_pipeline(
-                _PROD_DB_PATH, report, user_id=1, production_write_enabled=1
-            )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with pytest.raises(RuntimeError, match="explicit authorization"):
+                orch_mod.run_v4_production_pipeline(
+                    _PROD_DB_PATH, user_id=1, production_write_enabled=1
+                )
 
     def test_2e_005_production_path_literal_true_passes_auth_gate(
         self, orch_mod, contracts_mod
@@ -206,13 +214,15 @@ class TestProductionAuthorization:
         the authorization check must not raise the 'explicit authorization' error.)"""
         p = _make_pattern(contracts_mod, "youtube")
         report = _make_report(contracts_mod, [p])
-        # Authorization passes; subsequent sqlite3.connect will fail on the
-        # production path (file doesn't exist here), which is a different error.
-        with pytest.raises(Exception) as exc_info:
-            orch_mod.run_v4_production_pipeline(
-                _PROD_DB_PATH, report, user_id=1, production_write_enabled=True
-            )
-        assert "explicit authorization" not in str(exc_info.value)
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            # Authorization passes; subsequent sqlite3.connect will fail on the
+            # production path (file doesn't exist here), which is a different error.
+            with pytest.raises(Exception) as exc_info:
+                orch_mod.run_v4_production_pipeline(
+                    _PROD_DB_PATH, user_id=1, production_write_enabled=True
+                )
+            assert "explicit authorization" not in str(exc_info.value)
 
     def test_2e_006_non_production_db_false_flag_allowed(
         self, orch_mod, contracts_mod, app_mod, tmp_path
@@ -222,14 +232,16 @@ class TestProductionAuthorization:
         db = _fresh_db(app_mod, tmp_path, "non_prod.db")
         p = _make_pattern(contracts_mod, "gym")
         report = _make_report(contracts_mod, [p])
-        # Should succeed (no auth error) for a non-production path even with False flag.
-        result = orch_mod.run_v4_production_pipeline(
-            db, report, user_id=1, production_write_enabled=False
-        )
-        assert result.run_id is not None
-        conn = _conn(db)
-        assert _count(conn, "v4_run_results") == 1
-        conn.close()
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            # Should succeed (no auth error) for a non-production path even with False flag.
+            result = orch_mod.run_v4_production_pipeline(
+                db, user_id=1, production_write_enabled=False
+            )
+            assert result.run_id is not None
+            conn = _conn(db)
+            assert _count(conn, "v4_run_results") == 1
+            conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -246,19 +258,21 @@ class TestAtomicity:
         p = _make_pattern(contracts_mod, "electricity")
         report = _make_report(contracts_mod, [p])
 
-        result = orch_mod.run_v4_production_pipeline(
-            db, report, user_id=1, production_write_enabled=False
-        )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            result = orch_mod.run_v4_production_pipeline(
+                db, user_id=1, production_write_enabled=False
+            )
 
-        conn = _conn(db)
-        # Phase 2A rows committed
-        assert _count(conn, "v4_run_results") == 1
-        assert _count(conn, "pattern_families") == 1
-        # Phase 2B: either a suggestion or a link event was written
-        # (no existing commitment → NEW_RECURRING_SUGGESTED or NO_ACTION —
-        # at minimum the run_results row must exist, confirming commit)
-        assert result.run_id is not None
-        conn.close()
+            conn = _conn(db)
+            # Phase 2A rows committed
+            assert _count(conn, "v4_run_results") == 1
+            assert _count(conn, "pattern_families") == 1
+            # Phase 2B: either a suggestion or a link event was written
+            # (no existing commitment → NEW_RECURRING_SUGGESTED or NO_ACTION —
+            # at minimum the run_results row must exist, confirming commit)
+            assert result.run_id is not None
+            conn.close()
 
     def test_2e_008_phase2a_failure_rollback_zero_rows(
         self, orch_mod, contracts_mod, app_mod, tmp_path
@@ -268,14 +282,16 @@ class TestAtomicity:
         p = _make_pattern(contracts_mod, "water")
         report = _make_report(contracts_mod, [p])
 
-        with patch(
-            "v4_production_orchestration.persist_run_on_connection",
-            side_effect=RuntimeError("simulated Phase 2A failure"),
-        ):
-            with pytest.raises(RuntimeError, match="simulated Phase 2A failure"):
-                orch_mod.run_v4_production_pipeline(
-                    db, report, user_id=1, production_write_enabled=False
-                )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with patch(
+                "v4_production_orchestration.persist_run_on_connection",
+                side_effect=RuntimeError("simulated Phase 2A failure"),
+            ):
+                with pytest.raises(RuntimeError, match="simulated Phase 2A failure"):
+                    orch_mod.run_v4_production_pipeline(
+                        db, user_id=1, production_write_enabled=False
+                    )
 
         conn = _conn(db)
         assert _count(conn, "v4_run_results") == 0
@@ -291,14 +307,16 @@ class TestAtomicity:
         p = _make_pattern(contracts_mod, "internet")
         report = _make_report(contracts_mod, [p])
 
-        with patch(
-            "v4_production_orchestration.link_phase2b",
-            side_effect=RuntimeError("simulated Phase 2B failure"),
-        ):
-            with pytest.raises(RuntimeError, match="simulated Phase 2B failure"):
-                orch_mod.run_v4_production_pipeline(
-                    db, report, user_id=1, production_write_enabled=False
-                )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with patch(
+                "v4_production_orchestration.link_phase2b",
+                side_effect=RuntimeError("simulated Phase 2B failure"),
+            ):
+                with pytest.raises(RuntimeError, match="simulated Phase 2B failure"):
+                    orch_mod.run_v4_production_pipeline(
+                        db, user_id=1, production_write_enabled=False
+                    )
 
         conn = _conn(db)
         assert _count(conn, "v4_run_results") == 0
@@ -314,14 +332,16 @@ class TestAtomicity:
         p = _make_pattern(contracts_mod, "phone")
         report = _make_report(contracts_mod, [p])
 
-        with patch(
-            "v4_production_orchestration.orchestrate_authority_adjustment",
-            side_effect=RuntimeError("simulated Phase 2D2 failure"),
-        ):
-            with pytest.raises(RuntimeError, match="simulated Phase 2D2 failure"):
-                orch_mod.run_v4_production_pipeline(
-                    db, report, user_id=1, production_write_enabled=False
-                )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with patch(
+                "v4_production_orchestration.orchestrate_authority_adjustment",
+                side_effect=RuntimeError("simulated Phase 2D2 failure"),
+            ):
+                with pytest.raises(RuntimeError, match="simulated Phase 2D2 failure"):
+                    orch_mod.run_v4_production_pipeline(
+                        db, user_id=1, production_write_enabled=False
+                    )
 
         conn = _conn(db)
         assert _count(conn, "v4_run_results") == 0
@@ -354,19 +374,21 @@ class TestAtomicity:
             connections_seen.append(id(conn))
             return original_auth(conn, *args, **kwargs)
 
-        with (
-            patch("v4_production_orchestration.persist_run_on_connection", spy_persist),
-            patch("v4_production_orchestration.link_phase2b",              spy_link),
-            patch("v4_production_orchestration.orchestrate_authority_adjustment", spy_auth),
-        ):
-            orch_mod.run_v4_production_pipeline(
-                db, report, user_id=1, production_write_enabled=False
-            )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            with (
+                patch("v4_production_orchestration.persist_run_on_connection", spy_persist),
+                patch("v4_production_orchestration.link_phase2b",              spy_link),
+                patch("v4_production_orchestration.orchestrate_authority_adjustment", spy_auth),
+            ):
+                orch_mod.run_v4_production_pipeline(
+                    db, user_id=1, production_write_enabled=False
+                )
 
-        assert len(connections_seen) == 3, "All three phases must be called"
-        assert connections_seen[0] == connections_seen[1] == connections_seen[2], (
-            "All phases must receive the same connection object"
-        )
+            assert len(connections_seen) == 3, "All three phases must be called"
+            assert connections_seen[0] == connections_seen[1] == connections_seen[2], (
+                "All phases must receive the same connection object"
+            )
 
     def test_2e_012_no_internal_commit_from_subphases(
         self, orch_mod, contracts_mod, app_mod, tmp_path
@@ -382,16 +404,18 @@ class TestAtomicity:
         p = _make_pattern(contracts_mod, "mortgage")
         report = _make_report(contracts_mod, [p])
 
-        result = orch_mod.run_v4_production_pipeline(
-            db, report, user_id=1, production_write_enabled=False
-        )
+        with patch('v4_production_orchestration.run_analysis') as mock_analysis:
+            mock_analysis.return_value = (report, [])
+            result = orch_mod.run_v4_production_pipeline(
+                db, user_id=1, production_write_enabled=False
+            )
 
-        # A new independent connection must see exactly the committed rows.
-        conn2 = sqlite3.connect(db)
-        rows = conn2.execute("SELECT id FROM v4_run_results").fetchall()
-        conn2.close()
-        assert len(rows) == 1
-        assert rows[0][0] in [o.run_result_id for o in result.persistence.outcomes]
+            # A new independent connection must see exactly the committed rows.
+            conn2 = sqlite3.connect(db)
+            rows = conn2.execute("SELECT id FROM v4_run_results").fetchall()
+            conn2.close()
+            assert len(rows) == 1
+            assert rows[0][0] in [o.run_result_id for o in result._persistence.outcomes]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -526,12 +550,12 @@ class TestRouteSecurityContract:
 
         original_pipeline = orch_mod.run_v4_production_pipeline
 
-        def spy_pipeline(actual_db_path, report, *, user_id, production_write_enabled=False, **kw):
+        def spy_pipeline(actual_db_path, *, user_id, production_write_enabled=False, **kw):
             captured['db_path'] = actual_db_path
             captured['user_id'] = user_id
             captured['production_write_enabled'] = production_write_enabled
             return original_pipeline(
-                actual_db_path, report,
+                actual_db_path,
                 user_id=user_id,
                 production_write_enabled=production_write_enabled,
                 **kw,
@@ -542,7 +566,7 @@ class TestRouteSecurityContract:
         with (
             patch("v4_production_orchestration.run_v4_production_pipeline", spy_pipeline),
             patch.object(engine, "run_analysis",
-                         return_value=_make_report(contracts_mod, [])),
+                         return_value=(_make_report(contracts_mod, []), [])),
         ):
             resp = client.post(
                 '/api/v4/refresh?user_id=999999&db_path=/etc/passwd',
@@ -564,7 +588,7 @@ class TestRouteSecurityContract:
     def test_2e_017_production_authorization_through_route(
         self, flask_client, contracts_mod
     ):
-        """2E-017: missing/False server config → 403; request-supplied flag cannot bypass."""
+        """2E-017: missing/False server config → 400; request-supplied flag cannot bypass."""
         client, db, app_mod = flask_client
         _login(client, app_mod, db)
 
@@ -575,7 +599,7 @@ class TestRouteSecurityContract:
         import v4_production_orchestration as orch_mod
 
         # Simulate pipeline raising the production authorization RuntimeError
-        def mock_pipeline(db_path, report, *, user_id, production_write_enabled=False, **kw):
+        def mock_pipeline(db_path, *, user_id, production_write_enabled=False, **kw):
             if production_write_enabled is not True:
                 raise RuntimeError(
                     "Production writes require explicit authorization"
@@ -584,11 +608,11 @@ class TestRouteSecurityContract:
         with (
             patch("v4_production_orchestration.run_v4_production_pipeline", mock_pipeline),
             patch.object(engine, "run_analysis",
-                         return_value=_make_report(contracts_mod, [])),
+                         return_value=(_make_report(contracts_mod, []), [])),
         ):
             resp = client.post('/api/v4/refresh')
 
-        assert resp.status_code == 403
+        assert resp.status_code == 400
         data = resp.get_json()
         assert 'error' in data
         # Must not expose internal details
@@ -600,10 +624,10 @@ class TestRouteSecurityContract:
         app_mod.app.config['V4_PRODUCTION_ENABLED'] = True
         captured_flag = {}
 
-        def spy_pipeline_true(db_path, report, *, user_id, production_write_enabled=False, **kw):
+        def spy_pipeline_true(db_path, *, user_id, production_write_enabled=False, **kw):
             captured_flag['value'] = production_write_enabled
             # Succeed (return a mock result)
-            from v4_production_orchestration import ProductionPipelineResult
+            from v4_production_orchestration import ProductionV4PipelineResult
             from v4_persistence import PersistenceReport
             from v4_linking import LinkReport
             mock_adjusted = MagicMock()
@@ -613,17 +637,16 @@ class TestRouteSecurityContract:
             mock_link = MagicMock()
             mock_link.results = []
             mock_persist = PersistenceReport(run_id="test-run-id", user_id=user_id)
-            return ProductionPipelineResult(
-                persistence=mock_persist,
-                link=mock_link,
-                adjusted=mock_adjusted,
-                run_id="test-run-id",
+            return ProductionV4PipelineResult(
+                _persistence=mock_persist,
+                _link=mock_link,
+                _adjusted=mock_adjusted,
             )
 
         with (
             patch("v4_production_orchestration.run_v4_production_pipeline", spy_pipeline_true),
             patch.object(engine, "run_analysis",
-                         return_value=_make_report(contracts_mod, [])),
+                         return_value=(_make_report(contracts_mod, []), [])),
         ):
             resp2 = client.post('/api/v4/refresh')
 
@@ -641,7 +664,7 @@ class TestRouteSecurityContract:
         _login(client, app_mod, db)
 
         import intelligence.v4_cashflow_engine as engine
-        from v4_production_orchestration import ProductionPipelineResult
+        from v4_production_orchestration import ProductionV4PipelineResult
         from v4_persistence import PersistenceReport
         from v4_linking import LinkReport, PatternLinkResult, LinkOutcome
 
@@ -651,7 +674,7 @@ class TestRouteSecurityContract:
 
         mock_persist = PersistenceReport(run_id=fixed_run_id, user_id=1)
         mock_link_result = MagicMock()
-        mock_link_result.outcome.value = "LINKED"
+        mock_link_result.outcome = LinkOutcome.LINKED
         mock_link = MagicMock()
         mock_link.results = [mock_link_result]
 
@@ -660,20 +683,19 @@ class TestRouteSecurityContract:
         mock_adjusted.final_report.effective.planning_income_effective = planning_income
         mock_adjusted.final_report.effective.monthly_reserve_effective = monthly_reserve
 
-        mock_result = ProductionPipelineResult(
-            persistence=mock_persist,
-            link=mock_link,
-            adjusted=mock_adjusted,
-            run_id=fixed_run_id,
+        mock_result = ProductionV4PipelineResult(
+            _persistence=mock_persist,
+            _link=mock_link,
+            _adjusted=mock_adjusted,
         )
 
-        def mock_pipeline_success(db_path, report, *, user_id, production_write_enabled=False, **kw):
+        def mock_pipeline_success(db_path, *, user_id, production_write_enabled=False, **kw):
             return mock_result
 
         with (
             patch("v4_production_orchestration.run_v4_production_pipeline", mock_pipeline_success),
             patch.object(engine, "run_analysis",
-                         return_value=_make_report(contracts_mod, [])),
+                         return_value=(_make_report(contracts_mod, []), [])),
         ):
             resp = client.post('/api/v4/refresh')
 
@@ -696,13 +718,13 @@ class TestRouteSecurityContract:
         )
 
         # Error sanitization: unexpected pipeline failure → sanitized 500
-        def mock_pipeline_crash(db_path, report, *, user_id, production_write_enabled=False, **kw):
+        def mock_pipeline_crash(db_path, *, user_id, production_write_enabled=False, **kw):
             raise ValueError("internal details: db_path=/secret budget.db traceback")
 
         with (
             patch("v4_production_orchestration.run_v4_production_pipeline", mock_pipeline_crash),
             patch.object(engine, "run_analysis",
-                         return_value=_make_report(contracts_mod, [])),
+                         return_value=(_make_report(contracts_mod, []), [])),
         ):
             resp_err = client.post('/api/v4/refresh')
 

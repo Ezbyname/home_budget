@@ -41,32 +41,49 @@ from analyze_home_budget_v4 import (
 from intelligence.v4_contracts import ClassificationReport
 from intelligence.v4_cashflow_engine import run_analysis
 from v4_persistence import PersistenceReport, persist_run_on_connection, _is_production_path
-from v4_linking import LinkReport, link_phase2b
+from v4_linking import LinkReport, link_phase2b, LinkOutcome
 from v4_authority_orchestration import orchestrate_authority_adjustment
 from v4_authority_runtime import AuthorityAdjustedAnalysis
 
 
 # ── Result wrapper ────────────────────────────────────────────────────────────
 
-@dataclass
-class ProductionPipelineResult:
+@dataclass(frozen=True)
+class ProductionV4PipelineResult:
     """
     Immutable result from run_v4_production_pipeline().
 
-    persistence:   Phase 2A outcome
-    link:          Phase 2B outcome
-    adjusted:      Phase 2D2 authority-adjusted analysis
-    run_id:        shared run identity across all phases
+    Internal fields: _persistence, _link, _adjusted
+    Public properties: run_id, patterns_count, linked_count, planning_income, monthly_reserve
     """
-    persistence: PersistenceReport
-    link:        LinkReport
-    adjusted:    AuthorityAdjustedAnalysis
-    run_id:      str
+    _persistence: PersistenceReport
+    _link:        LinkReport
+    _adjusted:    AuthorityAdjustedAnalysis
+
+    @property
+    def run_id(self) -> str:
+        return self._persistence.run_id
+
+    @property
+    def patterns_count(self) -> int:
+        return len(self._adjusted.final_report.effective.patterns)
+
+    @property
+    def linked_count(self) -> int:
+        return sum(1 for result in self._link.results if result.outcome == LinkOutcome.LINKED)
+
+    @property
+    def planning_income(self) -> "Decimal":
+        return self._adjusted.final_report.effective.planning_income_effective
+
+    @property
+    def monthly_reserve(self) -> "Decimal":
+        return self._adjusted.final_report.effective.monthly_reserve_effective
 
 
 # ── Production authorization guard ───────────────────────────────────────────
 
-def _check_production_authorization(db_path: str, production_write_enabled: object) -> None:
+def _check_production_authorization(db_path: str, production_write_enabled: bool) -> None:
     """
     Enforce production write authorization.
 
@@ -90,8 +107,8 @@ def run_v4_production_pipeline(
     *,
     user_id: int,
     run_id: str | None = None,
-    production_write_enabled: object = False,
-) -> ProductionPipelineResult:
+    production_write_enabled: bool = False,
+) -> ProductionV4PipelineResult:
     """
     Execute the atomic Phase 2E V4 production pipeline.
 
@@ -118,7 +135,7 @@ def run_v4_production_pipeline(
 
     Returns
     -------
-    ProductionPipelineResult
+    ProductionV4PipelineResult
 
     Raises
     ------
@@ -180,9 +197,8 @@ def run_v4_production_pipeline(
     finally:
         conn.close()
 
-    return ProductionPipelineResult(
-        persistence=persistence,
-        link=link,
-        adjusted=adjusted,
-        run_id=persistence.run_id,
+    return ProductionV4PipelineResult(
+        _persistence=persistence,
+        _link=link,
+        _adjusted=adjusted,
     )
