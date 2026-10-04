@@ -33,34 +33,57 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from analyze_home_budget_v4 import (
+    REVIEWED_TARGETS,
+    PATTERN_OVERRIDES,
+    INCOME_BASELINES,
+)
 from intelligence.v4_contracts import ClassificationReport
+from intelligence.v4_cashflow_engine import run_analysis
 from v4_persistence import PersistenceReport, persist_run_on_connection, _is_production_path
-from v4_linking import LinkReport, link_phase2b
+from v4_linking import LinkReport, link_phase2b, LinkOutcome
 from v4_authority_orchestration import orchestrate_authority_adjustment
 from v4_authority_runtime import AuthorityAdjustedAnalysis
 
 
 # ── Result wrapper ────────────────────────────────────────────────────────────
 
-@dataclass
-class ProductionPipelineResult:
+@dataclass(frozen=True)
+class ProductionV4PipelineResult:
     """
     Immutable result from run_v4_production_pipeline().
 
-    persistence:   Phase 2A outcome
-    link:          Phase 2B outcome
-    adjusted:      Phase 2D2 authority-adjusted analysis
-    run_id:        shared run identity across all phases
+    Internal fields: _persistence, _link, _adjusted
+    Public properties: run_id, patterns_count, linked_count, planning_income, monthly_reserve
     """
-    persistence: PersistenceReport
-    link:        LinkReport
-    adjusted:    AuthorityAdjustedAnalysis
-    run_id:      str
+    _persistence: PersistenceReport
+    _link:        LinkReport
+    _adjusted:    AuthorityAdjustedAnalysis
+
+    @property
+    def run_id(self) -> str:
+        return self._persistence.run_id
+
+    @property
+    def patterns_count(self) -> int:
+        return len(self._adjusted.final_report.effective.patterns)
+
+    @property
+    def linked_count(self) -> int:
+        return sum(1 for result in self._link.results if result.outcome == LinkOutcome.LINKED)
+
+    @property
+    def planning_income(self) -> "Decimal":
+        return self._adjusted.final_report.effective.planning_income_effective
+
+    @property
+    def monthly_reserve(self) -> "Decimal":
+        return self._adjusted.final_report.effective.monthly_reserve_effective
 
 
 # ── Production authorization guard ───────────────────────────────────────────
 
-def _check_production_authorization(db_path: str, production_write_enabled: object) -> None:
+def _check_production_authorization(db_path: str, production_write_enabled: bool) -> None:
     """
     Enforce production write authorization.
 
@@ -81,27 +104,27 @@ def _check_production_authorization(db_path: str, production_write_enabled: obje
 
 def run_v4_production_pipeline(
     db_path: str,
-    analysis_report: ClassificationReport,
     *,
     user_id: int,
     run_id: str | None = None,
-    production_write_enabled: object = False,
-) -> ProductionPipelineResult:
+    production_write_enabled: bool = False,
+) -> ProductionV4PipelineResult:
     """
     Execute the atomic Phase 2E V4 production pipeline.
 
-    Wraps Phase 2A (persist) → Phase 2B (link) → Phase 2D2 (authority adjust)
-    in a single BEGIN IMMEDIATE / COMMIT transaction.  Any failure rolls back
-    all phases completely (zero partial rows).
+    Atomic transaction wraps Phase 1 (analysis) → Phase 2A (persist) → Phase 2B (link) →
+    Phase 2D2 (authority adjust) in a single BEGIN IMMEDIATE / COMMIT transaction.
+    Any failure rolls back all phases completely (zero partial rows).
+
+    Family Review baselines (REVIEWED_TARGETS, PATTERN_OVERRIDES, INCOME_BASELINES)
+    are applied inside the transaction to ensure consistency.
 
     Parameters
     ----------
     db_path:
         Path to the SQLite database.
-    analysis_report:
-        ClassificationReport from run_analysis().
     user_id:
-        User whose patterns are being persisted.
+        User whose patterns are being analyzed and persisted.
     run_id:
         Optional caller-supplied run identity.  None → UUID4 generated once
         and shared across all phases.
@@ -112,14 +135,14 @@ def run_v4_production_pipeline(
 
     Returns
     -------
-    ProductionPipelineResult
+    ProductionV4PipelineResult
 
     Raises
     ------
     RuntimeError
         If db_path is a known production path and production_write_enabled
         is not literal True.
-    Any exception from Phase 2A, 2B, or 2D2 propagates after full rollback.
+    Any exception from analysis, Phase 2A, 2B, or 2D2 propagates after full rollback.
     """
     _check_production_authorization(db_path, production_write_enabled)
 
@@ -128,6 +151,15 @@ def run_v4_production_pipeline(
 
     try:
         conn.execute("BEGIN IMMEDIATE")
+
+        # Phase 1 — run analysis with Family Review baselines inside transaction
+        analysis_report, _ = run_analysis(
+            db_path,
+            user_id=user_id,
+            reviewed_targets=REVIEWED_TARGETS,
+            pattern_overrides=PATTERN_OVERRIDES,
+            income_baselines=INCOME_BASELINES,
+        )
 
         # Phase 2A — persist raw evidence
         persistence = persist_run_on_connection(
@@ -165,9 +197,8 @@ def run_v4_production_pipeline(
     finally:
         conn.close()
 
-    return ProductionPipelineResult(
-        persistence=persistence,
-        link=link,
-        adjusted=adjusted,
-        run_id=persistence.run_id,
+    return ProductionV4PipelineResult(
+        _persistence=persistence,
+        _link=link,
+        _adjusted=adjusted,
     )

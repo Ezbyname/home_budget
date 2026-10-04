@@ -38,6 +38,7 @@ from intelligence.v4_contracts import ClassificationReport, PatternResult
 _KNOWN_PRODUCTION_PATHS = [
     r"C:\Users\erezg\.budget_tracker_data\budget.db",
     "/c/users/erezg/.budget_tracker_data/budget.db",
+    "/data/budget.db",
 ]
 
 _PRODUCTION_FINGERPRINTS = frozenset(
